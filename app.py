@@ -1,10 +1,3 @@
-# 1. Install required Python packages
-!pip install langchain langchain_community faiss-cpu sentence-transformers neo4j
-!pip install google-generativeai langchain-google-genai
-!pip install torch
-!pip install PyPDF2 pypdf
-!pip install python-dotenv numpy
-!pip install streamlit
 
 import streamlit as st
 from pathlib import Path
