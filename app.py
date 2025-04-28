@@ -65,7 +65,7 @@ CACHE = {}
 
 # Hardcoded PDF files to use
 HARDCODED_PDF_FILES = [
-    "./data/rawdata.pdf",  # Update with local paths
+    "rawdata.pdf",  # Update with local paths
 ]
 
 # For testing purposes - update with your actual list
