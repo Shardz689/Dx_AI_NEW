@@ -927,6 +927,23 @@ If you cannot find reliable information from the sources provided, respond with:
       self.followup_context = {"asked": False, "round": 0}
       return "Conversation has been reset."
 
+    
+
+# Create chatbot instance
+chatbot = DocumentChatBot()
+
+# Feedback storage
+feedback_storage = []
+
+
+                  
+def main():
+    # Set page title and favicon
+    st.set_page_config(
+        page_title="Medical Document Chat Assistant",
+        page_icon="🏥",
+        layout="wide"
+    )
     def handle_file_upload():
       uploaded_files = st.sidebar.file_uploader("Upload PDF documents", type="pdf", accept_multiple_files=True)
       if uploaded_files:
@@ -951,21 +968,7 @@ If you cannot find reliable information from the sources provided, respond with:
               st.session_state.init_message = message
               
               st.sidebar.success(f"Uploaded {len(file_paths)} document(s): {message}")
-
-# Create chatbot instance
-chatbot = DocumentChatBot()
-
-# Feedback storage
-feedback_storage = []
-
-def main():
-    # Set page title and favicon
-    st.set_page_config(
-        page_title="Medical Document Chat Assistant",
-        page_icon="🏥",
-        layout="wide"
-    )
-
+                  
     # Title and description
     st.title("🏥 Medical Document Chat Assistant")
     st.markdown("Combines Retrieval (RAG) + Knowledge Graph (KG) + Gemini Flash 1.5 + Reflection")
