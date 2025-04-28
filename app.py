@@ -947,7 +947,8 @@ def main():
     def handle_file_upload():
       uploaded_files = st.sidebar.file_uploader("Upload PDF documents", type="pdf", accept_multiple_files=True)
       if uploaded_files:
-          with st.sidebar.spinner("Processing uploaded documents..."):
+          with st.sidebar:
+            with st.spinner("Processing uploaded documents..."):
               # Save uploaded files to a temporary location
               temp_dir = "./temp_uploads"
               os.makedirs(temp_dir, exist_ok=True)
