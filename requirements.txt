@@ -1,0 +1,13 @@
+streamlit
+langchain
+langchain_community
+faiss-cpu
+sentence-transformers
+neo4j
+google-generativeai
+langchain-google-genai
+torch
+PyPDF2
+pypdf
+python-dotenv
+numpy
