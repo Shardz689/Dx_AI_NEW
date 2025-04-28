@@ -7,6 +7,7 @@ import re
 import json
 import numpy as np
 from datetime import datetime
+from typing import List, Tuple, Dict, Optional
 
 # Import Gemini API
 import google.generativeai as genai
