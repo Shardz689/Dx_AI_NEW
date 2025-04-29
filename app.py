@@ -72,7 +72,7 @@ def get_image_as_base64(file_path):
         return ""  # Return empty string if file not found
     
     with open(file_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode())
+        return base64.b64encode(image_file.read()).decode()
 
 # Option 1: If your image is stored locally
 image_path = "Zoom My Life.jpg"  # Update with your actual path
