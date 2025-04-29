@@ -16,6 +16,7 @@ import io
 import google.generativeai as genai
 from langchain_google_genai import ChatGoogleGenerativeAI
 
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -134,10 +135,7 @@ class DocumentChatBot:
         try:
             import sentence_transformers
             from sentence_transformers import SentenceTransformer
-            # Use a smaller model to reduce download size and memory requirements
-            model_name = "all-MiniLM-L6-v2"  # Smaller alternative to all-mpnet-base-v2
-            print(f"Loading embedding model: {model_name}")
-            self.embedding_model = HuggingFaceEmbeddings(model_name=f"sentence-transformers/{model_name}")
+            self.embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
         except Exception as e:
             print(f"Error loading embedding model: {e}")
             return None, f"Failed to load embeddings model: {str(e)}"
