@@ -11,3 +11,4 @@ PyPDF2
 pypdf
 python-dotenv
 numpy
+huggingface_hub[hf_xet]
