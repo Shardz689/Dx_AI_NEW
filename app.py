@@ -130,43 +130,50 @@ class DocumentChatBot:
         self.followup_context = {"asked": False, "round": 0}
 
     def create_vectordb(self):
-        """Create vector database from hardcoded PDF documents"""
-        pdf_files = [Path(pdf_file) for pdf_file in HARDCODED_PDF_FILES if Path(pdf_file).exists()]
-    
-        if not pdf_files:
-            return None, "No PDF files found at the specified paths."
-    
-        loaders = [PyPDFLoader(str(pdf_file)) for pdf_file in pdf_files]
-        pages = []
-        for loader in loaders:
-            pages.extend(loader.load())
-    
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1024,
-            chunk_overlap=64
-        )
-        splits = text_splitter.split_documents(pages)
-    
-        # Initialize embedding model
-        try:
-            # Initialize the embedding model properly
-            from sentence_transformers import SentenceTransformer
-            model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', cache_folder='./cache')  # Model without sentence-transformers/ prefix
-            print(f"Loading embedding model: {model_name}")
-            
-            # Make sure embedding model is initialized
-            if not self.embedding_model:
-                self.embedding_model = HuggingFaceEmbeddings(
-                    model_name=model_name,
-                    cache_folder='./cache',
-                    encode_kwargs={'normalize_embeddings': True}
-                )
-            
-            vectordb = FAISS.from_documents(splits, self.embedding_model)
-            return vectordb, "Vector database created successfully."
-        except Exception as e:
-            print(f"Error loading embedding model: {e}")
-            return None, f"Failed to load embeddings model: {str(e)}"
+            """Create vector database from hardcoded PDF documents"""
+            pdf_files = [Path(pdf_file) for pdf_file in HARDCODED_PDF_FILES if Path(pdf_file).exists()]
+        
+            if not pdf_files:
+                return None, "No PDF files found at the specified paths."
+        
+            loaders = [PyPDFLoader(str(pdf_file)) for pdf_file in pdf_files]
+            pages = []
+            for loader in loaders:
+                pages.extend(loader.load())
+        
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1024,
+                chunk_overlap=64
+            )
+            splits = text_splitter.split_documents(pages)
+        
+            # Initialize embedding model
+            try:
+                # Try SentenceTransformer directly instead of HuggingFaceEmbeddings
+                model_name = 'sentence-transformers/all-MiniLM-L6-v2'
+                print(f"Loading embedding model: {model_name}")
+                
+                sentence_model = SentenceTransformer(model_name, cache_folder='./cache')
+                
+                # Create a wrapper to make it compatible with LangChain
+                from langchain.embeddings.base import Embeddings
+                
+                class SentenceTransformerEmbeddings(Embeddings):
+                    def __init__(self, model):
+                        self.model = model
+                        
+                    def embed_documents(self, texts):
+                        return self.model.encode(texts, normalize_embeddings=True).tolist()
+                        
+                    def embed_query(self, text):
+                        return self.model.encode(text, normalize_embeddings=True).tolist()
+                
+                embeddings = SentenceTransformerEmbeddings(sentence_model)
+                vectordb = FAISS.from_documents(splits, embeddings)
+                return vectordb, "Vector database created successfully."
+            except Exception as e:
+                print(f"Error loading embedding model: {e}")
+                return None, f"Failed to load embeddings model: {str(e)}"
 
     def is_medical_query(self, query: str) -> Tuple[bool, str]:
         """
