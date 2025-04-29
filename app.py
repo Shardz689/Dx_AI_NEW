@@ -1003,7 +1003,7 @@ def main():
     with col1:
         st.image(logo, width=60)  # Adjust width as needed
     with col2:
-        st.markdown("# Medical Document Chat Assistant")
+        st.markdown("# DxAI-Agent")
     
 
     # Initialize session state variables if they don't exist
