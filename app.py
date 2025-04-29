@@ -15,7 +15,7 @@ import io
 # Import Gemini API
 import google.generativeai as genai
 from langchain_google_genai import ChatGoogleGenerativeAI
-
+from sentence_transformers import SentenceTransformer
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFLoader
