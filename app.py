@@ -135,7 +135,7 @@ class DocumentChatBot:
         try:
             import sentence_transformers
             from sentence_transformers import SentenceTransformer
-            self.embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+            model = SentenceTransformer('all-MiniLM-L6-v2')
         except Exception as e:
             print(f"Error loading embedding model: {e}")
             return None, f"Failed to load embeddings model: {str(e)}"
