@@ -1054,7 +1054,7 @@ def main():
     # Display logo and title side by side
     col1, col2 = st.columns([1, 10])
     with col1:
-        st.image(logo, width=300)  # Adjust width as needed
+        st.image(logo, width=600)  # Adjust width as needed
     with col2:
         st.markdown("# DxAI-Agent")
     
