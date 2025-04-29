@@ -137,10 +137,7 @@ class DocumentChatBot:
             import os
             cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
             os.makedirs(cache_dir, exist_ok=True)
-            # Use a smaller model to reduce download size and memory requirements
-            model_name = "all-MiniLM-L6-v2"  # Smaller alternative to all-mpnet-base-v2
-            print(f"Loading embedding model: {model_name}")
-            self.embedding_model = HuggingFaceEmbeddings(model_name=f"sentence-transformers/{model_name}", cache_folder=cache_dir)
+            self.embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2", cache_folder=cache_dir)
             
         except Exception as e:
             print(f"Error loading embedding model: {e}")
