@@ -135,7 +135,7 @@ class DocumentChatBot:
         try:
             import sentence_transformers
             from sentence_transformers import SentenceTransformer
-            model = SentenceTransformer('all-MiniLM-L6-v2')
+            model = SentenceTransformer('all-MiniLM-L6-v2', cache_folder='./cache')
         except Exception as e:
             print(f"Error loading embedding model: {e}")
             return None, f"Failed to load embeddings model: {str(e)}"
