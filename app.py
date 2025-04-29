@@ -144,6 +144,53 @@ class DocumentChatBot:
         vectordb = FAISS.from_documents(splits, self.embedding_model)
         return vectordb, "Vector database created successfully."
 
+    def is_medical_query(self, query: str) -> Tuple[bool, str]:
+        """
+        Check if the query is relevant to the medical domain.
+        Returns a tuple of (is_relevant, reason)
+        """
+        cache_key = {"type": "medical_relevance", "query": query}
+        cached = get_cached(cache_key)
+        if cached:
+            return cached
+    
+        medical_relevance_prompt = f"""
+        Determine if the following query is related to medical topics, health concerns, symptoms, treatments, 
+        diseases, or other healthcare topics. 
+        
+        Query: "{query}"
+        
+        Return ONLY a JSON object with this format:
+        {{
+            "is_medical": true/false,
+            "confidence": 0.0-1.0,
+            "reasoning": "brief explanation"
+        }}
+        """
+        
+        try:
+            response = self.local_generate(medical_relevance_prompt, max_tokens=250)
+            json_match = re.search(r'\{[\s\S]*\}', response)
+            
+            if json_match:
+                data = json.loads(json_match.group(0))
+                is_medical = data.get("is_medical", False)
+                confidence = data.get("confidence", 0.0)
+                reasoning = data.get("reasoning", "")
+                
+                if is_medical and confidence >= 0.6:
+                    result = (True, "")
+                else:
+                    result = (False, reasoning)
+                
+                set_cached(cache_key, result)
+                return result
+        except Exception as e:
+            print(f"Error checking medical relevance: {e}")
+        
+        # Default fallback - allow the query 
+        return (True, "")
+
     def initialize_qa_chain(self):
         """Initialize the QA chain with Gemini Flash 1.5 and vector database"""
         if self.qa_chain is None:
@@ -219,93 +266,115 @@ class DocumentChatBot:
                 return f"Error generating response. Please try again."
 
     def identify_missing_info(self, user_query: str, conversation_history: List[Tuple[str, str]]) -> List[str]:
-          """Identifies what critical medical information is missing from user query with conversation context"""
-
-          # Convert conversation history to a string to provide context
-          context = ""
-          # Only include the last 3 exchanges for context
-          recent_history = conversation_history[-3:] if len(conversation_history) > 3 else conversation_history
-          for user_msg, bot_msg in recent_history:
-              context += f"User: {user_msg}\n"
-              if bot_msg:
-                  context += f"Assistant: {bot_msg}\n"
-
-          # Increment the follow-up round counter
-          self.followup_context["round"] += 1
-
-          # If we've already asked follow-up questions twice, don't ask more
-          if self.followup_context["asked"] and self.followup_context["round"] >= 2:
-              print("⚠️ Already asked follow-ups twice, proceeding with available information")
-              return []
-
-          cache_key = {"type": "missing_info", "query": user_query, "context": context}
-          cached = get_cached(cache_key)
-          if cached:
-              print("🧠 Using cached missing info assessment.")
-              return cached
-
-          MISSING_INFO_PROMPT = f"""
-          You are a medical assistant analyzing a patient query and conversation.
-          Determine if any CRITICAL information is still missing to properly assess their situation.
-
-          Conversation history:
-          {context}
-
-          Latest patient input: "{user_query}"
-
-          CRITICALLY EVALUATE if you have enough information to provide a reasonable medical assessment.
-          Only ask follow-up questions if ABSOLUTELY NECESSARY for basic assessment.
-
-          Rules for determining if information is sufficient:
-          1. If the patient has provided symptoms, duration, and basic severity, that's usually enough
-          2. If you've already asked follow-up questions once, avoid asking more unless critical
-          3. If a general assessment can be made with current information, proceed without more questions
-          4. ONLY ask about truly essential missing information
-
-          Return your answer in this exact JSON format:
-          {{
-              "needs_followup": true/false,
-              "reasoning": "brief explanation of why more information is needed or not",
-              "missing_info": [
-                  {{"question": "specific follow-up question 1"}}
-              ]
-          }}
-
-          Only include 1 question if follow-up is needed.
-          """
-
-          try:
-              response = self.local_generate(MISSING_INFO_PROMPT, max_tokens=500).strip()
-              print("\nRaw Missing Info Evaluation:\n", response)
-
-              # Parse JSON format response
-              json_match = re.search(r'\{[\s\S]*\}', response)
-              if json_match:
-                  json_str = json_match.group(0)
-                  try:
-                      data = json.loads(json_str)
-                      needs_followup = data.get("needs_followup", False)
-
-                      if not needs_followup:
-                          print("✅ Sufficient information available, no follow-up needed")
-                          return []
-
-                      missing_info = [item["question"] for item in data.get("missing_info", [])]
-                      reasoning = data.get("reasoning", "Need more specific information")
-
-                      if missing_info:
-                          print(f"❓ Missing Information Identified: {missing_info}")
-                          print(f"Reasoning: {reasoning}")
-                          # Mark that we've asked follow-up questions
-                          self.followup_context["asked"] = True
-                          set_cached(cache_key, missing_info)
-                          return missing_info
-                  except json.JSONDecodeError:
-                      print("⚠️ Could not parse missing info JSON from LLM response")
-          except Exception as e:
-              print(f"⚠️ Error identifying missing information: {e}")
-
-          return []
+            """Identifies what critical medical information is missing from user query with conversation context"""
+        
+            # Convert conversation history to a string to provide context
+            context = ""
+            # Only include the last 3 exchanges for context
+            recent_history = conversation_history[-3:] if len(conversation_history) > 3 else conversation_history
+            for user_msg, bot_msg in recent_history:
+                context += f"User: {user_msg}\n"
+                if bot_msg:
+                    context += f"Assistant: {bot_msg}\n"
+        
+            # Increment the follow-up round counter
+            self.followup_context["round"] += 1
+        
+            # If we've already asked follow-up questions twice, don't ask more
+            if self.followup_context["asked"] and self.followup_context["round"] >= 2:
+                print("⚠️ Already asked follow-ups twice, proceeding with available information")
+                return []
+            
+            # Check if we have enough context already
+            if len(conversation_history) >= 2:
+                # Don't ask follow-up if we've had multiple exchanges already
+                return []
+        
+            cache_key = {"type": "missing_info", "query": user_query, "context": context}
+            cached = get_cached(cache_key)
+            if cached:
+                print("🧠 Using cached missing info assessment.")
+                return cached
+            
+            # First check if we have knowledge graph or RAG results
+            has_results = False
+            try:
+                # Process with KG to see if we get results
+                kg_data = self.process_with_knowledge_graph(user_query)
+                if kg_data.get("disease") or kg_data.get("symptoms"):
+                    has_results = True
+                    print("✅ Knowledge graph returned results, no follow-up needed")
+                
+                # If we have results, don't ask follow-up questions
+                if has_results:
+                    return []
+            except Exception:
+                pass  # Continue to LLM evaluation if KG fails
+        
+            MISSING_INFO_PROMPT = f"""
+            You are a medical assistant analyzing a patient query and conversation.
+            Determine if any CRITICAL information is still missing to properly assess their situation.
+        
+            Conversation history:
+            {context}
+        
+            Latest patient input: "{user_query}"
+        
+            CRITICALLY EVALUATE if you have enough information to provide a reasonable medical assessment.
+            Only ask follow-up questions if ABSOLUTELY NECESSARY for basic assessment.
+        
+            Rules for determining if information is sufficient:
+            1. If the patient has provided symptoms, duration, and basic severity, that's usually enough
+            2. If you've already asked follow-up questions once, avoid asking more unless critical
+            3. If a general assessment can be made with current information, proceed without more questions
+            4. ONLY ask about truly essential missing information
+            5. If the query is about general medical information (not about a specific case), NO follow-up needed
+            6. If the question is about treatments, medication, or general information, NO follow-up needed
+        
+            Return your answer in this exact JSON format:
+            {{
+                "needs_followup": true/false,
+                "reasoning": "brief explanation of why more information is needed or not",
+                "missing_info": [
+                    {{"question": "specific follow-up question 1"}}
+                ]
+            }}
+        
+            Only include 1 question if follow-up is needed.
+            """
+        
+            try:
+                response = self.local_generate(MISSING_INFO_PROMPT, max_tokens=500).strip()
+                print("\nRaw Missing Info Evaluation:\n", response)
+        
+                # Parse JSON format response
+                json_match = re.search(r'\{[\s\S]*\}', response)
+                if json_match:
+                    json_str = json_match.group(0)
+                    try:
+                        data = json.loads(json_str)
+                        needs_followup = data.get("needs_followup", False)
+                        
+                        if not needs_followup:
+                            print("✅ Sufficient information available, no follow-up needed")
+                            return []
+                        
+                        missing_info = [item["question"] for item in data.get("missing_info", [])]
+                        reasoning = data.get("reasoning", "Need more specific information")
+                        
+                        if missing_info:
+                            print(f"❓ Missing Information Identified: {missing_info}")
+                            print(f"Reasoning: {reasoning}")
+                            # Mark that we've asked follow-up questions
+                            self.followup_context["asked"] = True
+                            set_cached(cache_key, missing_info)
+                            return missing_info
+                    except json.JSONDecodeError:
+                        print("⚠️ Could not parse missing info JSON from LLM response")
+            except Exception as e:
+                print(f"⚠️ Error identifying missing information: {e}")
+            
+            return []
 
     def get_kg_symptoms(self) -> Tuple[List[str], np.ndarray]:
         """Get all symptoms from Neo4j knowledge graph"""
@@ -978,31 +1047,6 @@ def main():
         page_icon=f"data:image/jpeg;base64,{icon}",
         layout="wide"
     )
-    def handle_file_upload():
-      uploaded_files = st.sidebar.file_uploader("Upload PDF documents", type="pdf", accept_multiple_files=True)
-      if uploaded_files:
-          with st.sidebar:
-            with st.spinner("Processing uploaded documents..."):
-              # Save uploaded files to a temporary location
-              temp_dir = "./temp_uploads"
-              os.makedirs(temp_dir, exist_ok=True)
-              
-              file_paths = []
-              for uploaded_file in uploaded_files:
-                  file_path = os.path.join(temp_dir, uploaded_file.name)
-                  with open(file_path, "wb") as f:
-                      f.write(uploaded_file.getbuffer())
-                  file_paths.append(file_path)
-              
-              # Update the hardcoded PDF files list
-              st.session_state.chatbot.hardcoded_pdf_files = file_paths
-              
-              # Reinitialize the vector database
-              st.session_state.chatbot.vectordb = None
-              success, message = st.session_state.chatbot.initialize_qa_chain()
-              st.session_state.init_message = message
-              
-              st.sidebar.success(f"Uploaded {len(file_paths)} document(s): {message}")
                   
     # Title and description
     logo = Image.open(image_path)
@@ -1014,18 +1058,14 @@ def main():
     with col2:
         st.markdown("# DxAI-Agent")
     
-
     # Initialize session state variables if they don't exist
     if 'chatbot' not in st.session_state:
         st.session_state.chatbot = DocumentChatBot()
-        init_success, init_message = st.session_state.chatbot.initialize_qa_chain()
-        st.session_state.init_message = init_message
+        # Initialize silently without displaying status message
+        st.session_state.chatbot.initialize_qa_chain()
 
     if 'messages' not in st.session_state:
         st.session_state.messages = []
-
-    # Display initialization status
-    st.sidebar.info(f"Initialization Status: {st.session_state.init_message}")
 
     # User type selection dropdown in sidebar
     user_type = st.sidebar.selectbox(
@@ -1033,13 +1073,47 @@ def main():
         ["User / Family", "Physician"],
         index=0
     )
-
-    handle_file_upload()
+    
+    # Add sidebar info without initialization status
+    st.sidebar.info("DxAI-Agent helps answer medical questions using our medical knowledge base.")
 
     # Tabs
     tab1, tab2 = st.tabs(["Chat", "About"])
 
     with tab1:
+        # Examples section at the top
+        st.subheader("Try these examples")
+        examples = [
+            "What are treatments for cough and cold?",
+            "I have a headache and sore throat, what could it be?",
+            "What home remedies help with flu symptoms?"
+        ]
+
+        # Create columns for example buttons
+        cols = st.columns(len(examples))
+        for i, col in enumerate(cols):
+            if col.button(examples[i], key=f"example_{i}"):
+                # Add the example text to messages as user input
+                st.session_state.messages.append((examples[i], True))
+                
+                # Generate response for the example
+                is_medical, reason = st.session_state.chatbot.is_medical_query(examples[i])
+                
+                # Process as a medical query (we know these examples are medical)
+                with st.spinner("Generating response..."):
+                    bot_response, sources = st.session_state.chatbot.generate_response(examples[i], user_type)
+                    
+                    # Format sources
+                    source_info = "\n\nReferences:\n" + "\n\n".join([f"- {src}" for src in sources]) if sources else ""
+                    full_response = bot_response + source_info
+                    
+                    # Add to state and chat history
+                    st.session_state.messages.append((full_response, False))
+                    st.session_state.chatbot.chat_history.append((examples[i], full_response))
+                
+                # Force rerun to show the updated conversation
+                st.rerun()
+        
         # Display chat messages
         for i, (msg, is_user) in enumerate(st.session_state.messages):
             if is_user:
@@ -1047,7 +1121,7 @@ def main():
             else:
                 with st.chat_message("assistant"):
                     st.write(msg)
-
+                    
                     # Add feedback buttons
                     col1, col2 = st.columns([1, 10])
                     with col1:
@@ -1069,47 +1143,58 @@ def main():
                             )
                             st.toast(feedback_result)
 
-        # Message input
+        # Chat input at the bottom of the conversation
+        st.container()
+        # This creates space to push the input to the bottom
+        st.write("  \n" * 2)  
+
+        # Message input - now will appear at the bottom
         if prompt := st.chat_input("Ask your medical question..."):
-            st.session_state.messages.append((prompt, True))
-            st.chat_message("user").write(prompt)
-
-            with st.chat_message("assistant"):
-                with st.spinner("Thinking..."):
-                    bot_response, sources = st.session_state.chatbot.generate_response(prompt, user_type)
-
-                    # Check if this is a follow-up question (no sources)
-                    if not sources:
-                        # It's a follow-up question, don't add references
-                        full_response = bot_response
-                    else:
-                        # Normal response with references
-                        source_info = "\n\nReferences:\n" + "\n\n".join([f"- {src}" for src in sources]) if sources else ""
+            # First, check if this is a medical query
+            is_medical, reason = st.session_state.chatbot.is_medical_query(prompt)
+            
+            if not is_medical:
+                st.session_state.messages.append((prompt, True))
+                st.chat_message("user").write(prompt)
+                
+                non_medical_response = (
+                    f"I'm a medical assistant focused on health-related questions. "
+                    f"Your question doesn't appear to be medical in nature. "
+                    f"Please ask me about health conditions, symptoms, treatments, or other medical topics."
+                )
+                
+                st.session_state.messages.append((non_medical_response, False))
+                st.chat_message("assistant").write(non_medical_response)
+            else:
+                st.session_state.messages.append((prompt, True))
+                st.chat_message("user").write(prompt)
+                
+                with st.chat_message("assistant"):
+                    with st.spinner("Thinking..."):
+                        bot_response, sources = st.session_state.chatbot.generate_response(prompt, user_type)
+                        
+                        # Format sources with improved citation
+                        formatted_sources = []
+                        for src in sources:
+                            if "rawdata.pdf" in src or "dxbook" in src.lower():
+                                # Extract page number if available
+                                page_match = re.search(r'page[_\s]?(\d+)', src, re.IGNORECASE)
+                                page_num = page_match.group(1) if page_match else "N/A"
+                                # Format as internal data with page reference
+                                formatted_sources.append(f"[Internal Data: DxBook, Page {page_num}] {src}")
+                            else:
+                                formatted_sources.append(src)
+                        
+                        # Add formatted sources to response
+                        source_info = "\n\nReferences:\n" + "\n\n".join([f"- {src}" for src in formatted_sources]) if formatted_sources else ""
                         full_response = bot_response + source_info
-
-                    st.write(full_response)
-
-                    # Add message to session state
-                    st.session_state.messages.append((full_response, False))
-
-                    # Add message to chatbot's chat history
-                    st.session_state.chatbot.chat_history.append((prompt, full_response))
-
-        # Examples section
-        st.subheader("Try these examples")
-        examples = [
-            "What are treatments for cough and cold?",
-            "I have a headache and sore throat, what could it be?",
-            "What home remedies help with flu symptoms?"
-        ]
-
-        cols = st.columns(len(examples))
-        for i, col in enumerate(cols):
-            # Use the actual example text as the button label
-            if col.button(examples[i], key=f"example_{i}"):
-                # When an example is clicked, it acts like user input
-                st.session_state.messages.append((examples[i], True))
-                st.rerun()
+                        
+                        st.write(full_response)
+                        st.session_state.messages.append((full_response, False))
+                        st.session_state.chatbot.chat_history.append((prompt, full_response))
+            
+            # Force a rerun to update the UI immediately
+            st.rerun()
 
         # Physician feedback section
         st.divider()
