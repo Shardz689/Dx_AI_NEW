@@ -70,7 +70,7 @@ def get_image_as_base64(file_path):
         return base64.b64encode(image_file.read()).decode()
 
 # Option 1: If your image is stored locally
-image_path = "path/to/zoom_my_life_logo.jpg"  # Update with your actual path
+image_path = "Zoom My Life.jpg"  # Update with your actual path
 icon = get_image_as_base64(image_path)
 
 # Cache for expensive operations
@@ -966,7 +966,7 @@ def main():
     # Set page title and favicon
     st.set_page_config(
         page_title="DxAI-Agent",
-        page_icon="🏥",
+        page_icon=f"data:image/jpeg;base64,{icon}",
         layout="wide"
     )
     def handle_file_upload():
@@ -996,8 +996,15 @@ def main():
               st.sidebar.success(f"Uploaded {len(file_paths)} document(s): {message}")
                   
     # Title and description
-    st.title("🏥 Medical Document Chat Assistant")
-    st.markdown("Combines Retrieval (RAG) + Knowledge Graph (KG) + Gemini Flash 1.5 + Reflection")
+    logo = Image.open(image_path)
+
+    # Display logo and title side by side
+    col1, col2 = st.columns([1, 10])
+    with col1:
+        st.image(logo, width=60)  # Adjust width as needed
+    with col2:
+        st.markdown("# Medical Document Chat Assistant")
+    
 
     # Initialize session state variables if they don't exist
     if 'chatbot' not in st.session_state:
@@ -1089,7 +1096,8 @@ def main():
 
         cols = st.columns(len(examples))
         for i, col in enumerate(cols):
-            if col.button(f"Example {i+1}", key=f"example_{i}"):
+            # Use the actual example text as the button label
+            if col.button(examples[i], key=f"example_{i}"):
                 # When an example is clicked, it acts like user input
                 st.session_state.messages.append((examples[i], True))
                 st.rerun()
