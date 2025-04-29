@@ -131,7 +131,16 @@ class DocumentChatBot:
         splits = text_splitter.split_documents(pages)
 
         # Initialize embedding model
-        self.embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
+        try:
+            import sentence_transformers
+            from sentence_transformers import SentenceTransformer
+            # Use a smaller model to reduce download size and memory requirements
+            model_name = "all-MiniLM-L6-v2"  # Smaller alternative to all-mpnet-base-v2
+            print(f"Loading embedding model: {model_name}")
+            self.embedding_model = HuggingFaceEmbeddings(model_name=f"sentence-transformers/{model_name}")
+        except Exception as e:
+            print(f"Error loading embedding model: {e}")
+            return None, f"Failed to load embeddings model: {str(e)}"
         vectordb = FAISS.from_documents(splits, self.embedding_model)
         return vectordb, "Vector database created successfully."
 
