@@ -117,7 +117,6 @@ class DocumentChatBot:
         # Initialize embedding model during initialization
         try:
             self.embedding_model = HuggingFaceEmbeddings(
-                from sentence_transformers import SentenceTransformer
                 model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', cache_folder='./cache'),  # Without sentence-transformers/ prefix
                 cache_folder='./cache',
                 encode_kwargs={'normalize_embeddings': True}
@@ -424,7 +423,6 @@ class DocumentChatBot:
                 if self.embedding_model is None:
                     # Initialize with the correct model name
                     self.embedding_model = HuggingFaceEmbeddings(
-                        from sentence_transformers import SentenceTransformer
                         model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', cache_folder='./cache'),  # Without sentence-transformers/ prefix
                         cache_folder='./cache',
                         encode_kwargs={'normalize_embeddings': True}
