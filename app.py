@@ -106,41 +106,61 @@ def set_cached(key, value):
 # DocumentChatBot class
 class DocumentChatBot:
     def __init__(self):
-      self.qa_chain = None
-      self.vectordb = None
-      self.chat_history = []
-      self.embedding_model = None
-      self.llm = None
-      self.followup_context = {"asked": False, "round": 0}
+        self.qa_chain = None
+        self.vectordb = None
+        self.chat_history = []
+        
+        # Initialize embedding model during initialization
+        try:
+            self.embedding_model = HuggingFaceEmbeddings(
+                model_name='all-MiniLM-L6-v2',  # Without sentence-transformers/ prefix
+                cache_folder='./cache',
+                encode_kwargs={'normalize_embeddings': True}
+            )
+        except Exception as e:
+            print(f"Warning: Could not initialize embedding model: {e}")
+            self.embedding_model = None
+            
+        self.llm = None
+        self.followup_context = {"asked": False, "round": 0}
 
     def create_vectordb(self):
         """Create vector database from hardcoded PDF documents"""
         pdf_files = [Path(pdf_file) for pdf_file in HARDCODED_PDF_FILES if Path(pdf_file).exists()]
-
+    
         if not pdf_files:
             return None, "No PDF files found at the specified paths."
-
+    
         loaders = [PyPDFLoader(str(pdf_file)) for pdf_file in pdf_files]
         pages = []
         for loader in loaders:
             pages.extend(loader.load())
-
+    
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1024,
             chunk_overlap=64
         )
         splits = text_splitter.split_documents(pages)
-
+    
         # Initialize embedding model
         try:
-            import sentence_transformers
-            from sentence_transformers import SentenceTransformer
-            model = SentenceTransformer('all-MiniLM-L6-v2', cache_folder='./cache')
+            # Initialize the embedding model properly
+            model_name = 'all-MiniLM-L6-v2'  # Model without sentence-transformers/ prefix
+            print(f"Loading embedding model: {model_name}")
+            
+            # Make sure embedding model is initialized
+            if not self.embedding_model:
+                self.embedding_model = HuggingFaceEmbeddings(
+                    model_name=model_name,
+                    cache_folder='./cache',
+                    encode_kwargs={'normalize_embeddings': True}
+                )
+            
+            vectordb = FAISS.from_documents(splits, self.embedding_model)
+            return vectordb, "Vector database created successfully."
         except Exception as e:
             print(f"Error loading embedding model: {e}")
             return None, f"Failed to load embeddings model: {str(e)}"
-        vectordb = FAISS.from_documents(splits, self.embedding_model)
-        return vectordb, "Vector database created successfully."
 
     def is_medical_query(self, query: str) -> Tuple[bool, str]:
         """
@@ -375,30 +395,35 @@ class DocumentChatBot:
             return []
 
     def get_kg_symptoms(self) -> Tuple[List[str], np.ndarray]:
-        """Get all symptoms from Neo4j knowledge graph"""
-        cache_key = "kg_symptoms"
-        cached = get_cached(cache_key)
-        if cached:
-            print("🧠 Using cached symptoms list.")
-            return cached
-
-        try:
-            with GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH) as driver:
-                query = "MATCH (s:symptom) RETURN DISTINCT s.Name"
-                result = driver.session().run(query)
-                kg_symptoms = [record["s.Name"] for record in result]
-
-            if self.embedding_model is None:
-                self.embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
-
-            embeddings = self.embedding_model.embed_documents(kg_symptoms)
-            result = (kg_symptoms, np.array(embeddings))
-            set_cached(cache_key, result)
-            return result
-        except Exception as e:
-            print(f"⚠️ Error querying Neo4j for symptoms: {e}")
-            return [], np.array([])
-
+            """Get all symptoms from Neo4j knowledge graph"""
+            cache_key = "kg_symptoms"
+            cached = get_cached(cache_key)
+            if cached:
+                print("🧠 Using cached symptoms list.")
+                return cached
+        
+            try:
+                with GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH) as driver:
+                    query = "MATCH (s:symptom) RETURN DISTINCT s.Name"
+                    result = driver.session().run(query)
+                    kg_symptoms = [record["s.Name"] for record in result]
+        
+                if self.embedding_model is None:
+                    # Initialize with the correct model name
+                    self.embedding_model = HuggingFaceEmbeddings(
+                        model_name="all-MiniLM-L6-v2",  # Without sentence-transformers/ prefix
+                        cache_folder='./cache',
+                        encode_kwargs={'normalize_embeddings': True}
+                    )
+        
+                embeddings = self.embedding_model.embed_documents(kg_symptoms)
+                result = (kg_symptoms, np.array(embeddings))
+                set_cached(cache_key, result)
+                return result
+            except Exception as e:
+                print(f"⚠️ Error querying Neo4j for symptoms: {e}")
+                return [], np.array([])
+                      
     def extract_symptoms(self, user_query: str) -> Tuple[List[str], float]:
         """Extract symptoms from user query with confidence scores"""
         cache_key = {"type": "symptom_extraction", "query": user_query}
@@ -1140,15 +1165,16 @@ def main():
                                 user_type
                             )
                             st.toast(feedback_result)
-
-        # Chat input at the bottom of the conversation
-        st.container()
+                                           
+        input_container = st.container()
+    
         # This creates space to push the input to the bottom
         st.write("  \n" * 2)  
 
         # Message input - now will appear at the bottom
         if prompt := st.chat_input("Ask your medical question..."):
             # First, check if this is a medical query
+            st.session_state.messages.append((prompt, True))                               
             is_medical, reason = st.session_state.chatbot.is_medical_query(prompt)
             
             if not is_medical:
@@ -1164,35 +1190,32 @@ def main():
                 st.session_state.messages.append((non_medical_response, False))
                 st.chat_message("assistant").write(non_medical_response)
             else:
-                st.session_state.messages.append((prompt, True))
-                st.chat_message("user").write(prompt)
+                # Process the medical query with spinner
+                with st.spinner("Thinking..."):
+                    bot_response, sources = st.session_state.chatbot.generate_response(prompt, user_type)
+                    
+                    # Format sources with improved citation
+                    formatted_sources = []
+                    for src in sources:
+                        if "rawdata.pdf" in src or "dxbook" in src.lower():
+                            # Extract page number if available
+                            page_match = re.search(r'page[_\s]?(\d+)', src, re.IGNORECASE)
+                            page_num = page_match.group(1) if page_match else "N/A"
+                            # Format as internal data with page reference
+                            formatted_sources.append(f"[Internal Data: DxBook, Page {page_num}] {src}")
+                        else:
+                            formatted_sources.append(src)
+                    
+                    # Add formatted sources to response
+                    source_info = "\n\nReferences:\n" + "\n\n".join([f"- {src}" for src in formatted_sources]) if formatted_sources else ""
+                    full_response = bot_response + source_info
+                    
+                    # Add to state and chat history
+                    st.session_state.messages.append((full_response, False))
+                    st.session_state.chatbot.chat_history.append((prompt, full_response))
                 
-                with st.chat_message("assistant"):
-                    with st.spinner("Thinking..."):
-                        bot_response, sources = st.session_state.chatbot.generate_response(prompt, user_type)
-                        
-                        # Format sources with improved citation
-                        formatted_sources = []
-                        for src in sources:
-                            if "rawdata.pdf" in src or "dxbook" in src.lower():
-                                # Extract page number if available
-                                page_match = re.search(r'page[_\s]?(\d+)', src, re.IGNORECASE)
-                                page_num = page_match.group(1) if page_match else "N/A"
-                                # Format as internal data with page reference
-                                formatted_sources.append(f"[Internal Data: DxBook, Page {page_num}] {src}")
-                            else:
-                                formatted_sources.append(src)
-                        
-                        # Add formatted sources to response
-                        source_info = "\n\nReferences:\n" + "\n\n".join([f"- {src}" for src in formatted_sources]) if formatted_sources else ""
-                        full_response = bot_response + source_info
-                        
-                        st.write(full_response)
-                        st.session_state.messages.append((full_response, False))
-                        st.session_state.chatbot.chat_history.append((prompt, full_response))
-            
-            # Force a rerun to update the UI immediately
-            st.rerun()
+                # Force a rerun to update the UI
+                st.rerun()
 
         # Physician feedback section
         st.divider()
