@@ -4,7 +4,7 @@ from pathlib import Path
 import csv
 import os
 import re
-import torch._C 
+import torch
 import json
 import numpy as np
 from datetime import datetime
@@ -67,8 +67,12 @@ THRESHOLDS = {
 
 # Load and convert the image to base64
 def get_image_as_base64(file_path):
+    if not os.path.exists(file_path):
+        print(f"Warning: Image file not found at {file_path}")
+        return ""  # Return empty string if file not found
+    
     with open(file_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode()
+        return base64.b64encode(image_file.read()).decode())
 
 # Option 1: If your image is stored locally
 image_path = "Zoom My Life.jpg"  # Update with your actual path
@@ -113,7 +117,7 @@ class DocumentChatBot:
         # Initialize embedding model during initialization
         try:
             self.embedding_model = HuggingFaceEmbeddings(
-                model_name='all-MiniLM-L6-v2',  # Without sentence-transformers/ prefix
+                model_name='sentence-transformers/all-MiniLM-L6-v2',  # Without sentence-transformers/ prefix
                 cache_folder='./cache',
                 encode_kwargs={'normalize_embeddings': True}
             )
