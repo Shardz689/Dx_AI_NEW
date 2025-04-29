@@ -9,7 +9,9 @@ import json
 import numpy as np
 from datetime import datetime
 from typing import List, Tuple, Dict, Optional
-
+import base64
+from PIL import Image
+import io
 # Import Gemini API
 import google.generativeai as genai
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -36,6 +38,7 @@ from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 from neo4j import GraphDatabase
 
+
 # Configuration
 # Gemini API key
 # Add this near the top after imports
@@ -60,6 +63,15 @@ THRESHOLDS = {
     "disease_matching": 0.5,
     "knowledge_graph": 0.6,
 }
+
+# Load and convert the image to base64
+def get_image_as_base64(file_path):
+    with open(file_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode()
+
+# Option 1: If your image is stored locally
+image_path = "path/to/zoom_my_life_logo.jpg"  # Update with your actual path
+icon = get_image_as_base64(image_path)
 
 # Cache for expensive operations
 CACHE = {}
@@ -953,7 +965,7 @@ feedback_storage = []
 def main():
     # Set page title and favicon
     st.set_page_config(
-        page_title="Medical Document Chat Assistant",
+        page_title="DxAI-Agent",
         page_icon="🏥",
         layout="wide"
     )
