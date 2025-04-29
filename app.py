@@ -4,7 +4,7 @@ from pathlib import Path
 import csv
 import os
 import re
-import torch
+import torch._C 
 import json
 import numpy as np
 from datetime import datetime
