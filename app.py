@@ -71,7 +71,7 @@ HARDCODED_PDF_FILES = [
 ]
 
 # For testing purposes - update with your actual list
-known_diseases = ["covid-19", "flu", "common cold", "migraine", "diabetes"]
+known_diseases = ["hypertension", "type 2 diabetes mellitus", "respiratory infections", "obesity", "cardiovascular disease"]
 
 # Execution state enum
 class ExecutionState:
