@@ -1156,9 +1156,9 @@ def main():
             else:
                 with st.chat_message("assistant"):
                     st.write(msg)
-                    
-                    # Add feedback buttons
-                    col1, col2 = st.columns([1, 10])
+        
+                    # Add feedback buttons side by side
+                    col1, col2 = st.columns([1, 1])
                     with col1:
                         if st.button("👍", key=f"thumbs_up_{i}"):
                             feedback_result = vote_message(
@@ -1168,7 +1168,7 @@ def main():
                                 user_type
                             )
                             st.toast(feedback_result)
-                    with col1:
+                    with col2:
                         if st.button("👎", key=f"thumbs_down_{i}"):
                             feedback_result = vote_message(
                                 [(st.session_state.messages[i-1][0], msg)] if i > 0 else [("", msg)],
