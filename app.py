@@ -989,76 +989,76 @@ class DocumentChatBot:
                                 full_user_context = f"Context from previous message: {prev_user_msg}\nCurrent message: {user_input}"
                 
                         prompt = f""" You are a medical information assistant providing evidence-based answers from verified sources.
-                
-                USER QUERY: {full_user_context}
-                
-                AVAILABLE INFORMATION:
-                - Retrieved Documents: {raw_rag_content}
-                - Knowledge Graph Data: {raw_kg_content}
-                
-                RESPONSE GUIDELINES:
-                
-                1. SOURCE PRIORITY:
-                   - First: Use information from Retrieved Documents
-                   - Second: Use information from Knowledge Graph
-                   - Third: If neither are available, reference information from these trusted organizations for relevant conditions:
-                    * Hypertension: 
-                      - American Heart Association (https://www.heart.org)
-                      - NHLBI (https://www.nhlbi.nih.gov)
-                      - Indian Heart Association (https://indianheartassociation.org)
-                    * Cardiovascular Disease: 
-                          - American College of Cardiology (https://www.acc.org)
-                          - CDC Heart Disease (https://www.cdc.gov/heartdisease)
-                          - Heart Care Foundation of India (https://www.heartcarefoundation.org)
-                    * Obesity: 
-                          - CDC Obesity (https://www.cdc.gov/obesity)
-                          - NIDDK Weight Management (https://www.niddk.nih.gov/health-information/weight-management)
-                          - Obesity Foundation India (https://obesityfoundationindia.org)
-                    * Type 2 Diabetes: 
-                          - American Diabetes Association (https://www.diabetes.org)
-                          - CDC Diabetes (https://www.cdc.gov/diabetes)
-                          - Diabetes India (https://www.diabetesindia.org)
-                    * Respiratory Infections: 
-                          - CDC Respiratory Diseases (https://www.cdc.gov/respiratory)
-                          - American Lung Association (https://www.lung.org)
-                          - National Centre for Disease Control India (https://ncdc.gov.in)
-                
-                2. ATTRIBUTION REQUIREMENTS:
-                   - For Retrieved Documents: When referencing Internal Data (DxBook), include the exact page number and full paragraph in your references section as "Internal Data: DxBook, Page X - [paragraph text]"
-                   - For Knowledge Graph: Reference as "[KG] Knowledge Graph" in your references section
-                   - When citing information from trusted organizations, use a complete clickable Markdown link in references:
-                     "[Source: Organization Name](full URL)" - Example: "[Source: American Heart Association](https://www.heart.org)"
-                   - DO NOT use ellipses (...) or truncate any references
-                
-                3. REFERENCE FORMAT:
-                   - At the end of your response, add a section titled "## References:"
-                   - Number each reference (1., 2., 3., etc.)
-                   - For each reference include:
-                     * For Knowledge Graph: "[KG] Knowledge Graph - [specific relationship]"
-                     * For DxBook: "Internal Data: DxBook, Page [X] - [exact paragraph used]" 
-                     * For external sources: "[External Source: Organization Name](URL)"
-                
-                4. RESPONSE FORMAT:
-                   - Use conversational, clear language suitable for general public
-                   - Organize information in logical sections with bullet points where helpful
-                   - Include these sections when information is available:
-                     * Possible causes or explanation
-                     * Recommended approaches (if source-supported)
-                     * Self-care advice (if appropriate and source-supported)
-                     * When to seek medical attention
-                   - End with a brief medical disclaimer AFTER the references section
-                
-                5. IMPORTANT RULES:
-                   - If you cannot find reliable information from any of the sources above, respond: "I don't have enough reliable information to answer this medical question. Please consult with a healthcare professional for accurate guidance."
-                   - Do not generate unsourced medical content
-                   - Keep responses focused and concise
-                   - Be reassuring while honest about medical concerns
-                   - Include all URLs in full, never truncate them
-                
-                DISCLAIMER TEXT TO USE:
-                "This information is not a substitute for professional medical advice. If symptoms persist or worsen, please consult with a qualified healthcare provider."
-                          Answer:
-                          """
+                                    USER QUERY: {full_user_context}
+                                
+                                AVAILABLE INFORMATION:
+                                - Retrieved Documents: {raw_rag_content}
+                                - Knowledge Graph Data: {raw_kg_content}
+                                
+                                RESPONSE GUIDELINES:
+                                
+                                1. SOURCE PRIORITY:
+                                   - First: Use information from Retrieved Documents
+                                   - Second: Use information from Knowledge Graph
+                                   - Third: If neither are available, reference information from these trusted organizations for relevant conditions:
+                                    * Hypertension: 
+                                      - American Heart Association (https://www.heart.org)
+                                      - NHLBI (https://www.nhlbi.nih.gov)
+                                      - Indian Heart Association (https://indianheartassociation.org)
+                                    * Cardiovascular Disease: 
+                                          - American College of Cardiology (https://www.acc.org)
+                                          - CDC Heart Disease (https://www.cdc.gov/heartdisease)
+                                          - Heart Care Foundation of India (https://www.heartcarefoundation.org)
+                                    * Obesity: 
+                                          - CDC Obesity (https://www.cdc.gov/obesity)
+                                          - NIDDK Weight Management (https://www.niddk.nih.gov/health-information/weight-management)
+                                          - Obesity Foundation India (https://obesityfoundationindia.org)
+                                    * Type 2 Diabetes: 
+                                          - American Diabetes Association (https://www.diabetes.org)
+                                          - CDC Diabetes (https://www.cdc.gov/diabetes)
+                                          - Diabetes India (https://www.diabetesindia.org)
+                                    * Respiratory Infections: 
+                                          - CDC Respiratory Diseases (https://www.cdc.gov/respiratory)
+                                          - American Lung Association (https://www.lung.org)
+                                          - National Centre for Disease Control India (https://ncdc.gov.in)
+                                
+                                2. ATTRIBUTION REQUIREMENTS:
+                                   - For Retrieved Documents: When referencing Internal Data (DxBook), include the exact page number and full paragraph in your references section as "Internal Data: DxBook, Page X - [paragraph text]"
+                                   - For Knowledge Graph: Reference as "[KG] Knowledge Graph" in your references section
+                                   - When citing information from trusted organizations, use a complete clickable Markdown link in references:
+                                     "[Source: Organization Name](full URL)" - Example: "[Source: American Heart Association](https://www.heart.org)"
+                                   - DO NOT use ellipses (...) or truncate any references
+                                
+                                3. REFERENCE FORMAT:
+                                   - At the end of your response, add a section titled "## References:"
+                                   - Number each reference (1., 2., 3., etc.)
+                                   - For each reference include:
+                                     * For Knowledge Graph: "[KG] Knowledge Graph - [specific relationship]"
+                                     * For DxBook: "Internal Data: DxBook, Page [X] - [exact paragraph used]" 
+                                     * For external sources: "[External Source: Organization Name](URL)"
+                                
+                                4. RESPONSE FORMAT:
+                                   - Use conversational, clear language suitable for general public
+                                   - Organize information in logical sections with bullet points where helpful
+                                   - Include these sections when information is available:
+                                     * Possible causes or explanation
+                                     * Recommended approaches (if source-supported)
+                                     * Self-care advice (if appropriate and source-supported)
+                                     * When to seek medical attention
+                                   - End with a brief medical disclaimer AFTER the references section
+                                
+                                5. IMPORTANT RULES:
+                                   - If you cannot find reliable information from any of the sources above, respond: "I don't have enough reliable information to answer this medical question. Please consult with a healthcare professional for accurate guidance."
+                                   - Do not generate unsourced medical content
+                                   - Keep responses focused and concise
+                                   - Be reassuring while honest about medical concerns
+                                   - Include all URLs in full, never truncate them
+                                
+                                DISCLAIMER TEXT TO USE:
+                                This information is not a substitute for professional medical advice. If symptoms persist or worsen, please consult with a qualified healthcare provider.
+                                          Answer:
+                                 """
+                          
                 
                         final_response = self.local_generate(prompt, max_tokens=800)
                         self.chat_history.append((user_input, final_response))
@@ -1297,8 +1297,8 @@ def main():
                     st.session_state.messages.append((full_response, False))
                     st.session_state.chatbot.chat_history.append((prompt, full_response))
                 
-                # Force a rerun to update the UI
-                st.rerun()
+            # Force a rerun to update the UI
+            st.rerun()
 
         # Physician feedback section
         st.divider()
