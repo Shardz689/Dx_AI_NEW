@@ -902,146 +902,172 @@ class DocumentChatBot:
 
 
     def generate_response(self, user_input, user_type="User / Family"):
-          """Generate response using RAG, KG, and adapt based on user type. Ask follow-up questions if needed."""
-          if not user_input.strip():
-              return "", []
-
-          if self.qa_chain is None:
-              success, message = self.initialize_qa_chain()
-              if not success:
-                  return message, []
-
-          try:
-              # Check if this is a response to a follow-up question
-              if self.followup_context["asked"]:
-                  print("🔍 User responded to follow-up question")
-
-              # First, check if we need follow-up questions
-              missing_info = self.identify_missing_info(user_input, self.chat_history)
-
-              # If critical information is missing, ask follow-up questions
-              if missing_info and len(missing_info) > 0:
-                  follow_up_prompt = f"""
-                  I need a bit more information to provide a helpful response. Could you please tell me:
-
-                  {missing_info[0]}
-
-                  This will help me give you a more accurate assessment.
-                  """
-
-                  # Add this to the chat history but mark it as a follow-up
-                  self.chat_history.append((user_input, follow_up_prompt))
-
-                  # Return follow-up question instead of regular response
-                  return follow_up_prompt.strip(), []
-
-              # Reset follow-up context for next query
-              self.followup_context = {"asked": False, "round": 0}
-
-              # Regular response generation below
-              formatted_history = self.format_chat_history()
-
-              # RAG
-              rag_response = self.qa_chain.invoke({
-                  "question": user_input,
-                  "chat_history": formatted_history
-              })
-
-              rag_content = rag_response["answer"]
-              if "Helpful Answer:" in rag_content:
-                  rag_content = rag_content.split("Helpful Answer:")[-1]
-
-              raw_rag_content = rag_content.strip()
-              rag_sources = [doc.page_content[:200] + "..." for doc in rag_response["source_documents"][:3]]
-
-              # KG
-              kg_data = self.process_with_knowledge_graph(user_input)
-              kg_content = kg_data.get("kg_answer", "")
-              raw_kg_content = kg_content.strip() if kg_content else ""
-
-              all_sources = rag_sources
-              if kg_data.get("disease"):
-                  all_sources.append(f"KG Disease: {kg_data['disease']}")
-
-              # When constructing the final response prompt, include context from follow-up responses
-              full_user_context = user_input
-              if self.chat_history and len(self.chat_history) >= 2:
-                  # Include the last exchange if it seems to be related
-                  prev_user_msg, prev_bot_msg = self.chat_history[-1]
-                  if "more information" in prev_bot_msg or "please tell me" in prev_bot_msg:
-                      full_user_context = f"Context from previous message: {prev_user_msg}\nCurrent message: {user_input}"
-
-              prompt = f"""
-             You are a medical information assistant providing evidence-based answers from verified sources.
-
-USER QUERY: {full_user_context}
-
-AVAILABLE INFORMATION:
-- Retrieved Documents: {raw_rag_content}
-- Knowledge Graph Data: {raw_kg_content}
-
-RESPONSE GUIDELINES:
-
-1. SOURCE PRIORITY:
-   - First: Use information from Retrieved Documents
-   - Second: Use information from Knowledge Graph
-   - Third: If neither are available, reference information from these trusted organizations for relevant conditions:
-    * Hypertension: 
-      - American Heart Association (https://www.heart.org)
-      - NHLBI (https://www.nhlbi.nih.gov)
-      - Indian Heart Association (https://indianheartassociation.org)
-    * Cardiovascular Disease: 
-          - American College of Cardiology (https://www.acc.org)
-          - CDC Heart Disease (https://www.cdc.gov/heartdisease)
-          - Heart Care Foundation of India (https://www.heartcarefoundation.org)
-    * Obesity: 
-          - CDC Obesity (https://www.cdc.gov/obesity)
-          - NIDDK Weight Management (https://www.niddk.nih.gov/health-information/weight-management)
-          - Obesity Foundation India (https://obesityfoundationindia.org)
-    * Type 2 Diabetes: 
-          - American Diabetes Association (https://www.diabetes.org)
-          - CDC Diabetes (https://www.cdc.gov/diabetes)
-          - Diabetes India (https://www.diabetesindia.org)
-    * Respiratory Infections: 
-          - CDC Respiratory Diseases (https://www.cdc.gov/respiratory)
-          - American Lung Association (https://www.lung.org)
-          - National Centre for Disease Control India (https://ncdc.gov.in)
-
-
-2. ATTRIBUTION REQUIREMENTS:
-   - For Retrieved Documents: [Document Source]
-   - For Knowledge Graph: [Knowledge Graph]
-   - When citing information from these trusted organizations, format as a clickable Markdown link:
-    "[Source: Organization Name](URL)" - for example: "[Source: American Heart Association](https://www.heart.org)"
-
-3. RESPONSE FORMAT:
-   - Use conversational, clear language suitable for general public
-   - Organize information in logical sections with bullet points where helpful
-   - Include these sections when information is available:
-     * Possible causes or explanation
-     * Recommended approaches (if source-supported)
-     * Self-care advice (if appropriate and source-supported)
-     * When to seek medical attention
-   - End with a brief medical disclaimer
-
-4. IMPORTANT RULES:
-   - If you cannot find reliable information from any of the sources above, respond: "I don't have enough reliable information to answer this medical question. Please consult with a healthcare professional for accurate guidance."
-   - Do not generate unsourced medical content
-   - Keep responses focused and concise
-   - Be reassuring while honest about medical concerns
-
-DISCLAIMER TEXT TO USE:
-"This information is not a substitute for professional medical advice. If symptoms persist or worsen, please consult with a qualified healthcare provider."
-              Answer:
-              """
-
-              final_response = self.local_generate(prompt, max_tokens=800)
-              self.chat_history.append((user_input, final_response))
-
-              return final_response, all_sources
-
-          except Exception as e:
-              return f"Error generating response: {str(e)}", []
+                    """Generate response using RAG, KG, and adapt based on user type. Ask follow-up questions if needed."""
+                    if not user_input.strip():
+                        return "", []
+                
+                    if self.qa_chain is None:
+                        success, message = self.initialize_qa_chain()
+                        if not success:
+                            return message, []
+                
+                    try:
+                        # Check if this is a response to a follow-up question
+                        if self.followup_context["asked"]:
+                            print("🔍 User responded to follow-up question")
+                
+                        # First, check if we need follow-up questions
+                        missing_info = self.identify_missing_info(user_input, self.chat_history)
+                
+                        # If critical information is missing, ask follow-up questions
+                        if missing_info and len(missing_info) > 0:
+                            follow_up_prompt = f"""
+                            I need a bit more information to provide a helpful response. Could you please tell me:
+                
+                            {missing_info[0]}
+                
+                            This will help me give you a more accurate assessment.
+                            """
+                
+                            # Add this to the chat history but mark it as a follow-up
+                            self.chat_history.append((user_input, follow_up_prompt))
+                
+                            # Return follow-up question instead of regular response
+                            return follow_up_prompt.strip(), []
+                
+                        # Reset follow-up context for next query
+                        self.followup_context = {"asked": False, "round": 0}
+                
+                        # Regular response generation below
+                        formatted_history = self.format_chat_history()
+                
+                        # RAG
+                        rag_response = self.qa_chain.invoke({
+                            "question": user_input,
+                            "chat_history": formatted_history
+                        })
+                
+                        rag_content = rag_response["answer"]
+                        if "Helpful Answer:" in rag_content:
+                            rag_content = rag_content.split("Helpful Answer:")[-1]
+                
+                        raw_rag_content = rag_content.strip()
+                        
+                        # Enhanced source extraction with full content and page numbers
+                        rag_sources = []
+                        for doc in rag_response["source_documents"][:3]:
+                            source_text = doc.page_content
+                            
+                            # Check if it's from DxBook or internal data
+                            if hasattr(doc, "metadata") and "source" in doc.metadata:
+                                source_name = doc.metadata["source"]
+                                if "dxbook" in source_name.lower() or "rawdata.pdf" in source_name:
+                                    # Extract page number if available
+                                    page_num = doc.metadata.get("page", "N/A")
+                                    # Include full paragraph
+                                    rag_sources.append(f"Internal Data: DxBook, Page {page_num} - {source_text}")
+                                else:
+                                    rag_sources.append(source_text)
+                            else:
+                                rag_sources.append(source_text)
+                
+                        # KG
+                        kg_data = self.process_with_knowledge_graph(user_input)
+                        kg_content = kg_data.get("kg_answer", "")
+                        raw_kg_content = kg_content.strip() if kg_content else ""
+                
+                        all_sources = rag_sources
+                        if kg_data.get("disease"):
+                            all_sources.append(f"[KG] Knowledge Graph: {kg_data['disease']}")
+                
+                        # When constructing the final response prompt, include context from follow-up responses
+                        full_user_context = user_input
+                        if self.chat_history and len(self.chat_history) >= 2:
+                            # Include the last exchange if it seems to be related
+                            prev_user_msg, prev_bot_msg = self.chat_history[-1]
+                            if "more information" in prev_bot_msg or "please tell me" in prev_bot_msg:
+                                full_user_context = f"Context from previous message: {prev_user_msg}\nCurrent message: {user_input}"
+                
+                        prompt = 
+                            f""" You are a medical information assistant providing evidence-based answers from verified sources.
+                
+                USER QUERY: {full_user_context}
+                
+                AVAILABLE INFORMATION:
+                - Retrieved Documents: {raw_rag_content}
+                - Knowledge Graph Data: {raw_kg_content}
+                
+                RESPONSE GUIDELINES:
+                
+                1. SOURCE PRIORITY:
+                   - First: Use information from Retrieved Documents
+                   - Second: Use information from Knowledge Graph
+                   - Third: If neither are available, reference information from these trusted organizations for relevant conditions:
+                    * Hypertension: 
+                      - American Heart Association (https://www.heart.org)
+                      - NHLBI (https://www.nhlbi.nih.gov)
+                      - Indian Heart Association (https://indianheartassociation.org)
+                    * Cardiovascular Disease: 
+                          - American College of Cardiology (https://www.acc.org)
+                          - CDC Heart Disease (https://www.cdc.gov/heartdisease)
+                          - Heart Care Foundation of India (https://www.heartcarefoundation.org)
+                    * Obesity: 
+                          - CDC Obesity (https://www.cdc.gov/obesity)
+                          - NIDDK Weight Management (https://www.niddk.nih.gov/health-information/weight-management)
+                          - Obesity Foundation India (https://obesityfoundationindia.org)
+                    * Type 2 Diabetes: 
+                          - American Diabetes Association (https://www.diabetes.org)
+                          - CDC Diabetes (https://www.cdc.gov/diabetes)
+                          - Diabetes India (https://www.diabetesindia.org)
+                    * Respiratory Infections: 
+                          - CDC Respiratory Diseases (https://www.cdc.gov/respiratory)
+                          - American Lung Association (https://www.lung.org)
+                          - National Centre for Disease Control India (https://ncdc.gov.in)
+                
+                2. ATTRIBUTION REQUIREMENTS:
+                   - For Retrieved Documents: When referencing Internal Data (DxBook), include the exact page number and full paragraph in your references section as "Internal Data: DxBook, Page X - [paragraph text]"
+                   - For Knowledge Graph: Reference as "[KG] Knowledge Graph" in your references section
+                   - When citing information from trusted organizations, use a complete clickable Markdown link in references:
+                     "[Source: Organization Name](full URL)" - Example: "[Source: American Heart Association](https://www.heart.org)"
+                   - DO NOT use ellipses (...) or truncate any references
+                
+                3. REFERENCE FORMAT:
+                   - At the end of your response, add a section titled "## References:"
+                   - Number each reference (1., 2., 3., etc.)
+                   - For each reference include:
+                     * For Knowledge Graph: "[KG] Knowledge Graph - [specific relationship]"
+                     * For DxBook: "Internal Data: DxBook, Page [X] - [exact paragraph used]" 
+                     * For external sources: "[External Source: Organization Name](URL)"
+                
+                4. RESPONSE FORMAT:
+                   - Use conversational, clear language suitable for general public
+                   - Organize information in logical sections with bullet points where helpful
+                   - Include these sections when information is available:
+                     * Possible causes or explanation
+                     * Recommended approaches (if source-supported)
+                     * Self-care advice (if appropriate and source-supported)
+                     * When to seek medical attention
+                   - End with a brief medical disclaimer AFTER the references section
+                
+                5. IMPORTANT RULES:
+                   - If you cannot find reliable information from any of the sources above, respond: "I don't have enough reliable information to answer this medical question. Please consult with a healthcare professional for accurate guidance."
+                   - Do not generate unsourced medical content
+                   - Keep responses focused and concise
+                   - Be reassuring while honest about medical concerns
+                   - Include all URLs in full, never truncate them
+                
+                DISCLAIMER TEXT TO USE:
+                "This information is not a substitute for professional medical advice. If symptoms persist or worsen, please consult with a qualified healthcare provider."
+                          Answer:
+                          """
+                
+                        final_response = self.local_generate(prompt, max_tokens=800)
+                        self.chat_history.append((user_input, final_response))
+                
+                        return final_response, all_sources
+                
+                    except Exception as e:
+                        return f"Error generating response: {str(e)}", []
 
     def reset_conversation(self):
       """Reset the conversation history"""
@@ -1194,24 +1220,79 @@ def main():
                 st.chat_message("assistant").write(non_medical_response)
             else:
                 # Process the medical query with spinner
-                with st.spinner("Thinking..."):
+               with st.spinner("Thinking..."):
                     bot_response, sources = st.session_state.chatbot.generate_response(prompt, user_type)
                     
-                    # Format sources with improved citation
-                    formatted_sources = []
-                    for src in sources:
-                        if "rawdata.pdf" in src or "dxbook" in src.lower():
-                            # Extract page number if available
-                            page_match = re.search(r'page[_\s]?(\d+)', src, re.IGNORECASE)
-                            page_num = page_match.group(1) if page_match else "N/A"
-                            # Format as internal data with page reference
-                            formatted_sources.append(f"[Internal Data: DxBook, Page {page_num}] {src}")
-                        else:
-                            formatted_sources.append(src)
+                    # Check if the LLM already included a references section
+                    has_references = "## References:" in bot_response
                     
-                    # Add formatted sources to response
-                    source_info = "\n\nReferences:\n" + "\n\n".join([f"- {src}" for src in formatted_sources]) if formatted_sources else ""
-                    full_response = bot_response + source_info
+                    if not has_references and sources:
+                        # Format sources only if they're not already included
+                        formatted_sources = []
+                        
+                        for src in sources:
+                            # Knowledge graph references
+                            if "knowledge graph" in src.lower() or "neo4j" in src.lower():
+                                formatted_sources.append(f"[KG] Knowledge Graph reference")
+                                
+                            # Internal data/DxBook references
+                            elif "rawdata.pdf" in src or "dxbook" in src.lower():
+                                # Extract page number if available
+                                page_match = re.search(r'page[_\s]?(\d+)', src, re.IGNORECASE)
+                                page_num = page_match.group(1) if page_match else "N/A"
+                                
+                                # Extract the referenced paragraph
+                                paragraph_match = re.search(r'page[_\s]?\d+\s*[:-]?\s*(.*?)(?=$|\n|page)', src, re.IGNORECASE)
+                                paragraph = paragraph_match.group(1).strip() if paragraph_match else src
+                                
+                                # Format as internal data with page reference and paragraph
+                                formatted_sources.append(f"[Internal Data: DxBook, Page {page_num}] {paragraph}")
+                                
+                            # External links/URLs
+                            elif re.search(r'https?://[^\s]+', src):
+                                url_match = re.search(r'(https?://[^\s]+)', src)
+                                if url_match:
+                                    url = url_match.group(1)
+                                    # Make the URL clickable in markdown
+                                    formatted_sources.append(f"[External Source]({url})")
+                                else:
+                                    formatted_sources.append(src)
+                                    
+                            # Other sources
+                            else:
+                                formatted_sources.append(src)
+                        
+                        # Deduplicate sources while preserving order
+                        seen = set()
+                        formatted_sources = [x for x in formatted_sources if not (x in seen or seen.add(x))]
+                        
+                        # Add formatted sources to response
+                        if formatted_sources:
+                            source_info = "\n\n## References:\n"
+                            for i, src in enumerate(formatted_sources, 1):
+                                source_info += f"{i}. {src}\n\n"
+                            
+                            # Handle medical disclaimer
+                            disclaimer_pattern = r'(This information is not a substitute.*?provider\.)'
+                            disclaimer_match = re.search(disclaimer_pattern, bot_response, re.DOTALL)
+                            
+                            if disclaimer_match:
+                                # Extract the disclaimer
+                                disclaimer = disclaimer_match.group(1)
+                                
+                                # Remove the existing disclaimer
+                                bot_response = re.sub(disclaimer_pattern, '', bot_response, flags=re.DOTALL)
+                                
+                                # Add references and then disclaimer
+                                full_response = bot_response.strip() + source_info + "\n\n" + disclaimer
+                            else:
+                                # Just add references if no disclaimer
+                                full_response = bot_response.strip() + source_info
+                        else:
+                            full_response = bot_response
+                    else:
+                        # Use response as is if it already has references or there are no sources
+                        full_response = bot_response
                     
                     # Add to state and chat history
                     st.session_state.messages.append((full_response, False))
