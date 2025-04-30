@@ -988,8 +988,7 @@ class DocumentChatBot:
                             if "more information" in prev_bot_msg or "please tell me" in prev_bot_msg:
                                 full_user_context = f"Context from previous message: {prev_user_msg}\nCurrent message: {user_input}"
                 
-                        prompt = 
-                            f""" You are a medical information assistant providing evidence-based answers from verified sources.
+                        prompt = f""" You are a medical information assistant providing evidence-based answers from verified sources.
                 
                 USER QUERY: {full_user_context}
                 
