@@ -1023,7 +1023,7 @@ class DocumentChatBot:
                                           - National Centre for Disease Control India (https://ncdc.gov.in)
                                 
                                 2. ATTRIBUTION REQUIREMENTS:
-                                   - For Retrieved Documents: When referencing Internal Data (DxBook), include the exact page number and full paragraph in your references section as "Internal Data: DxBook, Page X - [paragraph text]"
+                                   - For Retrieved Documents: When referencing Internal Data (DxBook), include the exact page number and full paragraph in your references section as "Internal Data: DxBook, Page X - [paragraph text]". If you dont have page number dont mention it. just mention "Internal Data: DxBook, -[paragraph text]". this paragraph text should be the relevant embedding that is taken into context when generating the answer.
                                    - For Knowledge Graph: Reference as "[KG] Knowledge Graph" in your references section
                                    - When citing information from trusted organizations, use a complete clickable Markdown link in references:
                                      "[Source: Organization Name](full URL)" - Example: "[Source: American Heart Association](https://www.heart.org)"
