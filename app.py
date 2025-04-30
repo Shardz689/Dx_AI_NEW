@@ -24,22 +24,6 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 from neo4j import GraphDatabase
-
-# Import Gemini API
-import google.generativeai as genai
-from langchain_google_genai import ChatGoogleGenerativeAI
-import re
-import json
-
-from langchain_community.vectorstores import FAISS
-from langchain_community.document_loaders import PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.chains import ConversationalRetrievalChain
-from langchain.memory import ConversationBufferMemory
-from neo4j import GraphDatabase
-
-
 # Configuration
 # Gemini API key
 # Add this near the top after imports
