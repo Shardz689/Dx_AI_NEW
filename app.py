@@ -1151,40 +1151,40 @@ def main():
         
         # Display chat messages
         for i, (msg, is_user) in enumerate(st.session_state.messages):
-        if is_user:
-            st.chat_message("user").write(msg)
-        else:
-            with st.chat_message("assistant"):
-                st.write(msg)
-    
-                # Feedback buttons in a single line using HTML and callback keys
-                col = st.container()
-                with col:
-                    # Create two buttons inline with form to detect clicks
-                    feedback_key_up = f"thumbs_up_{i}"
-                    feedback_key_down = f"thumbs_down_{i}"
-    
-                    # Use columns trick for proper spacing
-                    b1, b2 = st.columns([1, 1])
-                    with b1:
-                        if st.button("👍", key=feedback_key_up):
-                            feedback_result = vote_message(
-                                [(st.session_state.messages[i-1][0], msg)] if i > 0 else [("", msg)],
-                                "thumbs_up",
-                                0,
-                                user_type
-                            )
-                            st.toast(feedback_result)
-                    with b2:
-                        if st.button("👎", key=feedback_key_down):
-                            feedback_result = vote_message(
-                                [(st.session_state.messages[i-1][0], msg)] if i > 0 else [("", msg)],
-                                "thumbs_down",
-                                0,
-                                user_type
-                            )
-                            st.toast(feedback_result)
-                                           
+            if is_user:
+                st.chat_message("user").write(msg)
+            else:
+                with st.chat_message("assistant"):
+                    st.write(msg)
+        
+                    # Feedback buttons in a single line using HTML and callback keys
+                    col = st.container()
+                    with col:
+                        # Create two buttons inline with form to detect clicks
+                        feedback_key_up = f"thumbs_up_{i}"
+                        feedback_key_down = f"thumbs_down_{i}"
+        
+                        # Use columns trick for proper spacing
+                        b1, b2 = st.columns([1, 1])
+                        with b1:
+                            if st.button("👍", key=feedback_key_up):
+                                feedback_result = vote_message(
+                                    [(st.session_state.messages[i-1][0], msg)] if i > 0 else [("", msg)],
+                                    "thumbs_up",
+                                    0,
+                                    user_type
+                                )
+                                st.toast(feedback_result)
+                        with b2:
+                            if st.button("👎", key=feedback_key_down):
+                                feedback_result = vote_message(
+                                    [(st.session_state.messages[i-1][0], msg)] if i > 0 else [("", msg)],
+                                    "thumbs_down",
+                                    0,
+                                    user_type
+                                )
+                                st.toast(feedback_result)
+                                               
         input_container = st.container()
     
         # This creates space to push the input to the bottom
