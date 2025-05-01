@@ -306,6 +306,48 @@ class DocumentChatBot:
                 print(f"Error in fallback generation: {inner_e}")
                 return f"Error generating response. Please try again."
 
+    def generate_llm_answer(self, query, kg_missing=None, rag_missing=None, llm_client=None):
+        """
+        Generates an LLM answer focused on addressing missing elements.
+        
+        Args:
+            query: Original user query
+            kg_missing: Elements missing from KG answer
+            rag_missing: Elements missing from RAG answer
+            llm_client: Optional LLM client (not used in this implementation)
+            
+        Returns:
+            str: LLM-generated answer
+        """
+        # Construct focus areas from missing elements
+        focus_areas = set()
+        if kg_missing:
+            focus_areas.update(kg_missing)
+        if rag_missing:
+            focus_areas.update(rag_missing)
+        
+        focus_text = ""
+        if focus_areas:
+            focus_text = "Focus particularly on these aspects: " + ", ".join(focus_areas)
+        
+        prompt = f"""
+        You are a medical AI assistant providing information about a health question.
+        
+        USER QUESTION: {query}
+        
+        {focus_text}
+        
+        Provide a helpful, accurate answer to the user's question.
+        Include appropriate disclaimers about consulting healthcare professionals.
+        """
+        
+        try:
+            response = self.local_generate(prompt, max_tokens=1000)
+            return response.strip()
+        except Exception as e:
+            print(f"Error generating LLM answer: {e}")
+            return "I'm sorry, but I couldn't generate a specific answer to your question. Please consult a healthcare professional for personalized advice."
+        
     def identify_missing_info(self, user_query: str, conversation_history: List[Tuple[str, str]]) -> List[str]:
             """Identifies what critical medical information is missing from user query with conversation context"""
         
@@ -1196,7 +1238,7 @@ class DocumentChatBot:
             print(f"Error generating LLM answer: {e}")
             return "I'm sorry, but I couldn't generate a specific answer to your question. Please consult a healthcare professional for personalized advice."
     
-    def generate_followup_request(kg_missing=None, rag_missing=None):
+    def generate_followup_request(self, kg_missing=None, rag_missing=None):
         """
         Generates a request for the user to provide more information.
         
