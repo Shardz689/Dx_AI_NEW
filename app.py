@@ -461,6 +461,76 @@ class DocumentChatBot:
             
             return []
                                  
+    def extract_disease_from_query(self, user_query: str) -> Tuple[Optional[str], float]:
+        """Extract disease names from user query with confidence scores"""
+        cache_key = {"type": "disease_extraction", "query": user_query}
+        cached = get_cached(cache_key)
+        if cached:
+            print("🧠 Using cached disease extraction.")
+            return cached
+    
+        # First check if any known diseases are directly mentioned
+        query_lower = user_query.lower()
+        for disease in known_diseases:
+            if disease.lower() in query_lower:
+                print(f"🔍 Found direct disease mention: {disease} (confidence: 0.95)")
+                return disease, 0.95
+    
+        # If no direct match, use LLM to extract
+        DISEASE_PROMPT = f"""
+        You are a medical assistant.
+        Extract and identify any disease, medical condition, or health disorder mentioned in the following user query.
+        Assign a confidence score between 0.0 and 1.0 indicating how certain you are.
+        **Important:** Return your answer in exactly the following format:
+        Extracted Disease: {{"disease": "disease_name", "confidence": 0.9}}
+    
+        If no disease is mentioned, respond with:
+        Extracted Disease: {{"disease": null, "confidence": 0.0}}
+    
+        User Query: "{user_query}"
+        """
+    
+        try:
+            response = self.local_generate(DISEASE_PROMPT, max_tokens=250).strip()
+            print("\nRaw Disease Extraction Response:\n", response)
+    
+            # Parse JSON format response with regex
+            match = re.search(r"Extracted Disease:\s*(\{.*?\})", response, re.DOTALL)
+            if match:
+                try:
+                    disease_data = json.loads(match.group(1))
+                    disease = disease_data.get("disease")
+                    confidence = disease_data.get("confidence", 0.0)
+    
+                    if disease and confidence >= 0.7:
+                        print(f"🔍 Extracted Disease: {disease} (confidence: {confidence:.4f})")
+                        result = (disease, confidence)
+                        set_cached(cache_key, result)
+                        return result
+                    else:
+                        print(f"🔍 No disease extracted with sufficient confidence")
+                        return None, 0.0
+                except json.JSONDecodeError:
+                    print("⚠️ Could not parse disease JSON from LLM response")
+        except Exception as e:
+            print(f"⚠️ Error in disease extraction: {e}")
+    
+        return None, 0.0
+    
+    def is_treatment_query(self, query: str) -> bool:
+        """Determine if the query is asking about treatments or remedies for a disease"""
+        query_lower = query.lower()
+        
+        # Keywords related to treatments
+        treatment_keywords = [
+            "treatment", "medication", "medicine", "drug", "therapy", "prescription",
+            "cure", "remedy", "therapeutic", "pharmacological", "manage", "management",
+            "how to treat", "how to manage", "how to cure", "what helps", "how to control",
+            "home remedy", "natural remedy", "alternative treatment"
+        ]
+        
+        return any(keyword in query_lower for keyword in treatment_keywords)  
+                          
     def extract_diseases_from_kg_answer(self, kg_answer):
         """
         Extracts disease information from a formatted KG answer string.
