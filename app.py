@@ -779,25 +779,25 @@ class DocumentChatBot:
     
                         # Update main state if successful
                         if task_result["status"] == "completed":
-                        # Handle the case where we receive a list of diseases
-                        if isinstance(disease, list):
-                            new_state["diseases"] = [d[0] for d in disease]  # Store all disease names
-                            new_state["disease_confidences"] = [d[1] for d in disease]  # Store all confidences
-                            new_state["disease"] = disease[0][0] if disease else None  # For backward compatibility
-                            new_state["disease_confidence"] = conf
-                            new_state["matched_symptoms"] = matched
-                            successful_tasks += 1
-                            print(f"✔️ Diseases identified: {new_state['diseases']} with top confidence {conf:.4f}")
-                        else:
-                            # Backward compatibility with existing code
-                            new_state["disease"] = disease
-                            new_state["diseases"] = [disease] if disease else []
-                            new_state["disease_confidence"] = conf
-                            new_state["disease_confidences"] = [conf] if disease else []
-                            new_state["matched_symptoms"] = matched
-                            new_state["alternative_diseases"] = alt
-                            successful_tasks += 1
-                            print(f"✔️ Disease identified: {disease} with confidence {conf:.4f}")
+                            # Handle the case where we receive a list of diseases
+                            if isinstance(disease, list):
+                                new_state["diseases"] = [d[0] for d in disease]  # Store all disease names
+                                new_state["disease_confidences"] = [d[1] for d in disease]  # Store all confidences
+                                new_state["disease"] = disease[0][0] if disease else None  # For backward compatibility
+                                new_state["disease_confidence"] = conf
+                                new_state["matched_symptoms"] = matched
+                                successful_tasks += 1
+                                print(f"✔️ Diseases identified: {new_state['diseases']} with top confidence {conf:.4f}")
+                            else:
+                                # Backward compatibility with existing code
+                                new_state["disease"] = disease
+                                new_state["diseases"] = [disease] if disease else []
+                                new_state["disease_confidence"] = conf
+                                new_state["disease_confidences"] = [conf] if disease else []
+                                new_state["matched_symptoms"] = matched
+                                new_state["alternative_diseases"] = alt
+                                successful_tasks += 1
+                                print(f"✔️ Disease identified: {disease} with confidence {conf:.4f}")
                     else:
                         task_result["status"] = "failed"
                         task_result["subtask_answer"] = "Could not identify disease - no symptoms provided"
