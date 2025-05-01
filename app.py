@@ -396,7 +396,7 @@ class DocumentChatBot:
             except Exception:
                 pass  # Continue to LLM evaluation if KG fails
         
-           MISSING_INFO_PROMPT = (
+               MISSING_INFO_PROMPT=(
                 f"You are a medical assistant analyzing a patient query and conversation.\n"
                 f"Determine if any CRITICAL information is still missing to properly assess their situation.\n\n"
                 f"Conversation history:\n{context}\n\n"
