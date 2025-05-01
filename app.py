@@ -130,13 +130,40 @@ class DocumentChatBot:
             )
             splits = text_splitter.split_documents(pages)
         
-            # Initialize embedding model
+            # Initialize embedding model with fix for meta tensor issue
             try:
                 # Try SentenceTransformer directly instead of HuggingFaceEmbeddings
                 model_name = 'sentence-transformers/all-MiniLM-L6-v2'
                 print(f"Loading embedding model: {model_name}")
                 
-                sentence_model = SentenceTransformer(model_name, cache_folder='./cache')
+                # Fix for the meta tensor issue
+                import torch
+                
+                # Check torch version - newer versions may need different approach
+                torch_version = torch.__version__
+                print(f"Using torch version: {torch_version}")
+                
+                # Use a device-specific loading approach
+                device = 'cuda' if torch.cuda.is_available() else 'cpu'
+                print(f"Using device: {device}")
+                
+                # Method 1: Try loading with explicit device
+                try:
+                    sentence_model = SentenceTransformer(model_name, cache_folder='./cache', device=device)
+                except Exception as e1:
+                    print(f"First loading method failed: {e1}. Trying alternative approach...")
+                    # Method 2: Try loading with empty initialization and then moving to device
+                    if hasattr(torch.nn.Module, 'to_empty'):
+                        # For newer PyTorch versions with to_empty support
+                        sentence_model = SentenceTransformer(model_name, cache_folder='./cache')
+                        sentence_model = sentence_model.to_empty(device=device)
+                        # Now load the state dict
+                        sentence_model.load_state_dict(torch.load(f"./cache/{model_name.replace('/', '_')}/pytorch_model.bin"))
+                    else:
+                        # Fallback for older PyTorch versions
+                        sentence_model = SentenceTransformer(model_name, cache_folder='./cache')
+                        # Force CPU if needed
+                        sentence_model = sentence_model.to('cpu')
                 
                 # Create a wrapper to make it compatible with LangChain
                 from langchain.embeddings.base import Embeddings
@@ -157,7 +184,7 @@ class DocumentChatBot:
             except Exception as e:
                 print(f"Error loading embedding model: {e}")
                 return None, f"Failed to load embeddings model: {str(e)}"
-
+        
     def is_medical_query(self, query: str) -> Tuple[bool, str]:
         """
         Check if the query is relevant to the medical domain.
