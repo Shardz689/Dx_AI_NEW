@@ -991,7 +991,8 @@ class DocumentChatBot:
             # Make sure we have at least an empty kg_answer field for the reflection agent
             new_state["kg_answer"] = ""
             new_state["kg_confidence"] = 0.0
-            
+        
+        # Check if this is a disease identification query
         query = new_state.get("user_query", "").lower()
         disease_patterns = [
             r"what (could|might|can) (i|my|the patient|they) have",
@@ -1041,9 +1042,10 @@ class DocumentChatBot:
             new_state["kg_answer"] = disease_answer
             
             # Boost confidence to ensure KG-only route
-            new_state["kg_confidence"] = max(0.9, new_state.get("kg_confidence", 0.0))
-            print("✅ Disease identification query detected, boosting KG confidence")
-        return new_state
+            new_state["kg_confidence"] = 1.0  # Maximum confidence
+            print("✅ Disease identification query detected, boosting KG confidence to maximum")
+
+    return new_state
 
     def process_with_knowledge_graph(self, user_query: str) -> Dict:
         """Process user query with knowledge graph agent"""
@@ -1078,20 +1080,6 @@ class DocumentChatBot:
             result["kg_confidence"] = 0.0
         
         # Check if this is a disease identification query
-        is_disease_query = False
-        disease_patterns = [
-            r"what (could|might|can) (i|my|the patient|they) have",
-            r"what (is|are) (the )?(possible|potential) (disease|diagnosis|condition)",
-            r"what (disease|condition|diagnosis) (matches|is indicated by|could cause)",
-            r"what (might|could) (be|cause) (these|the|my|their) symptoms"
-        ]
-        
-        for pattern in disease_patterns:
-            if re.search(pattern, user_query.lower()):
-                is_disease_query = True
-                break
-        
-        # If it's a disease query and we found diseases, format the answer and boost confidence
         if self.is_disease_identification_query(user_query) and (result.get("diseases") or result.get("disease")):
             # Format a more comprehensive symptom-to-disease answer
             diseases = result.get("diseases", [])
@@ -1139,9 +1127,9 @@ class DocumentChatBot:
             # Update the kg_answer with this more focused format
             result["kg_answer"] = disease_answer
             
-            # Boost confidence for disease identification queries
-            result["kg_confidence"] = max(0.85, result.get("kg_confidence", 0.0))
-            print("✅ Disease identification query detected, formatted comprehensive KG response")
+            # Boost confidence for disease identification queries to maximum
+            result["kg_confidence"] = 1.0  # Changed from 0.85 to 1.0
+            print("✅ Disease identification query detected, formatted comprehensive KG response with maximum confidence")
         
         return result
                     
@@ -1149,70 +1137,36 @@ class DocumentChatBot:
         """
         Evaluates all possible combinations of knowledge sources to provide the most
         complete answer to the user query.
-        
-        Args:
-            user_query: The original user question
-            kg_answer: Answer from Knowledge Graph (refined by LLM)
-            rag_answer: Answer from RAG
-            kg_confidence: Confidence score from the KG system (if available)
-            
-        Returns:
-            tuple: (final_answer, strategy_used)
         """
         # Add detailed logging at the beginning
         print(f"Processing query: {user_query}")
         print(f"Disease query? {self.is_disease_identification_query(user_query)}")
+        print(f"KG Confidence: {kg_confidence}")
         
         if not self.identified_diseases and kg_answer:
             self.extract_diseases_from_kg_answer(kg_answer)
         
-        # Log KG metrics - improvement #5: Add Debugging Logs
-        if hasattr(kg_answer, 'confidence'):
-            print(f"KG Confidence: {kg_answer.confidence}, Symptoms: {getattr(kg_answer, 'symptoms', [])}")
-        elif isinstance(kg_answer, dict):
-            print(f"KG Confidence: {kg_answer.get('confidence', kg_confidence)}, " 
-                       f"Symptoms: {kg_answer.get('symptoms', [])}")
-        else:
-            print(f"KG Confidence: {kg_confidence}, Symptoms: Unknown format")
+        # CRITICAL CHANGE: Check for very high confidence KG answers first
+        # If KG confidence is extremely high (0.9+), always use KG only
+        if kg_confidence is not None and kg_confidence >= 0.9:
+            print(f"Reflection decision: KG_ONLY - Very high confidence KG answer ({kg_confidence})")
+            return kg_answer, "KG_ONLY"
         
-        # Check if answer meets quality criteria - improvement #2: Adjust KG Answer Quality Checks
-        is_high_quality = False
-        if isinstance(kg_answer, dict):
-            is_high_quality = (
-                (kg_answer.get('confidence', kg_confidence or 0) >= 0.7) and  # Reduced from 0.9
-                (len(kg_answer.get('symptoms', [])) >= 1 or len(kg_answer.get('causes', [])) >= 1)
-            )
-        print(f"KG Quality: {is_high_quality}")
-                            
-        # Special case for disease identification with KG results - ENHANCED
-        # Improvement #1: Refine Disease Identification Logic is applied in the is_disease_identification_query method
+        # Special case for disease identification with KG results
         if self.is_disease_identification_query(user_query):
-            # Improvement #3: Improve Reflection Agent Prioritization
             if isinstance(self.identified_diseases, list) and len(self.identified_diseases) > 0:
-                # Format the diseases directly from the list
                 formatted_answer = self.format_disease_list_answer(user_query, self.identified_diseases, self.disease_confidence)
                 print(f"Reflection decision: KG_ONLY - Disease identification with {len(self.identified_diseases)} diseases")
                 return formatted_answer, "KG_ONLY"
-            elif is_high_quality or "Possible Diseases:" in kg_answer or "Disease:" in kg_answer:
+            elif "Possible Diseases:" in kg_answer or "Disease:" in kg_answer or "# Possible Diagnoses" in kg_answer:
                 print("Reflection decision: KG_ONLY - Disease identification query with KG results")
-                
-                # Improvement #4: Enhance Answer Combination Logic
-                if is_high_quality:
-                    # Include RAG as supplementary when explicitly prioritizing KG
-                    combined = self.combine_answers(kg_answer, rag_answer, prioritize_kg=True)
-                    return combined, "KG_PRIORITIZED_WITH_RAG"
-                else:
-                    return kg_answer, "KG_ONLY"
+                return kg_answer, "KG_ONLY"
         
-        # Check if KG confidence score is available and high enough
-        # Lowered threshold according to improvement #2
-        if kg_confidence is not None and kg_confidence >= 0.7:  # Changed from 0.65
+        # For high but not extremely high confidence (0.7-0.9)
+        if kg_confidence is not None and kg_confidence >= 0.7:
             print(f"Reflection decision: KG_ONLY - High confidence KG answer ({kg_confidence})")
-            
-            # Improvement #4: Include RAG as supplementary
-            combined = self.combine_answers(kg_answer, rag_answer, prioritize_kg=True)
-            return combined, "KG_PRIORITIZED_WITH_RAG"
-            
+            return kg_answer, "KG_ONLY"  # Use KG_ONLY instead of combining
+        
         # Set threshold for considering an answer complete
         COMPLETENESS_THRESHOLD = 0.65
         
@@ -1232,10 +1186,7 @@ class DocumentChatBot:
         # Case 1: KG only - sufficient
         if kg_completeness >= COMPLETENESS_THRESHOLD:
             print("Reflection decision: KG_ONLY - KG answer is complete")
-            
-            # Improvement #4: Include RAG as supplementary when KG is prioritized
-            combined = self.combine_answers(kg_answer, rag_answer, prioritize_kg=True)
-            return combined, "KG_PRIORITIZED_WITH_RAG"
+            return kg_answer, "KG_ONLY"
         
         # Case 2: RAG only - sufficient
         if rag_completeness >= COMPLETENESS_THRESHOLD:
@@ -1295,16 +1246,9 @@ class DocumentChatBot:
         
         # Case 8: Best available answer (even if below threshold)
         best_completeness = max(kg_completeness, rag_completeness, llm_completeness, 
-                               kg_rag_completeness, kg_llm_completeness, 
-                               rag_llm_completeness, all_combined_completeness)
+                                kg_rag_completeness, kg_llm_completeness, 
+                                rag_llm_completeness, all_combined_completeness)
         
-        # If KG answer is already quite good (above 0.7), prioritize it for simplicity - improvement #3
-        if kg_completeness >= 0.7 and kg_completeness == best_completeness:
-            print("Reflection decision: KG_ONLY - Good enough KG answer prioritized")
-            # Include RAG as supplementary when prioritizing KG - improvement #4
-            combined = self.combine_answers(kg_answer, rag_answer, prioritize_kg=True)
-            return combined, "KG_PRIORITIZED_WITH_RAG"
-            
         # Choose the best answer based on completeness scores
         if best_completeness == kg_completeness:
             print("Reflection decision: KG_ONLY - Best available answer")
@@ -1679,182 +1623,227 @@ class DocumentChatBot:
             return base_message + "\n\nCould you provide more context about your symptoms, when they started, and any other medical conditions or medications you're taking?"
                             
     def generate_response(self, user_input, user_type="User / Family"):
+        """
+        Generate response using reflection agent to evaluate and combine multiple knowledge sources.
+        """
+        if not user_input.strip():
+            return "", []
+    
+        if self.qa_chain is None:
+            success, message = self.initialize_qa_chain()
+            if not success:
+                return message, []
+    
+        try:
+            print(f"\n🔍 Processing query: {user_input}")
             
-            """
-            Generate response using reflection agent to evaluate and combine multiple knowledge sources.
-            """
-            if not user_input.strip():
-                return "", []
-        
-            if self.qa_chain is None:
-                success, message = self.initialize_qa_chain()
-                if not success:
-                    return message, []
-        
-            try:
-                print(f"\n🔍 Processing query: {user_input}")
+            # Check if this is a response to a follow-up question
+            if self.followup_context["asked"]:
+                print("🔍 User responded to follow-up question")
+    
+            # Check if we need follow-up questions
+            missing_info = self.identify_missing_info(user_input, self.chat_history)
+    
+            # If critical information is missing, ask follow-up questions
+            if missing_info and len(missing_info) > 0:
+                follow_up_prompt = f"""
+                I need a bit more information to provide a helpful response. Could you please tell me:
+    
+                {missing_info[0]}
+    
+                This will help me give you a more accurate assessment.
+                """
+                self.chat_history.append((user_input, follow_up_prompt))
+                return follow_up_prompt.strip(), []
+    
+            # Reset follow-up context for next query
+            self.followup_context = {"asked": False, "round": 0}
+    
+            # Process with Knowledge Graph
+            print("📚 Processing with Knowledge Graph...")
+            t_start = datetime.now()
+            kg_data = self.process_with_knowledge_graph(user_input)
+            kg_content = kg_data.get("kg_answer", "")
+            kg_confidence = kg_data.get("kg_confidence", 0.0)
+            
+            disease = kg_data.get("disease", "")
+            symptoms = kg_data.get("symptoms", [])
+            treatments = kg_data.get("treatments", [])
+            home_remedies = kg_data.get("home_remedies", [])
+            
+            print(f"📊 KG Confidence: {kg_confidence:.4f} (took {(datetime.now() - t_start).total_seconds():.2f}s)")
+            
+            # Early decision for very high confidence KG answers
+            if kg_confidence >= 0.95 or (self.is_disease_identification_query(user_input) and kg_confidence >= 0.85):
+                print(f"✅ High confidence KG answer detected ({kg_confidence}), skipping RAG processing")
                 
-                # Check if this is a response to a follow-up question
-                if self.followup_context["asked"]:
-                    print("🔍 User responded to follow-up question")
-        
-                # Check if we need follow-up questions
-                missing_info = self.identify_missing_info(user_input, self.chat_history)
-        
-                # If critical information is missing, ask follow-up questions
-                if missing_info and len(missing_info) > 0:
-                    follow_up_prompt = f"""
-                    I need a bit more information to provide a helpful response. Could you please tell me:
-        
-                    {missing_info[0]}
-        
-                    This will help me give you a more accurate assessment.
-                    """
-                    self.chat_history.append((user_input, follow_up_prompt))
-                    return follow_up_prompt.strip(), []
-        
-                # Reset follow-up context for next query
-                self.followup_context = {"asked": False, "round": 0}
-        
-                # Process with Knowledge Graph
-                print("📚 Processing with Knowledge Graph...")
-                t_start = datetime.now()
-                kg_data = self.process_with_knowledge_graph(user_input)
-                kg_content = kg_data.get("kg_answer", "")
-                kg_confidence = kg_data.get("kg_confidence", 0.0)
-                
-                disease = kg_data.get("disease", "")
-                symptoms = kg_data.get("symptoms", [])
-                treatments = kg_data.get("treatments", [])
-                home_remedies = kg_data.get("home_remedies", [])
-                
-                print(f"📊 KG Confidence: {kg_confidence:.4f} (took {(datetime.now() - t_start).total_seconds():.2f}s)")
-                
-                # Process with RAG
-                print("📚 Processing with RAG...")
-                t_start = datetime.now()
-                formatted_history = self.format_chat_history()
-                
-                # Get RAG response
-                rag_response = self.qa_chain.invoke({
-                    "question": user_input,
-                    "chat_history": formatted_history
-                })
-                
-                rag_content = rag_response["answer"]
-                if "Helpful Answer:" in rag_content:
-                    rag_content = rag_content.split("Helpful Answer:")[-1]
-                
-                # Extract RAG sources
-                rag_sources = []
-                source_texts = []
-                for doc in rag_response["source_documents"][:3]:
-                    source_text = doc.page_content
-                    source_texts.append(source_text)
-                    
-                    if hasattr(doc, "metadata") and "source" in doc.metadata:
-                        source_name = doc.metadata["source"]
-                        if "dxbook" in source_name.lower() or "rawdata.pdf" in source_name:
-                            page_num = doc.metadata.get("page", "N/A")
-                            rag_sources.append(f"Internal Data: DxBook, Page {page_num} - {source_text}")
-                        else:
-                            rag_sources.append(source_text)
-                    else:
-                        rag_sources.append(source_text)
-                
-                # Calculate RAG confidence based on relevance of retrieved documents
-                rag_relevance_scores = []
-                for text in source_texts:
-                    # Simple keyword matching
-                    query_keywords = set(word.lower() for word in user_input.split() if len(word) > 3)
-                    content_lower = text.lower()
-                    matches = sum(1 for kw in query_keywords if kw in content_lower)
-                    score = min(matches / max(len(query_keywords), 1), 1.0)
-                    rag_relevance_scores.append(score)
-                
-                # Average relevance score
-                rag_confidence = sum(rag_relevance_scores) / max(len(rag_relevance_scores), 1)
-                print(f"📊 RAG Confidence: {rag_confidence:.4f} (took {(datetime.now() - t_start).total_seconds():.2f}s)")
-                
-                # Log confidence scores and query
-                print(f"📊 Orchestration Decision:")
-                print(f"   Query: {user_input}")
-                print(f"   KG Confidence: {kg_confidence:.4f}")
-                print(f"   RAG Confidence: {rag_confidence:.4f}")
-                
-                # Use reflection agent to determine the best answer
-                print("🧠 Using reflection agent to evaluate and combine answers...")
-                t_start = datetime.now()
-                
-                # Use the reflection agent to evaluate and combine answers
-                final_answer, strategy_used = self.reflection_agent(user_input, kg_content, rag_content)
-                
-                print(f"📊 Reflection Strategy: {strategy_used}")
-                print(f"✅ Response generated (took {(datetime.now() - t_start).total_seconds():.2f}s)")
-                
-                # Combine all sources for reference
-                all_sources = rag_sources
+                # Prepare sources
+                sources = []
                 if disease:
-                    all_sources.append(f"[KG] Knowledge Graph: {disease}")
+                    sources.append(f"[KG] Knowledge Graph: {disease}")
                 
-                # Log the orchestration decision for analysis
+                # Log decision
                 self.log_orchestration_decision(
                     user_input,
-                    f"SELECTED_STRATEGY: {strategy_used}\nREASONING: Determined by reflection agent based on answer completeness evaluation.\nRESPONSE: {final_answer[:100]}...",
+                    f"SELECTED_STRATEGY: KG_ONLY\nREASONING: High confidence knowledge graph answer.\nRESPONSE: {kg_content[:100]}...",
                     kg_confidence,
-                    rag_confidence
+                    0.0  # No RAG confidence since we skipped it
                 )
-                self.last_strategy = strategy_used  # Store for testing
                 
-                # Add references if not included
-                if "## References:" not in final_answer and all_sources:
+                # Format response
+                if "## References:" not in kg_content and sources:
                     references = "\n\n## References:\n"
-                    for i, src in enumerate(all_sources, 1):
+                    for i, src in enumerate(sources, 1):
                         references += f"{i}. {src}\n\n"
                     
-                    # Check if response already has disclaimer
-                    if "This information is not a substitute" in final_answer:
-                        # Add references before disclaimer
+                    # Add disclaimer if not present
+                    if "This information is not a substitute" not in kg_content:
+                        disclaimer = "This information is not a substitute for professional medical advice. If symptoms persist or worsen, please consult with a qualified healthcare provider."
+                        final_response = kg_content.strip() + references + "\n\n" + disclaimer
+                    else:
+                        # Keep existing disclaimer
                         disclaimer_pattern = r'(This information is not a substitute.*?provider\.)'
-                        disclaimer_match = re.search(disclaimer_pattern, final_answer, re.DOTALL)
+                        disclaimer_match = re.search(disclaimer_pattern, kg_content, re.DOTALL)
                         if disclaimer_match:
                             disclaimer = disclaimer_match.group(1)
-                            final_response = re.sub(disclaimer_pattern, '', final_answer, flags=re.DOTALL)
-                            final_response = final_response.strip() + "\n\n" + references + "\n\n" + disclaimer
+                            kg_content_no_disclaimer = re.sub(disclaimer_pattern, '', kg_content, flags=re.DOTALL)
+                            final_response = kg_content_no_disclaimer.strip() + references + "\n\n" + disclaimer
                         else:
-                            final_response = final_answer.strip() + "\n\n" + references
-                    else:
-                        # Add references and standard disclaimer
-                        disclaimer = "This information is not a substitute for professional medical advice. If symptoms persist or worsen, please consult with a qualified healthcare provider."
-                        final_response = final_answer.strip() + "\n\n" + references + "\n\n" + disclaimer
+                            final_response = kg_content.strip() + references
                 else:
-                    final_response = final_answer
-                
-                # Collect response metrics
-                metrics = {
-                    "query": user_input,
-                    "kg_confidence": kg_confidence,
-                    "rag_confidence": rag_confidence,
-                    "strategy": strategy_used,
-                    "response_length": len(final_response),
-                    "processing_time": (datetime.now() - t_start).total_seconds(),
-                    "source_count": len(all_sources)
-                }
-                
-                # Log metrics to CSV
-                self.log_response_metrics(metrics)
+                    final_response = kg_content
                 
                 # Add to chat history
                 self.chat_history.append((user_input, final_response))
                 
                 # Return response and sources
-                return final_response, all_sources
+                return final_response, sources
+            
+            # Process with RAG
+            print("📚 Processing with RAG...")
+            t_start = datetime.now()
+            formatted_history = self.format_chat_history()
+            
+            # Get RAG response
+            rag_response = self.qa_chain.invoke({
+                "question": user_input,
+                "chat_history": formatted_history
+            })
+            
+            rag_content = rag_response["answer"]
+            if "Helpful Answer:" in rag_content:
+                rag_content = rag_content.split("Helpful Answer:")[-1]
+            
+            # Extract RAG sources
+            rag_sources = []
+            source_texts = []
+            for doc in rag_response["source_documents"][:3]:
+                source_text = doc.page_content
+                source_texts.append(source_text)
                 
-            except Exception as e:
-                import traceback
-                print(f"⚠️ Error in generate_response: {e}")
-                print(traceback.format_exc())
-                return f"Error generating response: {str(e)}", []
+                if hasattr(doc, "metadata") and "source" in doc.metadata:
+                    source_name = doc.metadata["source"]
+                    if "dxbook" in source_name.lower() or "rawdata.pdf" in source_name:
+                        page_num = doc.metadata.get("page", "N/A")
+                        rag_sources.append(f"Internal Data: DxBook, Page {page_num} - {source_text}")
+                    else:
+                        rag_sources.append(source_text)
+                else:
+                    rag_sources.append(source_text)
+            
+            # Calculate RAG confidence based on relevance of retrieved documents
+            rag_relevance_scores = []
+            for text in source_texts:
+                # Simple keyword matching
+                query_keywords = set(word.lower() for word in user_input.split() if len(word) > 3)
+                content_lower = text.lower()
+                matches = sum(1 for kw in query_keywords if kw in content_lower)
+                score = min(matches / max(len(query_keywords), 1), 1.0)
+                rag_relevance_scores.append(score)
+            
+            # Average relevance score
+            rag_confidence = sum(rag_relevance_scores) / max(len(rag_relevance_scores), 1)
+            print(f"📊 RAG Confidence: {rag_confidence:.4f} (took {(datetime.now() - t_start).total_seconds():.2f}s)")
+            
+            # Log confidence scores and query
+            print(f"📊 Orchestration Decision:")
+            print(f"   Query: {user_input}")
+            print(f"   KG Confidence: {kg_confidence:.4f}")
+            print(f"   RAG Confidence: {rag_confidence:.4f}")
+            
+            # Use reflection agent to determine the best answer
+            print("🧠 Using reflection agent to evaluate and combine answers...")
+            t_start = datetime.now()
+            
+            # Use the reflection agent to evaluate and combine answers
+            final_answer, strategy_used = self.reflection_agent(user_input, kg_content, rag_content, kg_confidence)
+            
+            print(f"📊 Reflection Strategy: {strategy_used}")
+            print(f"✅ Response generated (took {(datetime.now() - t_start).total_seconds():.2f}s)")
+            
+            # Combine all sources for reference
+            all_sources = rag_sources
+            if disease:
+                all_sources.append(f"[KG] Knowledge Graph: {disease}")
+            
+            # Log the orchestration decision for analysis
+            self.log_orchestration_decision(
+                user_input,
+                f"SELECTED_STRATEGY: {strategy_used}\nREASONING: Determined by reflection agent based on answer completeness evaluation.\nRESPONSE: {final_answer[:100]}...",
+                kg_confidence,
+                rag_confidence
+            )
+            self.last_strategy = strategy_used  # Store for testing
+            
+            # Add references if not included
+            if "## References:" not in final_answer and all_sources:
+                references = "\n\n## References:\n"
+                for i, src in enumerate(all_sources, 1):
+                    references += f"{i}. {src}\n\n"
+                
+                # Check if response already has disclaimer
+                if "This information is not a substitute" in final_answer:
+                    # Add references before disclaimer
+                    disclaimer_pattern = r'(This information is not a substitute.*?provider\.)'
+                    disclaimer_match = re.search(disclaimer_pattern, final_answer, re.DOTALL)
+                    if disclaimer_match:
+                        disclaimer = disclaimer_match.group(1)
+                        final_response = re.sub(disclaimer_pattern, '', final_answer, flags=re.DOTALL)
+                        final_response = final_response.strip() + "\n\n" + references + "\n\n" + disclaimer
+                    else:
+                        final_response = final_answer.strip() + "\n\n" + references
+                else:
+                    # Add references and standard disclaimer
+                    disclaimer = "This information is not a substitute for professional medical advice. If symptoms persist or worsen, please consult with a qualified healthcare provider."
+                    final_response = final_answer.strip() + "\n\n" + references + "\n\n" + disclaimer
+            else:
+                final_response = final_answer
+            
+            # Collect response metrics
+            metrics = {
+                "query": user_input,
+                "kg_confidence": kg_confidence,
+                "rag_confidence": rag_confidence,
+                "strategy": strategy_used,
+                "response_length": len(final_response),
+                "processing_time": (datetime.now() - t_start).total_seconds(),
+                "source_count": len(all_sources)
+            }
+            
+            # Log metrics to CSV
+            self.log_response_metrics(metrics)
+            
+            # Add to chat history
+            self.chat_history.append((user_input, final_response))
+            
+            # Return response and sources
+            return final_response, all_sources
+            
+        except Exception as e:
+            import traceback
+            print(f"⚠️ Error in generate_response: {e}")
+            print(traceback.format_exc())
+            return f"Error generating response: {str(e)}", []
             
     def log_response_metrics(self, metrics):
         """Log response generation metrics to CSV for analysis."""
