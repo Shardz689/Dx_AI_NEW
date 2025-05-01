@@ -698,6 +698,24 @@ class DocumentChatBot:
 
         return [], 0.0
 
+    def is_disease_identification_query(self, query):
+        """Determine if a query is specifically asking what disease matches symptoms"""
+        query = query.lower()
+        
+        # Check for symptom-to-disease query patterns
+        disease_patterns = [
+            r"what (could|might|can) (i|my|the patient|they) have",
+            r"what (is|are) (the )?(possible|potential) (disease|diagnosis|condition)",
+            r"what (disease|condition|diagnosis) (matches|is indicated by|could cause)",
+            r"what (might|could) (be|cause) (these|the|my|their) symptoms"
+        ]
+        
+        for pattern in disease_patterns:
+            if re.search(pattern, query):
+                return True
+        
+        return False
+                   
     def knowledge_graph_agent(self, state: Dict) -> Dict:
         """
         Knowledge Graph Agent
@@ -1018,59 +1036,56 @@ class DocumentChatBot:
                 break
         
         # If it's a disease query and we found diseases, format the answer and boost confidence
-        if is_disease_query and (result.get("disease") or result.get("diseases")):
-            diseases = result.get("diseases", [result.get("disease")]) if result.get("disease") else []
+        if self.is_disease_identification_query(user_query) and (result.get("diseases") or result.get("disease")):
+            # Format a more comprehensive symptom-to-disease answer
+            diseases = result.get("diseases", [])
+            if not diseases and result.get("disease"):
+                diseases = [result.get("disease")]
+                
+            disease_confidences = result.get("disease_confidences", [0.0] * len(diseases))
+            if len(disease_confidences) < len(diseases):
+                disease_confidences = disease_confidences + [0.7] * (len(diseases) - len(disease_confidences))
             
-            if diseases:
-                # Format a focused disease identification answer
-                disease_answer = "# Possible Diagnoses Based on Symptoms\n\n"
+            # Create a more focused disease identification answer
+            disease_answer = "# Possible Diseases Based on Symptoms\n\n"
+            
+            # Add symptoms section
+            symptoms = result.get("symptoms", [])
+            if symptoms:
+                disease_answer += f"## Symptoms Identified\n{', '.join(symptoms)}\n\n"
+            
+            # Add each disease with details
+            for i, disease in enumerate(diseases):
+                conf = disease_confidences[i] if i < len(disease_confidences) else 0.7
+                disease_answer += f"## {disease}\n"
+                disease_answer += f"**Confidence:** {conf:.2f}\n"
                 
-                # Get the matched symptoms
-                symptoms = result.get("symptoms", [])
-                matched_symptoms = result.get("matched_symptoms", [])
+                # Add matched symptoms for this disease if available
+                if result.get("matched_symptoms"):
+                    disease_answer += f"**Matching Symptoms:** {', '.join(result.get('matched_symptoms'))}\n\n"
                 
-                # Add a symptoms section first
-                if symptoms:
-                    disease_answer += f"## Symptoms Identified\n"
-                    disease_answer += f"{', '.join(symptoms)}\n\n"
+                # Add treatments if available
+                treatments = result.get("treatments", [])
+                if treatments:
+                    disease_answer += "**Recommended Treatments:**\n"
+                    for treatment in treatments:
+                        disease_answer += f"- {treatment}\n"
+                    disease_answer += "\n"
                 
-                # Add each disease with its details
-                for disease in diseases:
-                    if isinstance(disease, tuple):
-                        # Handle case where disease is a tuple with confidence
-                        disease_name = disease[0]
-                        confidence = disease[1]
-                    else:
-                        # Handle case where disease is just a string
-                        disease_name = disease
-                        confidence = result.get("disease_confidence", 0.7)
-                    
-                    disease_answer += f"## {disease_name}\n"
-                    disease_answer += f"**Confidence Score:** {confidence:.2f}\n"
-                    
-                    if matched_symptoms:
-                        disease_answer += f"**Matching Symptoms:** {', '.join(matched_symptoms)}\n\n"
-                    
-                    # Add treatments if available
-                    treatments = result.get("treatments", [])
-                    if treatments:
-                        disease_answer += "**Recommended Treatments:**\n"
-                        for treatment in treatments:
-                            disease_answer += f"- {treatment}\n"
-                        disease_answer += "\n"
-                    
-                    # Add home remedies if available
-                    remedies = result.get("home_remedies", [])
-                    if remedies:
-                        disease_answer += "**Home Remedies:**\n"
-                        for remedy in remedies:
-                            disease_answer += f"- {remedy}\n"
-                        disease_answer += "\n"
-                
-                # Update the kg_answer and boost confidence
-                result["kg_answer"] = disease_answer
-                result["kg_confidence"] = max(0.9, result.get("kg_confidence", 0.0))
-                print("✅ Knowledge graph returned results, no follow-up needed")
+                # Add home remedies if available
+                remedies = result.get("home_remedies", [])
+                if remedies:
+                    disease_answer += "**Home Remedies:**\n"
+                    for remedy in remedies:
+                        disease_answer += f"- {remedy}\n"
+                    disease_answer += "\n"
+            
+            # Update the kg_answer with this more focused format
+            result["kg_answer"] = disease_answer
+            
+            # Boost confidence for disease identification queries
+            result["kg_confidence"] = max(0.85, result.get("kg_confidence", 0.0))
+            print("✅ Disease identification query detected, formatted comprehensive KG response")
         
         return result
                     
@@ -1087,6 +1102,9 @@ class DocumentChatBot:
             Returns:
                 tuple: (final_answer, strategy_used)
             """
+            if self.is_disease_identification_query(user_query) and ("Possible Diseases:" in kg_answer or "Disease:" in kg_answer):
+                print("Reflection decision: KG_ONLY - Disease identification query with KG results")
+                return kg_answer, "KG_ONLY"
             # Set threshold for considering an answer complete
             COMPLETENESS_THRESHOLD = 0.85
             
