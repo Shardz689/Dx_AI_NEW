@@ -1045,7 +1045,7 @@ class DocumentChatBot:
             new_state["kg_confidence"] = 1.0  # Maximum confidence
             print("✅ Disease identification query detected, boosting KG confidence to maximum")
 
-    return new_state
+        return new_state
 
     def process_with_knowledge_graph(self, user_query: str) -> Dict:
         """Process user query with knowledge graph agent"""
