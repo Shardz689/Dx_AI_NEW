@@ -841,7 +841,40 @@ class DocumentChatBot:
             answer += "Please consult with a healthcare provider as soon as possible for proper evaluation, diagnosis, and treatment."
             
             return answer 
-                   
+        
+    def check_answer_covers_aspects(self, answer, query_aspects):
+        """Check if an answer addresses all required aspects of a query"""
+        if not answer:
+            return False
+            
+        answer_lower = answer.lower()
+        
+        # Check for each required aspect
+        aspects_coverage = {aspect: False for aspect, required in query_aspects.items() if required}
+        
+        # Disease identification coverage
+        if query_aspects.get("disease_identification"):
+            disease_indicators = ["disease", "condition", "diagnosis", "disorder"]
+            aspects_coverage["disease_identification"] = any(indicator in answer_lower for indicator in disease_indicators)
+        
+        # Treatment coverage
+        if query_aspects.get("treatment"):
+            treatment_indicators = ["treatment", "therapy", "medication", "manage", "drug", "prescription"]
+            aspects_coverage["treatment"] = any(indicator in answer_lower for indicator in treatment_indicators)
+        
+        # Prevention coverage
+        if query_aspects.get("prevention"):
+            prevention_indicators = ["prevent", "prevention", "avoid", "reduce risk", "lifestyle change"]
+            aspects_coverage["prevention"] = any(indicator in answer_lower for indicator in prevention_indicators)
+        
+        # Causes coverage
+        if query_aspects.get("causes"):
+            cause_indicators = ["cause", "reason", "etiology", "factor", "lead to", "result from"]
+            aspects_coverage["causes"] = any(indicator in answer_lower for indicator in cause_indicators)
+        
+        # All aspects covered?
+        return all(aspects_coverage.values())
+    
     def knowledge_graph_agent(self, state: Dict) -> Dict:
         """
         Knowledge Graph Agent
@@ -859,10 +892,23 @@ class DocumentChatBot:
     
         # Create a new state to collect all updates
         new_state = {**state}
+        
+        # Extract query aspects to identify multi-part queries
+        query_aspects = self.segment_query(state["user_query"])
+        is_multi_part = sum(1 for aspect in query_aspects.values() if aspect) > 1
+        
+        if is_multi_part:
+            print(f"Multi-part query detected with aspects: {[k for k, v in query_aspects.items() if v]}")
+            new_state["query_aspects"] = query_aspects
+            new_state["is_multi_part"] = True
     
         # Track progress
         processed_tasks = 0
         successful_tasks = 0
+        
+        # Track additional data for multi-part queries
+        prevention_info = []
+        cause_info = []
     
         # Loop through the tasks
         for task in subtasks:
@@ -990,6 +1036,23 @@ class DocumentChatBot:
                         if task_result["status"] == "completed":
                             new_state["treatments"] = treatments
                             new_state["treatment_confidence"] = conf
+                            
+                            # Extract prevention-related treatments for multi-part queries
+                            if is_multi_part and query_aspects.get("prevention"):
+                                prev_keywords = ["prevent", "avoid", "reduc", "risk", "lifestyle", "modif", "healthy"]
+                                prevention_info = [t for t in treatments 
+                                                 if any(kw in t.lower() for kw in prev_keywords)]
+                                new_state["prevention_info"] = prevention_info
+                                print(f"✔️ Prevention information extracted: {prevention_info}")
+                                
+                            # Extract cause-related information for multi-part queries
+                            if is_multi_part and query_aspects.get("causes"):
+                                cause_keywords = ["cause", "factor", "risk", "due to", "result from", "etiology"]
+                                cause_info = [t for t in treatments 
+                                            if any(kw in t.lower() for kw in cause_keywords)]
+                                new_state["cause_info"] = cause_info
+                                print(f"✔️ Cause information extracted: {cause_info}")
+                            
                             successful_tasks += 1
                             print(f"✔️ Treatments found for {disease}: {treatments} with confidence {conf:.4f}")
                     else:
@@ -1081,6 +1144,10 @@ class DocumentChatBot:
                 kg_answers.append(f"Treatments: {', '.join(new_state['treatments'])}")
             if new_state.get("home_remedies"):
                 kg_answers.append(f"Home Remedies: {', '.join(new_state['home_remedies'])}")
+            if new_state.get("prevention_info"):
+                kg_answers.append(f"Prevention: {', '.join(new_state['prevention_info'])}")
+            if new_state.get("cause_info"):
+                kg_answers.append(f"Causes: {', '.join(new_state['cause_info'])}")
     
             if kg_answers:
                 new_state["kg_answer"] = "\n".join(kg_answers)
@@ -1094,11 +1161,13 @@ class DocumentChatBot:
             new_state["kg_answer"] = ""
             new_state["kg_confidence"] = 0.0
         
-        # Special handling for disease identification queries
-        query = new_state.get("user_query", "").lower()
-        is_disease_query = self.is_disease_identification_query(query)
+        # Identify query types
+        is_disease_query = self.is_disease_identification_query(state.get("user_query", ""))
+        is_treatment_query = state.get("is_treatment_query", False) or self.is_treatment_query(state.get("user_query", ""))
         
-        # If it's a disease query and we found diseases, boost confidence
+        # Format comprehensive answers for different query types
+        
+        # 1. Disease identification query formatting
         if is_disease_query and (new_state.get("diseases") or new_state.get("disease")):
             # Format the KG answer for disease identification specifically
             symptoms = new_state.get("symptoms", [])
@@ -1121,31 +1190,75 @@ class DocumentChatBot:
                 if new_state.get("matched_symptoms"):
                     disease_answer += f"**Matching Symptoms:** {', '.join(new_state.get('matched_symptoms'))}\n\n"
                 
+                # Add treatments if available
                 if new_state.get("treatments"):
                     disease_answer += "**Recommended Treatments:**\n"
                     for treatment in new_state.get("treatments", []):
                         disease_answer += f"- {treatment}\n"
                     disease_answer += "\n"
                 
+                # Add home remedies if available
                 if new_state.get("home_remedies"):
                     disease_answer += "**Home Remedies:**\n"
                     for remedy in new_state.get("home_remedies", []):
                         disease_answer += f"- {remedy}\n"
+                    disease_answer += "\n"
+                
+                # Add prevention information for multi-part queries
+                if is_multi_part and query_aspects.get("prevention"):
+                    disease_answer += "**Prevention Strategies:**\n"
+                    
+                    # Use extracted prevention info if available
+                    if new_state.get("prevention_info"):
+                        for prevention in new_state.get("prevention_info"):
+                            disease_answer += f"- {prevention}\n"
+                    # Otherwise provide generic prevention advice
+                    else:
+                        disease_answer += f"- Regular check-ups and screenings are recommended for early detection.\n"
+                        disease_answer += f"- Maintain a healthy lifestyle with regular exercise and balanced diet.\n"
+                        if "cardiovascular" in disease.lower() or "heart" in disease.lower():
+                            disease_answer += f"- Monitor and control blood pressure and cholesterol levels.\n"
+                            disease_answer += f"- Avoid smoking and limit alcohol consumption.\n"
+                        elif "respiratory" in disease.lower() or "lung" in disease.lower():
+                            disease_answer += f"- Avoid exposure to pollutants and irritants.\n"
+                            disease_answer += f"- Practice good respiratory hygiene and consider vaccinations.\n"
+                    disease_answer += "\n"
+                
+                # Add cause information for multi-part queries
+                if is_multi_part and query_aspects.get("causes"):
+                    disease_answer += "**Common Causes and Risk Factors:**\n"
+                    
+                    # Use extracted cause info if available
+                    if new_state.get("cause_info"):
+                        for cause in new_state.get("cause_info"):
+                            disease_answer += f"- {cause}\n"
+                    # Otherwise provide generic cause information
+                    else:
+                        if "cardiovascular" in disease.lower() or "heart" in disease.lower():
+                            disease_answer += f"- High blood pressure and high cholesterol are major risk factors.\n"
+                            disease_answer += f"- Family history and genetic factors can predispose individuals.\n"
+                            disease_answer += f"- Sedentary lifestyle, smoking, and poor diet contribute to risk.\n"
+                        elif "respiratory" in disease.lower() or "lung" in disease.lower():
+                            disease_answer += f"- Infections from viruses or bacteria are common causes.\n"
+                            disease_answer += f"- Environmental factors like pollution can trigger or worsen symptoms.\n"
+                            disease_answer += f"- Underlying conditions like asthma may increase susceptibility.\n"
                     disease_answer += "\n"
             
             # Override the existing kg_answer with the formatted one
             new_state["kg_answer"] = disease_answer
             
             # Boost confidence to ensure KG-only route
-            new_state["kg_confidence"] = 1.0
-            print("✅ Disease identification query detected, boosting KG confidence to maximum")
+            # For multi-part queries, only boost to maximum if we've addressed all aspects
+            if not is_multi_part or (is_multi_part and self.check_answer_covers_aspects(disease_answer, query_aspects)):
+                new_state["kg_confidence"] = 1.0
+                print("✅ Disease identification query detected, boosting KG confidence to maximum")
+            else:
+                # Slightly lower confidence if not all aspects are covered
+                new_state["kg_confidence"] = 0.85
+                print("⚠️ Disease identification query detected, but not all aspects covered")
         
-        # Special handling for treatment queries
-        is_treatment_query = new_state.get("is_treatment_query", False) or self.is_treatment_query(query)
-        has_disease = new_state.get("direct_disease_mention") or new_state.get("disease")
-        has_treatments = new_state.get("treatments") or new_state.get("home_remedies")
-        
-        if is_treatment_query and has_disease and has_treatments:
+        # 2. Treatment query formatting
+        elif is_treatment_query and new_state.get("treatments"):
             disease = new_state.get("direct_disease_mention", new_state.get("disease", "this condition"))
             
             treatment_answer = f"# Treatment Options for {disease.title()}\n\n"
@@ -1164,6 +1277,26 @@ class DocumentChatBot:
                     treatment_answer += f"- {remedy}\n"
                 treatment_answer += "\n"
             
+            # Add prevention information for multi-part queries
+            if is_multi_part and query_aspects.get("prevention"):
+                treatment_answer += "## Prevention Strategies\n"
+                
+                # Use extracted prevention info if available
+                if new_state.get("prevention_info"):
+                    for prevention in new_state.get("prevention_info"):
+                        treatment_answer += f"- {prevention}\n"
+                # Otherwise provide generic prevention advice
+                else:
+                    treatment_answer += f"- Regular check-ups and screenings are recommended for early detection.\n"
+                    treatment_answer += f"- Maintain a healthy lifestyle with regular exercise and balanced diet.\n"
+                    if "cardiovascular" in disease.lower() or "heart" in disease.lower():
+                        treatment_answer += f"- Monitor and control blood pressure and cholesterol levels.\n"
+                        treatment_answer += f"- Avoid smoking and limit alcohol consumption.\n"
+                    elif "respiratory" in disease.lower() or "lung" in disease.lower():
+                        treatment_answer += f"- Avoid exposure to pollutants and irritants.\n"
+                        treatment_answer += f"- Practice good respiratory hygiene and consider vaccinations.\n"
+                treatment_answer += "\n"
+            
             # Add general information
             treatment_answer += "## General Information\n"
             treatment_answer += f"Treatment for {disease} typically involves a combination of medical interventions and lifestyle adjustments. "
@@ -1174,10 +1307,17 @@ class DocumentChatBot:
             new_state["kg_answer"] = treatment_answer
             
             # Boost confidence to ensure KG-only route
-            new_state["kg_confidence"] = 1.0
-            print(f"✅ Treatment query detected for {disease}, formatted response with maximum confidence")
+            # For multi-part queries, only boost to maximum if we've addressed all aspects
+            if not is_multi_part or (is_multi_part and self.check_answer_covers_aspects(treatment_answer, query_aspects)):
+                new_state["kg_confidence"] = 1.0
+                print(f"✅ Treatment query detected for {disease}, formatted response with maximum confidence")
+            else:
+                # Slightly lower confidence if not all aspects are covered
+                new_state["kg_confidence"] = 0.85
+                print(f"⚠️ Treatment query detected for {disease}, but not all aspects covered")
     
         return new_state
+        
     def process_with_knowledge_graph(self, user_query: str) -> Dict:
         """Process user query with knowledge graph agent"""
         print(f"Processing with knowledge graph: {user_query}")
@@ -1315,198 +1455,292 @@ class DocumentChatBot:
                     
     def reflection_agent(self, user_query, kg_answer, rag_answer, kg_confidence=None):
         """
-        Evaluates all possible combinations of knowledge sources to provide the most
-        complete answer to the user query.
-        """
-        # Add detailed logging at the beginning
-        print(f"Processing query: {user_query}")
-        print(f"Disease query? {self.is_disease_identification_query(user_query)}")
-        print(f"Treatment query? {self.is_treatment_query(user_query)}")
-        print(f"KG Confidence: {kg_confidence}")
+        Comprehensive reflection agent that analyzes and combines knowledge sources
+        to produce the optimal answer for each query type.
         
+        Routes: KG-only, RAG-only, LLM-only, KG+RAG, KG+LLM, RAG+LLM, KG+RAG+LLM
+        """
+        # Start detailed logging
+        print(f"\n===== REFLECTION AGENT ANALYSIS =====")
+        print(f"Query: {user_query}")
+        
+        # 1. QUERY ANALYSIS
+        # Identify query aspects
+        query_aspects = self.segment_query(user_query)
+        is_multi_part = sum(1 for aspect in query_aspects.values() if aspect) > 1
+        
+        if is_multi_part:
+            print(f"Multi-part query detected with aspects: {[k for k, v in query_aspects.items() if v]}")
+        
+        is_disease_identification = self.is_disease_identification_query(user_query)
+        is_treatment_query = self.is_treatment_query(user_query)
+        
+        print(f"Query types: Disease identification: {is_disease_identification}, Treatment: {is_treatment_query}")
+        print(f"KG Confidence: {kg_confidence:.4f}")
+        
+        # Extract diseases for disease-based queries
         if not self.identified_diseases and kg_answer:
             self.extract_diseases_from_kg_answer(kg_answer)
         
-        # CRITICAL CHANGE: Check for very high confidence KG answers first
-        # If KG confidence is extremely high (0.9+), always use KG only
-        if kg_confidence is not None and kg_confidence >= 0.9:
-            print(f"Reflection decision: KG_ONLY - Very high confidence KG answer ({kg_confidence})")
-            return kg_answer, "KG_ONLY"
+        # 2. THRESHOLD DEFINITIONS
+        # Define thresholds for different decisions
+        KG_HIGH_THRESHOLD = 0.90    # Extremely high confidence for KG
+        KG_MEDIUM_THRESHOLD = 0.75  # Good confidence for KG
+        COMPLETENESS_THRESHOLD = 0.65  # Basic threshold for answer completeness
         
-        # Special case for disease identification with KG results
-        if self.is_disease_identification_query(user_query):
-            if isinstance(self.identified_diseases, list) and len(self.identified_diseases) > 0:
-                formatted_answer = self.format_disease_list_answer(user_query, self.identified_diseases, self.disease_confidence)
-                print(f"Reflection decision: KG_ONLY - Disease identification with {len(self.identified_diseases)} diseases")
-                return formatted_answer, "KG_ONLY"
-            elif "Possible Diseases:" in kg_answer or "Disease:" in kg_answer or "# Possible Diagnoses" in kg_answer:
-                print("Reflection decision: KG_ONLY - Disease identification query with KG results")
-                return kg_answer, "KG_ONLY"
-        
-        # Special case for treatment queries with KG results
-        if self.is_treatment_query(user_query) and ("Treatment Options for" in kg_answer or 
-                                                   "Medical Treatments" in kg_answer or 
-                                                   "Home Remedies" in kg_answer or
-                                                   "Treatments:" in kg_answer):
-            print("Reflection decision: KG_ONLY - Treatment query with KG results")
-            return kg_answer, "KG_ONLY"
-        
-        # For high but not extremely high confidence (0.7-0.9)
-        if kg_confidence is not None and kg_confidence >= 0.7:
-            print(f"Reflection decision: KG_ONLY - High confidence KG answer ({kg_confidence})")
-            return kg_answer, "KG_ONLY"  # Use KG_ONLY instead of combining
-        
-        # Set threshold for considering an answer complete
-        COMPLETENESS_THRESHOLD = 0.65
-        
-        # Start logging the reflection process
-        print(f"Reflection agent analyzing query: {user_query}")
-        
-        # Evaluate completeness of individual sources
+        # 3. INDIVIDUAL SOURCE EVALUATION
+        # Evaluate the completeness of each individual source
+        print("\n--- Individual Source Evaluation ---")
         kg_completeness = self.evaluate_answer_completeness(user_query, kg_answer)
         rag_completeness = self.evaluate_answer_completeness(user_query, rag_answer)
         
-        print(f"KG completeness: {kg_completeness}, RAG completeness: {rag_completeness}")
+        print(f"KG completeness: {kg_completeness:.4f}")
+        print(f"RAG completeness: {rag_completeness:.4f}")
         
-        # Evaluate what's missing from each source
+        # Check if individual sources cover all aspects for multi-part queries
+        kg_covers_all_aspects = self.check_answer_covers_aspects(kg_answer, query_aspects) if is_multi_part else True
+        rag_covers_all_aspects = self.check_answer_covers_aspects(rag_answer, query_aspects) if is_multi_part else True
+        
+        print(f"KG covers all aspects: {kg_covers_all_aspects}")
+        print(f"RAG covers all aspects: {rag_covers_all_aspects}")
+        
+        # Identify what's missing from each source
         kg_missing = self.identify_missing_elements(user_query, kg_answer)
         rag_missing = self.identify_missing_elements(user_query, rag_answer)
         
-        # Case 1: KG only - sufficient
-        if kg_completeness >= COMPLETENESS_THRESHOLD:
-            print("Reflection decision: KG_ONLY - KG answer is complete")
-            return kg_answer, "KG_ONLY"
+        if kg_missing:
+            print(f"KG missing elements: {kg_missing}")
+        if rag_missing:
+            print(f"RAG missing elements: {rag_missing}")
         
-        # Case 2: RAG only - sufficient
-        if rag_completeness >= COMPLETENESS_THRESHOLD:
+        # 4. DECISION TREE FOR SOURCE SELECTION
+        # Follows priority order: KG > RAG > Combined > LLM
+        
+        # 4.1 KG-ONLY ROUTE (Highest Priority)
+        # Cases where we should use KG-only
+        if kg_answer:
+            # Case 1: Very high confidence KG answers
+            if kg_confidence is not None and kg_confidence >= KG_HIGH_THRESHOLD and kg_covers_all_aspects:
+                print("Reflection decision: KG_ONLY - Very high confidence KG answer")
+                return kg_answer, "KG_ONLY"
+            
+            # Case 2: Disease identification queries with good KG results
+            if is_disease_identification and (
+                "Possible Diseases:" in kg_answer or 
+                "Disease:" in kg_answer or 
+                "# Possible Diagnoses" in kg_answer
+            ):
+                # For multi-part queries, check if KG covers all aspects
+                if not is_multi_part or (is_multi_part and kg_covers_all_aspects):
+                    print("Reflection decision: KG_ONLY - Disease identification query with KG results")
+                    return kg_answer, "KG_ONLY"
+            
+            # Case 3: Treatment queries with good KG results
+            if is_treatment_query and (
+                "Treatment Options for" in kg_answer or 
+                "Medical Treatments" in kg_answer or 
+                "Home Remedies" in kg_answer or
+                "Treatments:" in kg_answer
+            ):
+                # For multi-part queries, check if KG covers all aspects
+                if not is_multi_part or (is_multi_part and kg_covers_all_aspects):
+                    print("Reflection decision: KG_ONLY - Treatment query with KG results")
+                    return kg_answer, "KG_ONLY"
+            
+            # Case 4: Medium confidence KG answers that are complete
+            if kg_confidence is not None and kg_confidence >= KG_MEDIUM_THRESHOLD and kg_completeness >= COMPLETENESS_THRESHOLD:
+                print(f"Reflection decision: KG_ONLY - Good confidence KG answer ({kg_confidence:.4f})")
+                return kg_answer, "KG_ONLY"
+        
+        # 4.2 RAG-ONLY ROUTE (Second Priority)
+        # When RAG provides a highly complete answer
+        if rag_answer and rag_completeness >= COMPLETENESS_THRESHOLD and rag_covers_all_aspects:
             print("Reflection decision: RAG_ONLY - RAG answer is complete")
             return rag_answer, "RAG_ONLY"
         
-        # Case 3: KG + RAG combination
-        kg_rag_combined = self.combine_answers(kg_answer, rag_answer, kg_missing)
-        kg_rag_completeness = self.evaluate_answer_completeness(user_query, kg_rag_combined)
+        # 4.3 COMBINED SOURCE ROUTES
+        print("\n--- Combination Evaluation ---")
+        # First try combining KG and RAG
+        if kg_answer and rag_answer:
+            kg_rag_combined = self.combine_answers(kg_answer, rag_answer, kg_missing)
+            kg_rag_completeness = self.evaluate_answer_completeness(user_query, kg_rag_combined)
+            print(f"KG+RAG completeness: {kg_rag_completeness:.4f}")
+            
+            if kg_rag_completeness >= COMPLETENESS_THRESHOLD:
+                print("Reflection decision: KG_RAG_COMBINED - Combined KG and RAG answer is complete")
+                return kg_rag_combined, "KG_RAG_COMBINED"
         
-        print(f"KG+RAG completeness: {kg_rag_completeness}")
-        
-        if kg_rag_completeness >= COMPLETENESS_THRESHOLD:
-            print("Reflection decision: KG_RAG_COMBINED - Combined KG and RAG answer is complete")
-            return kg_rag_combined, "KG_RAG_COMBINED"
-        
-        # Generate LLM answer for missing parts
+        # 4.4 LLM ROUTES
+        # Generate an LLM answer focused on the missing elements
+        print("\n--- LLM Generation ---")
         llm_answer = self.generate_llm_answer(user_query, kg_missing, rag_missing)
         llm_completeness = self.evaluate_answer_completeness(user_query, llm_answer)
+        print(f"LLM completeness: {llm_completeness:.4f}")
         
-        print(f"LLM completeness: {llm_completeness}")
-        
-        # Case 4: LLM only - sufficient
+        # Check if LLM alone is sufficient
         if llm_completeness >= COMPLETENESS_THRESHOLD:
             print("Reflection decision: LLM_ONLY - LLM answer is complete")
             return llm_answer, "LLM_ONLY"
         
-        # Case 5: KG + LLM combination
-        kg_llm_combined = self.combine_answers(kg_answer, llm_answer, kg_missing)
-        kg_llm_completeness = self.evaluate_answer_completeness(user_query, kg_llm_combined)
+        # Try KG + LLM combination
+        if kg_answer:
+            kg_llm_combined = self.combine_answers(kg_answer, llm_answer, kg_missing)
+            kg_llm_completeness = self.evaluate_answer_completeness(user_query, kg_llm_combined)
+            print(f"KG+LLM completeness: {kg_llm_completeness:.4f}")
+            
+            if kg_llm_completeness >= COMPLETENESS_THRESHOLD:
+                print("Reflection decision: KG_LLM_COMBINED - Combined KG and LLM answer is complete")
+                return kg_llm_combined, "KG_LLM_COMBINED"
         
-        print(f"KG+LLM completeness: {kg_llm_completeness}")
+        # Try RAG + LLM combination
+        if rag_answer:
+            rag_llm_combined = self.combine_answers(rag_answer, llm_answer, rag_missing)
+            rag_llm_completeness = self.evaluate_answer_completeness(user_query, rag_llm_combined)
+            print(f"RAG+LLM completeness: {rag_llm_completeness:.4f}")
+            
+            if rag_llm_completeness >= COMPLETENESS_THRESHOLD:
+                print("Reflection decision: RAG_LLM_COMBINED - Combined RAG and LLM answer is complete")
+                return rag_llm_combined, "RAG_LLM_COMBINED"
         
-        if kg_llm_completeness >= COMPLETENESS_THRESHOLD:
-            print("Reflection decision: KG_LLM_COMBINED - Combined KG and LLM answer is complete")
-            return kg_llm_combined, "KG_LLM_COMBINED"
+        # Try KG + RAG + LLM combination (all three sources)
+        if kg_answer and rag_answer:
+            all_combined = self.combine_all_answers(kg_answer, rag_answer, llm_answer)
+            all_combined_completeness = self.evaluate_answer_completeness(user_query, all_combined)
+            print(f"All sources combined completeness: {all_combined_completeness:.4f}")
+            
+            if all_combined_completeness >= COMPLETENESS_THRESHOLD:
+                print("Reflection decision: KG_RAG_LLM_COMBINED - All sources combined answer is complete")
+                return all_combined, "KG_RAG_LLM_COMBINED"
         
-        # Case 6: RAG + LLM combination
-        rag_llm_combined = self.combine_answers(rag_answer, llm_answer, rag_missing)
-        rag_llm_completeness = self.evaluate_answer_completeness(user_query, rag_llm_combined)
+        # 5. FALLBACK TO BEST AVAILABLE
+        # If no combination meets the threshold, choose the highest scoring option
+        print("\n--- Fallback Selection ---")
+        best_completeness = max(
+            kg_completeness if kg_answer else 0.0,
+            rag_completeness if rag_answer else 0.0,
+            llm_completeness,
+            kg_rag_completeness if 'kg_rag_completeness' in locals() else 0.0,
+            kg_llm_completeness if 'kg_llm_completeness' in locals() else 0.0,
+            rag_llm_completeness if 'rag_llm_completeness' in locals() else 0.0,
+            all_combined_completeness if 'all_combined_completeness' in locals() else 0.0
+        )
         
-        print(f"RAG+LLM completeness: {rag_llm_completeness}")
+        print(f"Best completeness: {best_completeness:.4f}")
         
-        if rag_llm_completeness >= COMPLETENESS_THRESHOLD:
-            print("Reflection decision: RAG_LLM_COMBINED - Combined RAG and LLM answer is complete")
-            return rag_llm_combined, "RAG_LLM_COMBINED"
-        
-        # Case 7: KG + RAG + LLM combination
-        all_combined = self.combine_all_answers(kg_answer, rag_answer, llm_answer)
-        all_combined_completeness = self.evaluate_answer_completeness(user_query, all_combined)
-        
-        print(f"All sources combined completeness: {all_combined_completeness}")
-        
-        if all_combined_completeness >= COMPLETENESS_THRESHOLD:
-            print("Reflection decision: KG_RAG_LLM_COMBINED - All sources combined answer is complete")
-            return all_combined, "KG_RAG_LLM_COMBINED"
-        
-        # Case 8: Best available answer (even if below threshold)
-        best_completeness = max(kg_completeness, rag_completeness, llm_completeness, 
-                                kg_rag_completeness, kg_llm_completeness, 
-                                rag_llm_completeness, all_combined_completeness)
-        
-        # Choose the best answer based on completeness scores
-        if best_completeness == kg_completeness:
+        # Return the option with the highest completeness score
+        if kg_answer and best_completeness == kg_completeness:
             print("Reflection decision: KG_ONLY - Best available answer")
             return kg_answer, "KG_ONLY"
-        elif best_completeness == rag_completeness:
+        elif rag_answer and best_completeness == rag_completeness:
             print("Reflection decision: RAG_ONLY - Best available answer")
             return rag_answer, "RAG_ONLY"
         elif best_completeness == llm_completeness:
             print("Reflection decision: LLM_ONLY - Best available answer")
             return llm_answer, "LLM_ONLY"
-        elif best_completeness == kg_rag_completeness:
+        elif 'kg_rag_completeness' in locals() and best_completeness == kg_rag_completeness:
             print("Reflection decision: KG_RAG_COMBINED - Best available answer")
             return kg_rag_combined, "KG_RAG_COMBINED"
-        elif best_completeness == kg_llm_completeness:
+        elif 'kg_llm_completeness' in locals() and best_completeness == kg_llm_completeness:
             print("Reflection decision: KG_LLM_COMBINED - Best available answer")
             return kg_llm_combined, "KG_LLM_COMBINED"
-        elif best_completeness == rag_llm_completeness:
+        elif 'rag_llm_completeness' in locals() and best_completeness == rag_llm_completeness:
             print("Reflection decision: RAG_LLM_COMBINED - Best available answer")
             return rag_llm_combined, "RAG_LLM_COMBINED"
         else:
             print("Reflection decision: KG_RAG_LLM_COMBINED - Best available answer")
             return all_combined, "KG_RAG_LLM_COMBINED"
-                       
+            
+    def segment_query(self, user_query: str) -> Dict[str, bool]:
+        """Identify different aspects of the query"""
+        query_lower = user_query.lower()
+        
+        # Initialize query aspects
+        aspects = {
+            "disease_identification": False,
+            "treatment": False,
+            "prevention": False,
+            "causes": False,
+            "symptoms": False
+        }
+        
+        # Check for disease identification aspect
+        if self.is_disease_identification_query(query_lower):
+            aspects["disease_identification"] = True
+        
+        # Check for treatment aspect
+        if self.is_treatment_query(query_lower):
+            aspects["treatment"] = True
+        
+        # Check for prevention aspect
+        prevention_keywords = [
+            "prevent", "prevention", "avoid", "reducing risk", "risk factor", 
+            "how to stop", "how to reduce", "protective", "preventative", "prophylaxis",
+            "lifestyle change", "primary prevention", "secondary prevention", "risk reduction"
+        ]
+        if any(keyword in query_lower for keyword in prevention_keywords):
+            aspects["prevention"] = True
+        
+        # Check for causes aspect
+        cause_keywords = [
+            "cause", "causing", "reason for", "etiology", "why", 
+            "what leads to", "pathophysiology", "mechanism", "origin"
+        ]
+        if any(keyword in query_lower for keyword in cause_keywords):
+            aspects["causes"] = True
+        
+        # Check for symptom description
+        symptom_keywords = [
+            "symptom", "sign", "indication", "manifestation", 
+            "feel", "feeling", "experiencing", "having", "suffering from"
+        ]
+        if any(keyword in query_lower for keyword in symptom_keywords):
+            aspects["symptoms"] = True
+        
+        return aspects
+    
     def evaluate_answer_completeness(self, query, answer, llm_client=None):
         """
-        Evaluates how completely an answer addresses the user query.
-        
-        Args:
-            query: The original user question
-            answer: The answer to evaluate
-            llm_client: Optional LLM client for evaluation
-            
-        Returns:
-            float: Score between 0.0 and 1.0 representing completeness
+        Evaluates how completely an answer addresses all aspects of the user query.
         """
         if not answer or answer.strip() == "":
             return 0.0
         
-        # Create an improved prompt with domain-specific guidance for medical question evaluation
+        # Identify query aspects
+        query_aspects = self.segment_query(query)
+        
+        # Create a more specific evaluation prompt
         prompt = f"""
-        You are evaluating how completely a medical answer addresses a user's health-related question.
+        You are evaluating how completely a medical answer addresses a multi-part health-related question.
         
         USER QUESTION: {query}
+        
+        Query aspects that need to be addressed:
+        - Disease identification: {'Yes' if query_aspects['disease_identification'] else 'No'}
+        - Treatment information: {'Yes' if query_aspects['treatment'] else 'No'}
+        - Prevention strategies: {'Yes' if query_aspects['prevention'] else 'No'}
+        - Cause/etiology information: {'Yes' if query_aspects['causes'] else 'No'}
+        - Symptom information: {'Yes' if query_aspects['symptoms'] else 'No'}
         
         ANSWER TO EVALUATE: {answer}
         
         Evaluation Guidelines:
-        - Focus on medical accuracy and clinical relevance of the information
-        - Consider whether all aspects of the query are addressed (symptoms, causes, treatments, prevention, etc.)
-        - For disease-related questions, check if relevant diagnoses, symptoms, and treatments are covered
-        - For medication questions, check if dosage, side effects, and contraindications are addressed when relevant
-        - For procedural questions, check if preparation, process, and recovery information is provided when relevant
-        - Factual correctness is more important than comprehensiveness
-        - If the answer says it doesn't have enough information but provides what is known, consider this appropriate
+        - Check if EACH aspect of the query is addressed thoroughly
+        - A complete answer should address ALL aspects marked as 'Yes' above
+        - If any aspect is completely missing, the score should be significantly reduced
+        - Factual correctness is essential for a high score
         
-        On a scale of 0.0 to 1.0, how completely does this answer address all aspects of the user's question?
-        - 0.0: Does not address the question at all
-        - 0.3: Addresses a minor portion of the question
-        - 0.5: Addresses roughly half of the important aspects
-        - 0.7: Addresses most important aspects but may be missing some details
-        - 0.8: Addresses nearly all aspects with minimal omissions
-        - 0.9: Addresses all medical aspects with high quality information
-        - 1.0: Addresses all aspects perfectly with comprehensive information
+        On a scale of 0.0 to 1.0, how completely does this answer address ALL aspects of the user's question?
+        0.0: Does not address the question at all
+        0.3: Addresses only a minor portion of the question's aspects
+        0.5: Addresses roughly half of the important aspects
+        0.7: Addresses most aspects but may be missing some details on one aspect
+        0.9: Addresses all aspects thoroughly
+        1.0: Addresses all aspects perfectly with comprehensive information
         
         Provide only a single number as your response.
         """
         
         try:
-            # Use the local_generate method to evaluate with Gemini
             response_text = self.local_generate(prompt, max_tokens=100)
             
             # Extract just the number using regex
