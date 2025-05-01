@@ -1149,7 +1149,62 @@ class DocumentChatBot:
                 
         except Exception as e:
             print(f"⚠️ Error logging response metrics: {e}")
-
+                            
+    def log_orchestration_decision(self, query, orchestration_result, kg_confidence, rag_confidence):
+        """
+        Analyzes and logs the orchestration decision for monitoring and improvement.
+        Extracts the strategy and reasoning from the orchestration result.
+        """
+        try:
+            # Extract strategy and reasoning
+            strategy = "UNKNOWN"
+            reasoning = "Not provided"
+            
+            if "SELECTED_STRATEGY:" in orchestration_result:
+                strategy_part = orchestration_result.split("SELECTED_STRATEGY:")[1].split("\n")[0].strip()
+                strategy = strategy_part
+                
+            if "REASONING:" in orchestration_result:
+                reasoning_parts = orchestration_result.split("REASONING:")[1].split("RESPONSE:")[0].strip()
+                reasoning = reasoning_parts.strip()
+            
+            # Log the decision
+            log_entry = {
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "query": query,
+                "strategy": strategy,
+                "reasoning": reasoning,
+                "kg_confidence": kg_confidence,
+                "rag_confidence": rag_confidence
+            }
+            
+            # Print logging information
+            print(f"📊 Orchestration Decision:")
+            print(f"   Query: {query}")
+            print(f"   Strategy: {strategy}")
+            print(f"   KG Confidence: {kg_confidence:.4f}")
+            print(f"   RAG Confidence: {rag_confidence:.4f}")
+            print(f"   Reasoning: {reasoning}")
+            
+            # Save to CSV file for analysis
+            log_file = "orchestration_log.csv"
+            file_exists = os.path.isfile(log_file)
+            
+            with open(log_file, mode='a', newline='', encoding='utf-8') as file:
+                fieldnames = ['timestamp', 'query', 'strategy', 'reasoning', 'kg_confidence', 'rag_confidence']
+                writer = csv.DictWriter(file, fieldnames=fieldnames)
+                
+                if not file_exists:
+                    writer.writeheader()
+                
+                writer.writerow(log_entry)
+            
+            return strategy
+            
+        except Exception as e:
+            print(f"⚠️ Error logging orchestration decision: {e}")
+            return "ERROR"
+                      
     def reset_conversation(self):
       """Reset the conversation history"""
       self.chat_history = []
