@@ -592,17 +592,18 @@ class DocumentChatBot:
                 records = list(result)
 
                 if records:
+                    all_diseases = [(rec["Disease"], float(rec["Confidence"]), rec["MatchedSymptoms"]) for rec in records]
+                    
+                    # For backward compatibility and logging
                     top_disease = records[0]["Disease"]
                     confidence = float(records[0]["Confidence"])
                     matched_symptoms = records[0]["MatchedSymptoms"]
-
-                    print(f"🦠 Detected Disease: {top_disease} (confidence: {confidence:.4f})")
-                    print(f"Matched symptoms: {matched_symptoms}")
-
-                    # Store all potential diseases for fallback
-                    all_diseases = [(rec["Disease"], float(rec["Confidence"])) for rec in records]
-
-                    result = (top_disease, confidence, matched_symptoms, all_diseases)
+                
+                    print(f"🦠 Detected Diseases: {[d[0] for d in all_diseases]} (top confidence: {confidence:.4f})")
+                    print(f"Top matched symptoms: {matched_symptoms}")
+                
+                    # Return all diseases as primary result
+                    result = (all_diseases, confidence, matched_symptoms, all_diseases)
                     set_cached(cache_key, result)
                     return result
 
@@ -778,8 +779,21 @@ class DocumentChatBot:
     
                         # Update main state if successful
                         if task_result["status"] == "completed":
-                            new_state["disease"] = disease
+                        # Handle the case where we receive a list of diseases
+                        if isinstance(disease, list):
+                            new_state["diseases"] = [d[0] for d in disease]  # Store all disease names
+                            new_state["disease_confidences"] = [d[1] for d in disease]  # Store all confidences
+                            new_state["disease"] = disease[0][0] if disease else None  # For backward compatibility
                             new_state["disease_confidence"] = conf
+                            new_state["matched_symptoms"] = matched
+                            successful_tasks += 1
+                            print(f"✔️ Diseases identified: {new_state['diseases']} with top confidence {conf:.4f}")
+                        else:
+                            # Backward compatibility with existing code
+                            new_state["disease"] = disease
+                            new_state["diseases"] = [disease] if disease else []
+                            new_state["disease_confidence"] = conf
+                            new_state["disease_confidences"] = [conf] if disease else []
                             new_state["matched_symptoms"] = matched
                             new_state["alternative_diseases"] = alt
                             successful_tasks += 1
@@ -869,8 +883,21 @@ class DocumentChatBot:
         # Set kg_answer for reflection agent
         if successful_tasks > 0:
             kg_answers = []
-            if new_state.get("disease"):
-                kg_answers.append(f"Disease: {new_state['disease']}")
+            if new_state.get("diseases") and len(new_state.get("diseases", [])) > 0:
+                        # For multiple diseases, list them with their confidence
+                        if len(new_state.get("diseases", [])) > 1:
+                            diseases_list = []
+                            for i, (disease, conf) in enumerate(zip(
+                                    new_state.get("diseases", []), 
+                                    new_state.get("disease_confidences", [0.7] * len(new_state.get("diseases", [])))
+                                )):
+                                diseases_list.append(f"{disease} (Confidence: {conf:.2f})")
+                            kg_answers.append(f"Possible Diseases: {', '.join(diseases_list)}")
+                        else:
+                            # Single disease case
+                            kg_answers.append(f"Disease: {new_state['diseases'][0]}")
+                    elif new_state.get("disease"):  # Backward compatibility
+                        kg_answers.append(f"Disease: {new_state['disease']}")
             if new_state.get("symptoms"):
                 kg_answers.append(f"Symptoms: {', '.join(new_state['symptoms'])}")
             if new_state.get("treatments"):
@@ -889,7 +916,58 @@ class DocumentChatBot:
             # Make sure we have at least an empty kg_answer field for the reflection agent
             new_state["kg_answer"] = ""
             new_state["kg_confidence"] = 0.0
-    
+            
+        query = new_state.get("user_query", "").lower()
+        disease_patterns = [
+            r"what (could|might|can) (i|my|the patient|they) have",
+            r"what (is|are) (the )?(possible|potential) (disease|diagnosis|condition)",
+            r"what (disease|condition|diagnosis) (matches|is indicated by|could cause)",
+            r"what (might|could) (be|cause) (these|the|my|their) symptoms"
+        ]
+        
+        is_disease_query = any(re.search(pattern, query) for pattern in disease_patterns)
+        
+        # If it's a disease query and we found diseases, boost confidence
+        if is_disease_query and (new_state.get("diseases") or new_state.get("disease")):
+            # Format the KG answer for disease identification specifically
+            symptoms = new_state.get("symptoms", [])
+            
+            disease_answer = "# Possible Diagnoses Based on Symptoms\n\n"
+            
+            if symptoms:
+                disease_answer += f"## Symptoms Identified\n{', '.join(symptoms)}\n\n"
+            
+            # List all diseases with their details
+            diseases = new_state.get("diseases", [])
+            if not diseases and new_state.get("disease"):
+                diseases = [new_state.get("disease")]
+            
+            for i, disease in enumerate(diseases):
+                conf = new_state.get("disease_confidences", [0.7])[i] if i < len(new_state.get("disease_confidences", [])) else 0.7
+                disease_answer += f"## {disease}\n"
+                disease_answer += f"**Confidence:** {conf:.2f}\n"
+                
+                if new_state.get("matched_symptoms"):
+                    disease_answer += f"**Matching Symptoms:** {', '.join(new_state.get('matched_symptoms'))}\n\n"
+                
+                if new_state.get("treatments"):
+                    disease_answer += "**Recommended Treatments:**\n"
+                    for treatment in new_state.get("treatments", []):
+                        disease_answer += f"- {treatment}\n"
+                    disease_answer += "\n"
+                
+                if new_state.get("home_remedies"):
+                    disease_answer += "**Home Remedies:**\n"
+                    for remedy in new_state.get("home_remedies", []):
+                        disease_answer += f"- {remedy}\n"
+                    disease_answer += "\n"
+            
+            # Override the existing kg_answer with the formatted one
+            new_state["kg_answer"] = disease_answer
+            
+            # Boost confidence to ensure KG-only route
+            new_state["kg_confidence"] = max(0.9, new_state.get("kg_confidence", 0.0))
+            print("✅ Disease identification query detected, boosting KG confidence")
         return new_state
 
     def process_with_knowledge_graph(self, user_query: str) -> Dict:
@@ -924,8 +1002,77 @@ class DocumentChatBot:
         if "kg_confidence" not in result:
             result["kg_confidence"] = 0.0
         
+        # Check if this is a disease identification query
+        is_disease_query = False
+        disease_patterns = [
+            r"what (could|might|can) (i|my|the patient|they) have",
+            r"what (is|are) (the )?(possible|potential) (disease|diagnosis|condition)",
+            r"what (disease|condition|diagnosis) (matches|is indicated by|could cause)",
+            r"what (might|could) (be|cause) (these|the|my|their) symptoms"
+        ]
+        
+        for pattern in disease_patterns:
+            if re.search(pattern, user_query.lower()):
+                is_disease_query = True
+                break
+        
+        # If it's a disease query and we found diseases, format the answer and boost confidence
+        if is_disease_query and (result.get("disease") or result.get("diseases")):
+            diseases = result.get("diseases", [result.get("disease")]) if result.get("disease") else []
+            
+            if diseases:
+                # Format a focused disease identification answer
+                disease_answer = "# Possible Diagnoses Based on Symptoms\n\n"
+                
+                # Get the matched symptoms
+                symptoms = result.get("symptoms", [])
+                matched_symptoms = result.get("matched_symptoms", [])
+                
+                # Add a symptoms section first
+                if symptoms:
+                    disease_answer += f"## Symptoms Identified\n"
+                    disease_answer += f"{', '.join(symptoms)}\n\n"
+                
+                # Add each disease with its details
+                for disease in diseases:
+                    if isinstance(disease, tuple):
+                        # Handle case where disease is a tuple with confidence
+                        disease_name = disease[0]
+                        confidence = disease[1]
+                    else:
+                        # Handle case where disease is just a string
+                        disease_name = disease
+                        confidence = result.get("disease_confidence", 0.7)
+                    
+                    disease_answer += f"## {disease_name}\n"
+                    disease_answer += f"**Confidence Score:** {confidence:.2f}\n"
+                    
+                    if matched_symptoms:
+                        disease_answer += f"**Matching Symptoms:** {', '.join(matched_symptoms)}\n\n"
+                    
+                    # Add treatments if available
+                    treatments = result.get("treatments", [])
+                    if treatments:
+                        disease_answer += "**Recommended Treatments:**\n"
+                        for treatment in treatments:
+                            disease_answer += f"- {treatment}\n"
+                        disease_answer += "\n"
+                    
+                    # Add home remedies if available
+                    remedies = result.get("home_remedies", [])
+                    if remedies:
+                        disease_answer += "**Home Remedies:**\n"
+                        for remedy in remedies:
+                            disease_answer += f"- {remedy}\n"
+                        disease_answer += "\n"
+                
+                # Update the kg_answer and boost confidence
+                result["kg_answer"] = disease_answer
+                result["kg_confidence"] = max(0.9, result.get("kg_confidence", 0.0))
+                print("✅ Knowledge graph returned results, no follow-up needed")
+        
         return result
-
+                    
     def reflection_agent(self, user_query, kg_answer, rag_answer):
             """
             Evaluates all possible combinations of knowledge sources to provide the most
