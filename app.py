@@ -396,29 +396,29 @@ class DocumentChatBot:
             except Exception:
                 pass  # Continue to LLM evaluation if KG fails
         
-               MISSING_INFO_PROMPT=(
-                f"You are a medical assistant analyzing a patient query and conversation.\n"
-                f"Determine if any CRITICAL information is still missing to properly assess their situation.\n\n"
-                f"Conversation history:\n{context}\n\n"
-                f"Latest patient input: \"{user_query}\"\n\n"
-                "CRITICALLY EVALUATE if you have enough information to provide a reasonable medical assessment.\n"
-                "Only ask follow-up questions if ABSOLUTELY NECESSARY for basic assessment.\n\n"
-                "Rules for determining if information is sufficient:\n"
-                "1. If the patient has provided symptoms, duration, and basic severity, that's usually enough\n"
-                "2. If you've already asked follow-up questions once, avoid asking more unless critical\n"
-                "3. If a general assessment can be made with current information, proceed without more questions\n"
-                "4. ONLY ask about truly essential missing information\n"
-                "5. If the query is about general medical information (not about a specific case), NO follow-up needed\n"
-                "6. If the question is about treatments, medication, or general information, NO follow-up needed\n\n"
-                "Return your answer in this exact JSON format:\n"
-                "{{\n"
-                '    "needs_followup": true/false,\n'
-                '    "reasoning": "brief explanation of why more information is needed or not",\n'
-                '    "missing_info": [\n'
-                '        {{"question": "specific follow-up question 1"}}\n'
-                "    ]\n"
-                "}}"
-            )
+            MISSING_INFO_PROMPT = (
+                    f"You are a medical assistant analyzing a patient query and conversation.\n"
+                    f"Determine if any CRITICAL information is still missing to properly assess their situation.\n\n"
+                    f"Conversation history:\n{context}\n\n"
+                    f"Latest patient input: \"{user_query}\"\n\n"
+                    "CRITICALLY EVALUATE if you have enough information to provide a reasonable medical assessment.\n"
+                    "Only ask follow-up questions if ABSOLUTELY NECESSARY for basic assessment.\n\n"
+                    "Rules for determining if information is sufficient:\n"
+                    "1. If the patient has provided symptoms, duration, and basic severity, that's usually enough\n"
+                    "2. If you've already asked follow-up questions once, avoid asking more unless critical\n"
+                    "3. If a general assessment can be made with current information, proceed without more questions\n"
+                    "4. ONLY ask about truly essential missing information\n"
+                    "5. If the query is about general medical information (not about a specific case), NO follow-up needed\n"
+                    "6. If the question is about treatments, medication, or general information, NO follow-up needed\n\n"
+                    "Return your answer in this exact JSON format:\n"
+                    "{{\n"
+                    '    "needs_followup": true/false,\n'
+                    '    "reasoning": "brief explanation of why more information is needed or not",\n'
+                    '    "missing_info": [\n'
+                    '        {{"question": "specific follow-up question 1"}}\n'
+                    "    ]\n"
+                    "}}"
+                )
         
             try:
                 response = self.local_generate(MISSING_INFO_PROMPT, max_tokens=500).strip()
