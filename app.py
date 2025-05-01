@@ -1543,7 +1543,7 @@ class DocumentChatBot:
                 
                 return result
             except Exception as e:
-                logger.error(f"Error evaluating KG answer quality: {e}")
+                print(f"Error evaluating KG answer quality: {e}")
                 return False
         else:
             # If content is not a string and we can't evaluate with the LLM,
@@ -1625,7 +1625,7 @@ class DocumentChatBot:
             combined = self.local_generate(prompt, max_tokens=1000)
             return combined.strip()
         except Exception as e:
-            logger.error(f"Error combining answers: {e}")
+            print(f"Error combining answers: {e}")
             # Fallback: Simple concatenation with separator
             return f"{primary_answer}\n\nAdditional information:\n{secondary_answer}"
     
