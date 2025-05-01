@@ -10,6 +10,7 @@ import numpy as np
 from datetime import datetime
 from typing import List, Tuple, Dict, Optional
 import base64
+import logger
 from PIL import Image
 import io
 # Import Gemini API
