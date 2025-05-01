@@ -1089,126 +1089,139 @@ class DocumentChatBot:
         
         return result
                     
-    def reflection_agent(self, user_query, kg_answer, rag_answer):
-            """
-            Evaluates all possible combinations of knowledge sources to provide the most
-            complete answer to the user query.
+    def reflection_agent(self, user_query, kg_answer, rag_answer, kg_confidence=None):
+        """
+        Evaluates all possible combinations of knowledge sources to provide the most
+        complete answer to the user query.
+        
+        Args:
+            user_query: The original user question
+            kg_answer: Answer from Knowledge Graph (refined by LLM)
+            rag_answer: Answer from RAG
+            kg_confidence: Confidence score from the KG system (if available)
             
-            Args:
-                user_query: The original user question
-                kg_answer: Answer from Knowledge Graph (refined by LLM)
-                rag_answer: Answer from RAG
-                
-            Returns:
-                tuple: (final_answer, strategy_used)
-            """
-            if self.is_disease_identification_query(user_query) and ("Possible Diseases:" in kg_answer or "Disease:" in kg_answer):
-                print("Reflection decision: KG_ONLY - Disease identification query with KG results")
-                return kg_answer, "KG_ONLY"
-            # Set threshold for considering an answer complete
-            COMPLETENESS_THRESHOLD = 0.6
-                            
-            # Start logging the reflection process
-            print(f"Reflection agent analyzing query: {user_query}")
+        Returns:
+            tuple: (final_answer, strategy_used)
+        """
+        # Check if KG confidence score is available and high enough
+        if kg_confidence is not None and kg_confidence >= 0.75:
+            print(f"Reflection decision: KG_ONLY - High confidence KG answer ({kg_confidence})")
+            return kg_answer, "KG_ONLY"
             
-            # Evaluate completeness of individual sources
-            kg_completeness = self.evaluate_answer_completeness(user_query, kg_answer)
-            rag_completeness = self.evaluate_answer_completeness(user_query, rag_answer)
+        # Special case for disease identification with KG results
+        if self.is_disease_identification_query(user_query) and ("Possible Diseases:" in kg_answer or "Disease:" in kg_answer):
+            print("Reflection decision: KG_ONLY - Disease identification query with KG results")
+            return kg_answer, "KG_ONLY"
             
-            print(f"KG completeness: {kg_completeness}, RAG completeness: {rag_completeness}")
+        # Set threshold for considering an answer complete
+        COMPLETENESS_THRESHOLD = 0.85
+        
+        # Start logging the reflection process
+        print(f"Reflection agent analyzing query: {user_query}")
+        
+        # Evaluate completeness of individual sources
+        kg_completeness = self.evaluate_answer_completeness(user_query, kg_answer)
+        rag_completeness = self.evaluate_answer_completeness(user_query, rag_answer)
+        
+        print(f"KG completeness: {kg_completeness}, RAG completeness: {rag_completeness}")
+        
+        # Evaluate what's missing from each source
+        kg_missing = self.identify_missing_elements(user_query, kg_answer)
+        rag_missing = self.identify_missing_elements(user_query, rag_answer)
+        
+        # Case 1: KG only - sufficient
+        if kg_completeness >= COMPLETENESS_THRESHOLD:
+            print("Reflection decision: KG_ONLY - KG answer is complete")
+            return kg_answer, "KG_ONLY"
+        
+        # Case 2: RAG only - sufficient
+        if rag_completeness >= COMPLETENESS_THRESHOLD:
+            print("Reflection decision: RAG_ONLY - RAG answer is complete")
+            return rag_answer, "RAG_ONLY"
+        
+        # Case 3: KG + RAG combination
+        kg_rag_combined = self.combine_answers(kg_answer, rag_answer, kg_missing)
+        kg_rag_completeness = self.evaluate_answer_completeness(user_query, kg_rag_combined)
+        
+        print(f"KG+RAG completeness: {kg_rag_completeness}")
+        
+        if kg_rag_completeness >= COMPLETENESS_THRESHOLD:
+            print("Reflection decision: KG_RAG_COMBINED - Combined KG and RAG answer is complete")
+            return kg_rag_combined, "KG_RAG_COMBINED"
+        
+        # Generate LLM answer for missing parts
+        llm_answer = self.generate_llm_answer(user_query, kg_missing, rag_missing)
+        llm_completeness = self.evaluate_answer_completeness(user_query, llm_answer)
+        
+        print(f"LLM completeness: {llm_completeness}")
+        
+        # Case 4: LLM only - sufficient
+        if llm_completeness >= COMPLETENESS_THRESHOLD:
+            print("Reflection decision: LLM_ONLY - LLM answer is complete")
+            return llm_answer, "LLM_ONLY"
+        
+        # Case 5: KG + LLM combination
+        kg_llm_combined = self.combine_answers(kg_answer, llm_answer, kg_missing)
+        kg_llm_completeness = self.evaluate_answer_completeness(user_query, kg_llm_combined)
+        
+        print(f"KG+LLM completeness: {kg_llm_completeness}")
+        
+        if kg_llm_completeness >= COMPLETENESS_THRESHOLD:
+            print("Reflection decision: KG_LLM_COMBINED - Combined KG and LLM answer is complete")
+            return kg_llm_combined, "KG_LLM_COMBINED"
+        
+        # Case 6: RAG + LLM combination
+        rag_llm_combined = self.combine_answers(rag_answer, llm_answer, rag_missing)
+        rag_llm_completeness = self.evaluate_answer_completeness(user_query, rag_llm_combined)
+        
+        print(f"RAG+LLM completeness: {rag_llm_completeness}")
+        
+        if rag_llm_completeness >= COMPLETENESS_THRESHOLD:
+            print("Reflection decision: RAG_LLM_COMBINED - Combined RAG and LLM answer is complete")
+            return rag_llm_combined, "RAG_LLM_COMBINED"
+        
+        # Case 7: KG + RAG + LLM combination
+        all_combined = self.combine_all_answers(kg_answer, rag_answer, llm_answer)
+        all_combined_completeness = self.evaluate_answer_completeness(user_query, all_combined)
+        
+        print(f"All sources combined completeness: {all_combined_completeness}")
+        
+        if all_combined_completeness >= COMPLETENESS_THRESHOLD:
+            print("Reflection decision: KG_RAG_LLM_COMBINED - All sources combined answer is complete")
+            return all_combined, "KG_RAG_LLM_COMBINED"
+        
+        # Case 8: Best available answer (even if below threshold)
+        best_completeness = max(kg_completeness, rag_completeness, llm_completeness, 
+                               kg_rag_completeness, kg_llm_completeness, 
+                               rag_llm_completeness, all_combined_completeness)
+        
+        # If KG answer is already quite good (above 0.7), prioritize it for simplicity
+        if kg_completeness >= 0.7 and kg_completeness == best_completeness:
+            print("Reflection decision: KG_ONLY - Good enough KG answer prioritized")
+            return kg_answer, "KG_ONLY"
             
-            # Evaluate what's missing from each source
-            kg_missing = self.identify_missing_elements(user_query, kg_answer)
-            rag_missing = self.identify_missing_elements(user_query, rag_answer)
-            
-            # Case 1: KG only - sufficient
-            if kg_completeness >= COMPLETENESS_THRESHOLD:
-                print("Reflection decision: KG_ONLY - KG answer is complete")
-                return kg_answer, "KG_ONLY"
-            
-            # Case 2: RAG only - sufficient
-            if rag_completeness >= COMPLETENESS_THRESHOLD:
-                print("Reflection decision: RAG_ONLY - RAG answer is complete")
-                return rag_answer, "RAG_ONLY"
-            
-            # Case 3: KG + RAG combination
-            kg_rag_combined = self.combine_answers(kg_answer, rag_answer, kg_missing)
-            kg_rag_completeness = self.evaluate_answer_completeness(user_query, kg_rag_combined)
-            
-            print(f"KG+RAG completeness: {kg_rag_completeness}")
-            
-            if kg_rag_completeness >= COMPLETENESS_THRESHOLD:
-                print("Reflection decision: KG_RAG_COMBINED - Combined KG and RAG answer is complete")
-                return kg_rag_combined, "KG_RAG_COMBINED"
-            
-            # Generate LLM answer for missing parts
-            llm_answer = self.generate_llm_answer(user_query, kg_missing, rag_missing)
-            llm_completeness = self.evaluate_answer_completeness(user_query, llm_answer)
-            
-            print(f"LLM completeness: {llm_completeness}")
-            
-            # Case 4: LLM only - sufficient
-            if llm_completeness >= COMPLETENESS_THRESHOLD:
-                print("Reflection decision: LLM_ONLY - LLM answer is complete")
-                return llm_answer, "LLM_ONLY"
-            
-            # Case 5: KG + LLM combination
-            kg_llm_combined = self.combine_answers(kg_answer, llm_answer, kg_missing)
-            kg_llm_completeness = self.evaluate_answer_completeness(user_query, kg_llm_combined)
-            
-            print(f"KG+LLM completeness: {kg_llm_completeness}")
-            
-            if kg_llm_completeness >= COMPLETENESS_THRESHOLD:
-                print("Reflection decision: KG_LLM_COMBINED - Combined KG and LLM answer is complete")
-                return kg_llm_combined, "KG_LLM_COMBINED"
-            
-            # Case 6: RAG + LLM combination
-            rag_llm_combined = self.combine_answers(rag_answer, llm_answer, rag_missing)
-            rag_llm_completeness = self.evaluate_answer_completeness(user_query, rag_llm_combined)
-            
-            print(f"RAG+LLM completeness: {rag_llm_completeness}")
-            
-            if rag_llm_completeness >= COMPLETENESS_THRESHOLD:
-                print("Reflection decision: RAG_LLM_COMBINED - Combined RAG and LLM answer is complete")
-                return rag_llm_combined, "RAG_LLM_COMBINED"
-            
-            # Case 7: KG + RAG + LLM combination
-            all_combined = self.combine_all_answers(kg_answer, rag_answer, llm_answer)
-            all_combined_completeness = self.evaluate_answer_completeness(user_query, all_combined)
-            
-            print(f"All sources combined completeness: {all_combined_completeness}")
-            
-            if all_combined_completeness >= COMPLETENESS_THRESHOLD:
-                print("Reflection decision: KG_RAG_LLM_COMBINED - All sources combined answer is complete")
-                return all_combined, "KG_RAG_LLM_COMBINED"
-            
-            # Case 8: Best available answer (even if below threshold)
-            best_completeness = max(kg_completeness, rag_completeness, llm_completeness, 
-                                   kg_rag_completeness, kg_llm_completeness, 
-                                   rag_llm_completeness, all_combined_completeness)
-            
-            # Choose the best answer based on completeness scores
-            if best_completeness == kg_completeness:
-                print("Reflection decision: KG_ONLY - Best available answer")
-                return kg_answer, "KG_ONLY"
-            elif best_completeness == rag_completeness:
-                print("Reflection decision: RAG_ONLY - Best available answer")
-                return rag_answer, "RAG_ONLY"
-            elif best_completeness == llm_completeness:
-                print("Reflection decision: LLM_ONLY - Best available answer")
-                return llm_answer, "LLM_ONLY"
-            elif best_completeness == kg_rag_completeness:
-                print("Reflection decision: KG_RAG_COMBINED - Best available answer")
-                return kg_rag_combined, "KG_RAG_COMBINED"
-            elif best_completeness == kg_llm_completeness:
-                print("Reflection decision: KG_LLM_COMBINED - Best available answer")
-                return kg_llm_combined, "KG_LLM_COMBINED"
-            elif best_completeness == rag_llm_completeness:
-                print("Reflection decision: RAG_LLM_COMBINED - Best available answer")
-                return rag_llm_combined, "RAG_LLM_COMBINED"
-            else:
-                print("Reflection decision: KG_RAG_LLM_COMBINED - Best available answer")
-                return all_combined, "KG_RAG_LLM_COMBINED"
+        # Choose the best answer based on completeness scores
+        if best_completeness == kg_completeness:
+            print("Reflection decision: KG_ONLY - Best available answer")
+            return kg_answer, "KG_ONLY"
+        elif best_completeness == rag_completeness:
+            print("Reflection decision: RAG_ONLY - Best available answer")
+            return rag_answer, "RAG_ONLY"
+        elif best_completeness == llm_completeness:
+            print("Reflection decision: LLM_ONLY - Best available answer")
+            return llm_answer, "LLM_ONLY"
+        elif best_completeness == kg_rag_completeness:
+            print("Reflection decision: KG_RAG_COMBINED - Best available answer")
+            return kg_rag_combined, "KG_RAG_COMBINED"
+        elif best_completeness == kg_llm_completeness:
+            print("Reflection decision: KG_LLM_COMBINED - Best available answer")
+            return kg_llm_combined, "KG_LLM_COMBINED"
+        elif best_completeness == rag_llm_completeness:
+            print("Reflection decision: RAG_LLM_COMBINED - Best available answer")
+            return rag_llm_combined, "RAG_LLM_COMBINED"
+        else:
+            print("Reflection decision: KG_RAG_LLM_COMBINED - Best available answer")
+            return all_combined, "KG_RAG_LLM_COMBINED"
                    
     def evaluate_answer_completeness(self, query, answer, llm_client=None):
         """
@@ -1225,18 +1238,31 @@ class DocumentChatBot:
         if not answer or answer.strip() == "":
             return 0.0
         
-        # Create the prompt for evaluation
+        # Create an improved prompt with domain-specific guidance for medical question evaluation
         prompt = f"""
-        You are evaluating how completely an answer addresses a medical question.
+        You are evaluating how completely a medical answer addresses a user's health-related question.
         
         USER QUESTION: {query}
         
         ANSWER TO EVALUATE: {answer}
         
+        Evaluation Guidelines:
+        - Focus on medical accuracy and clinical relevance of the information
+        - Consider whether all aspects of the query are addressed (symptoms, causes, treatments, prevention, etc.)
+        - For disease-related questions, check if relevant diagnoses, symptoms, and treatments are covered
+        - For medication questions, check if dosage, side effects, and contraindications are addressed when relevant
+        - For procedural questions, check if preparation, process, and recovery information is provided when relevant
+        - Factual correctness is more important than comprehensiveness
+        - If the answer says it doesn't have enough information but provides what is known, consider this appropriate
+        
         On a scale of 0.0 to 1.0, how completely does this answer address all aspects of the user's question?
-        - 0.0 means it doesn't address the question at all
-        - 0.5 means it partially addresses the question
-        - 1.0 means it fully addresses all aspects of the question
+        - 0.0: Does not address the question at all
+        - 0.3: Addresses a minor portion of the question
+        - 0.5: Addresses roughly half of the important aspects
+        - 0.7: Addresses most important aspects but may be missing some details
+        - 0.8: Addresses nearly all aspects with minimal omissions
+        - 0.9: Addresses all medical aspects with high quality information
+        - 1.0: Addresses all aspects perfectly with comprehensive information
         
         Provide only a single number as your response.
         """
@@ -1257,44 +1283,118 @@ class DocumentChatBot:
             return 0.5  # Default to middle score on error
     
     def identify_missing_elements(self, query, answer, llm_client=None):
-            """
-            Identifies what aspects of the query are not addressed in the answer.
+        """
+        Identifies what aspects of the query are not addressed in the answer.
+        
+        Args:
+            query: The original user question
+            answer: The current answer
+            llm_client: Optional LLM client (not used in this implementation)
             
-            Args:
-                query: The original user question
-                answer: The current answer
-                llm_client: Optional LLM client (not used in this implementation)
-                
-            Returns:
-                list: List of missing elements or aspects
-            """
-            if not answer or answer.strip() == "":
-                return ["The entire query is unanswered"]
+        Returns:
+            list: List of missing elements or aspects
+        """
+        if not answer or answer.strip() == "":
+            return ["The entire query is unanswered"]
+        
+        # Improved prompt with medical domain-specific guidance
+        prompt = f"""
+        You are analyzing a medical answer to identify what aspects of the user's question remain unaddressed.
+        
+        USER QUESTION: {query}
+        
+        CURRENT ANSWER: {answer}
+        
+        Medical Answer Evaluation Guidelines:
+        - If the answer comes from a Knowledge Graph and contains structured medical information, it should be considered highly reliable
+        - Focus on clinically significant missing information, not minor details
+        - For disease questions: core symptoms, diagnostic criteria, and primary treatments are essential
+        - For medication questions: main uses, dosage ranges, and major side effects are essential
+        - For procedural questions: purpose, general process, and recovery expectations are essential
+        - If the answer states limitations clearly (e.g., "consult a doctor for specific advice"), this is appropriate
+        - If the answer provides the main information but lacks minor details, consider it mostly complete
+        
+        What specific aspects or parts of the user's question are NOT adequately addressed in this answer?
+        List each CLINICALLY SIGNIFICANT missing element in a separate line. 
+        If the answer covers all essential medical information, respond with "COMPLETE".
+        """
+        
+        try:
+            response_text = self.local_generate(prompt, max_tokens=500)
             
-            prompt = f"""
-            You are analyzing a medical answer to identify what aspects of the user's question remain unaddressed.
+            if "COMPLETE" in response_text:
+                return []
             
-            USER QUESTION: {query}
+            # Parse the missing elements (one per line)
+            missing_elements = [line.strip() for line in response_text.split('\n') if line.strip()]
+            return missing_elements
+        except Exception as e:
+            print(f"Error identifying missing elements: {e}")
+            return ["Unable to identify specific missing elements"]
+    def is_kg_answer_high_quality(self, user_query, kg_answer):
+        """
+        Evaluates if the KG answer is high quality enough to use on its own.
+        This function acts as an additional check focused specifically on KG answer quality.
+        
+        Args:
+            user_query: The original user question
+            kg_answer: Answer from Knowledge Graph
             
-            CURRENT ANSWER: {answer}
+        Returns:
+            bool: True if the KG answer is high quality, False otherwise
+        """
+        if not kg_answer or kg_answer.strip() == "":
+            return False
+        
+        # Check for indicators of a high-quality KG answer
+        indicators = [
+            "According to medical knowledge",
+            "Clinical guidelines recommend",
+            "Medical research indicates",
+            "Symptoms include",
+            "Treatment options include",
+            "Diagnostic criteria include"
+        ]
+        
+        # Count how many quality indicators are present
+        indicator_count = sum(1 for indicator in indicators if indicator.lower() in kg_answer.lower())
+        
+        # Check for structured information patterns
+        has_structured_info = any([
+            ":" in kg_answer,  # Key-value pairs
+            "\n-" in kg_answer,  # Bulleted lists
+            "1." in kg_answer,   # Numbered lists
+            "•" in kg_answer     # Bullet points
+        ])
+        
+        # Create a prompt to evaluate KG quality
+        prompt = f"""
+        You are evaluating whether a Knowledge Graph-based medical answer is high quality enough to use on its own.
+        
+        USER QUESTION: {user_query}
+        
+        KG ANSWER: {kg_answer}
+        
+        A high-quality Knowledge Graph answer should:
+        1. Provide specific, factual medical information directly relevant to the query
+        2. Present information in a structured, organized manner
+        3. Include specifics like symptoms, causes, treatments, or definitions as appropriate
+        4. Not contain hedging language like "I'm not sure" or "I think"
+        5. Present information authoritatively based on medical knowledge
+        
+        Is this KG answer high quality enough to use on its own? Respond with only "YES" or "NO".
+        """
+        
+        try:
+            response_text = self.local_generate(prompt, max_tokens=50)
+            is_high_quality = "YES" in response_text.upper()
             
-            What specific aspects or parts of the user's question are NOT adequately addressed in this answer?
-            List each missing element in a separate line. If the answer is complete, respond with "COMPLETE".
-            """
-            
-            try:
-                response_text = self.local_generate(prompt, max_tokens=500)
-                
-                if "COMPLETE" in response_text:
-                    return []
-                
-                # Parse the missing elements (one per line)
-                missing_elements = [line.strip() for line in response_text.split('\n') if line.strip()]
-                return missing_elements
-            except Exception as e:
-                print(f"Error identifying missing elements: {e}")
-                return ["Unable to identify specific missing elements"]
-    
+            # If the answer has multiple quality indicators OR structured information AND the LLM says it's high quality
+            return (indicator_count >= 2 or has_structured_info) and is_high_quality
+        except Exception as e:
+            print(f"Error evaluating KG answer quality: {e}")
+            return False
+                       
     def combine_answers(self, primary_answer, secondary_answer, missing_elements=None, llm_client=None):
         """
         Intelligently combines two answers to provide a more complete response.
