@@ -1263,7 +1263,7 @@ class DocumentChatBot:
                 # Process with Knowledge Graph
                 print("📚 Processing with Knowledge Graph...")
                 t_start = datetime.now()
-                kg_data = self.process_with_(user_input)
+                kg_data = self.process_with_knowledge_graph(user_input)
                 kg_content = kg_data.get("kg_answer", "")
                 kg_confidence = kg_data.get("kg_confidence", 0.0)
                 
