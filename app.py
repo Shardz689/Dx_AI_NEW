@@ -1147,7 +1147,7 @@ class DocumentChatBot:
         # Check if KG confidence score is available and high enough
         if kg_confidence is not None and kg_confidence >= 0.65:
             print(f"Reflection decision: KG_ONLY - High confidence KG answer ({kg_confidence})")
-            return kg_answer, "KG_ONLY
+            return kg_answer, "KG_ONLY"
             
         # Special case for disease identification with KG results
         if self.is_disease_identification_query(user_query) and ("Possible Diseases:" in kg_answer or "Disease:" in kg_answer):
