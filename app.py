@@ -1002,7 +1002,7 @@ class DocumentChatBot:
                 print("Reflection decision: KG_RAG_LLM_COMBINED - Best available answer")
                 return all_combined, "KG_RAG_LLM_COMBINED"
                    
-    def evaluate_answer_completeness(query, answer, llm_client=None):
+    def evaluate_answer_completeness(self, query, answer, llm_client=None):
         """
         Evaluates how completely an answer addresses the user query.
         
@@ -1048,45 +1048,46 @@ class DocumentChatBot:
             print(f"Error evaluating answer completeness: {e}")
             return 0.5  # Default to middle score on error
     
-    def identify_missing_elements(query, answer):
-        """
-        Identifies what aspects of the query are not addressed in the answer.
-        
-        Args:
-            query: The original user question
-            answer: The current answer
+    def identify_missing_elements(self, query, answer, llm_client=None):
+            """
+            Identifies what aspects of the query are not addressed in the answer.
             
-        Returns:
-            list: List of missing elements or aspects
-        """
-        if not answer or answer.strip() == "":
-            return ["The entire query is unanswered"]
-        
-        prompt = f"""
-        You are analyzing a medical answer to identify what aspects of the user's question remain unaddressed.
-        
-        USER QUESTION: {query}
-        
-        CURRENT ANSWER: {answer}
-        
-        What specific aspects or parts of the user's question are NOT adequately addressed in this answer?
-        List each missing element in a separate line. If the answer is complete, respond with "COMPLETE".
-        """
-        
-        try:
-            response_text = self.local_(prompt, max_tokens=500)
+            Args:
+                query: The original user question
+                answer: The current answer
+                llm_client: Optional LLM client (not used in this implementation)
+                
+            Returns:
+                list: List of missing elements or aspects
+            """
+            if not answer or answer.strip() == "":
+                return ["The entire query is unanswered"]
             
-            if "COMPLETE" in response_text:
-                return []
+            prompt = f"""
+            You are analyzing a medical answer to identify what aspects of the user's question remain unaddressed.
             
-            # Parse the missing elements (one per line)
-            missing_elements = [line.strip() for line in response_text.split('\n') if line.strip()]
-            return missing_elements
-        except Exception as e:
-            print(f"Error identifying missing elements: {e}")
-            return ["Unable to identify specific missing elements"]
+            USER QUESTION: {query}
+            
+            CURRENT ANSWER: {answer}
+            
+            What specific aspects or parts of the user's question are NOT adequately addressed in this answer?
+            List each missing element in a separate line. If the answer is complete, respond with "COMPLETE".
+            """
+            
+            try:
+                response_text = self.local_generate(prompt, max_tokens=500)
+                
+                if "COMPLETE" in response_text:
+                    return []
+                
+                # Parse the missing elements (one per line)
+                missing_elements = [line.strip() for line in response_text.split('\n') if line.strip()]
+                return missing_elements
+            except Exception as e:
+                print(f"Error identifying missing elements: {e}")
+                return ["Unable to identify specific missing elements"]
     
-    def combine_answers(primary_answer, secondary_answer, missing_elements=None):
+    def combine_answers(self, primary_answer, secondary_answer, missing_elements=None, llm_client=None):
         """
         Intelligently combines two answers to provide a more complete response.
         
@@ -1135,7 +1136,7 @@ class DocumentChatBot:
             # Fallback: Simple concatenation with separator
             return f"{primary_answer}\n\nAdditional information:\n{secondary_answer}"
     
-    def combine_all_answers(kg_answer, rag_answer, llm_answer):
+    def combine_all_answers(self, kg_answer, rag_answer, llm_answer, llm_client=None):
         """
         Combines answers from all three sources into a single comprehensive response.
         
@@ -1143,15 +1144,16 @@ class DocumentChatBot:
             kg_answer: Answer from Knowledge Graph
             rag_answer: Answer from RAG
             llm_answer: Answer from LLM
+            llm_client: Optional LLM client (not used in this implementation)
             
         Returns:
             str: Fully combined answer
         """
         # First combine KG and RAG
-        kg_rag_combined = self.combine_answers(kg_answer, rag_answer)
+        kg_rag_combined = self.combine_answers(kg_answer, rag_answer, llm_client=llm_client)
         
         # Then add LLM content
-        return self.combine_answers(kg_rag_combined, llm_answer)
+        return self.combine_answers(kg_rag_combined, llm_answer, llm_client=llm_client)
     
     def _llm_answer(query, kg_missing=None, rag_missing=None):
         """
