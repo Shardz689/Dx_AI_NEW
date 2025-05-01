@@ -884,20 +884,21 @@ class DocumentChatBot:
         if successful_tasks > 0:
             kg_answers = []
             if new_state.get("diseases") and len(new_state.get("diseases", [])) > 0:
-                        # For multiple diseases, list them with their confidence
-                        if len(new_state.get("diseases", [])) > 1:
-                            diseases_list = []
-                            for i, (disease, conf) in enumerate(zip(
-                                    new_state.get("diseases", []), 
-                                    new_state.get("disease_confidences", [0.7] * len(new_state.get("diseases", [])))
-                                )):
-                                diseases_list.append(f"{disease} (Confidence: {conf:.2f})")
-                            kg_answers.append(f"Possible Diseases: {', '.join(diseases_list)}")
-                        else:
-                            # Single disease case
-                            kg_answers.append(f"Disease: {new_state['diseases'][0]}")
-                    elif new_state.get("disease"):  # Backward compatibility
-                        kg_answers.append(f"Disease: {new_state['disease']}")
+                # For multiple diseases, list them with their confidence
+                if len(new_state.get("diseases", [])) > 1:
+                    diseases_list = []
+                    for i, (disease, conf) in enumerate(zip(
+                            new_state.get("diseases", []), 
+                            new_state.get("disease_confidences", [0.7] * len(new_state.get("diseases", [])))
+                        )):
+                        diseases_list.append(f"{disease} (Confidence: {conf:.2f})")
+                    kg_answers.append(f"Possible Diseases: {', '.join(diseases_list)}")
+                else:
+                    # Single disease case
+                    kg_answers.append(f"Disease: {new_state['diseases'][0]}")
+            elif new_state.get("disease"):  # Backward compatibility
+                kg_answers.append(f"Disease: {new_state['disease']}")
+            
             if new_state.get("symptoms"):
                 kg_answers.append(f"Symptoms: {', '.join(new_state['symptoms'])}")
             if new_state.get("treatments"):
