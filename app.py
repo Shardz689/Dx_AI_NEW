@@ -902,239 +902,253 @@ class DocumentChatBot:
 
 
     def generate_response(self, user_input, user_type="User / Family"):
-            """
-            Generate response using RAG, KG, and LLM with dynamic orchestration based on query confidence.
-            Uses a single comprehensive prompt to determine the optimal response strategy.
-            """
-            if not user_input.strip():
-                return "", []
-            
-            if self.qa_chain is None:
-                success, message = self.initialize_qa_chain()
-                if not success:
-                    return message, []
-            
-            try:
-                # Check if this is a response to a follow-up question
-                if self.followup_context["asked"]:
-                    print("🔍 User responded to follow-up question")
-                
-                # First, check if we need follow-up questions
-                missing_info = self.identify_missing_info(user_input, self.chat_history)
-                
-                # If critical information is missing, ask follow-up questions
-                if missing_info and len(missing_info) > 0:
-                    follow_up_prompt = f"""
-                    I need a bit more information to provide a helpful response. Could you please tell me:
-        
-                    {missing_info[0]}
-        
-                    This will help me give you a more accurate assessment.
-                    """
-                    
-                    # Add this to the chat history but mark it as a follow-up
-                    self.chat_history.append((user_input, follow_up_prompt))
-                    
-                    # Return follow-up question instead of regular response
-                    return follow_up_prompt.strip(), []
-                
-                # Reset follow-up context for next query
-                self.followup_context = {"asked": False, "round": 0}
-                
-                # Regular response generation below
-                formatted_history = self.format_chat_history()
-                
-                # Process the query with both RAG and KG if appropriate
-                rag_content, rag_sources = "", []
-                kg_content, kg_data = "", {}
-                
-                # When constructing the final response prompt, include context from follow-up responses
-                full_user_context = user_input
-                if self.chat_history and len(self.chat_history) >= 2:
-                    # Include the last exchange if it seems to be related
-                    prev_user_msg, prev_bot_msg = self.chat_history[-1]
-                    if "more information" in prev_bot_msg or "please tell me" in prev_bot_msg:
-                        full_user_context = f"Context from previous message: {prev_user_msg}\nCurrent message: {user_input}"
-                
-                # Get RAG response
-                try:
-                    rag_response = self.qa_chain.invoke({
-                        "question": user_input,
-                        "chat_history": formatted_history
-                    })
-                    
-                    rag_content = rag_response["answer"]
-                    if "Helpful Answer:" in rag_content:
-                        rag_content = rag_content.split("Helpful Answer:")[-1]
-                    
-                    # Extract sources with full content and page numbers
-                    for doc in rag_response["source_documents"][:3]:
-                        source_text = doc.page_content
-                        
-                        # Check if it's from DxBook or internal data
-                        if hasattr(doc, "metadata") and "source" in doc.metadata:
-                            source_name = doc.metadata["source"]
-                            if "dxbook" in source_name.lower() or "rawdata.pdf" in source_name:
-                                # Extract page number if available
-                                page_num = doc.metadata.get("page", "N/A")
-                                # Include full paragraph
-                                rag_sources.append(f"Internal Data: DxBook, Page {page_num} - {source_text}")
-                            else:
-                                rag_sources.append(source_text)
-                        else:
-                            rag_sources.append(source_text)
-                    
-                    print("✅ RAG processing complete")
-                except Exception as e:
-                    print(f"⚠️ RAG processing error: {str(e)}")
-                    rag_content = ""
-                
-                # Get KG response
-                try:
-                    kg_data = self.process_with_knowledge_graph(user_input)
-                    kg_content = kg_data.get("kg_answer", "")
-                    
-                    if kg_data.get("disease"):
-                        kg_sources = [f"[KG] Knowledge Graph: {kg_data['disease']}"]
-                        if kg_data.get("relationships"):
-                            for rel in kg_data["relationships"][:2]:
-                                kg_sources.append(f"[KG] {rel}")
-                    
-                    print("✅ KG processing complete")
-                except Exception as e:
-                    print(f"⚠️ KG processing error: {str(e)}")
-                    kg_content = ""
-                    kg_data = {}
-                
-                # Combine all sources
-                all_sources = rag_sources + (kg_sources if 'kg_sources' in locals() else [])
-                
-                # Build a comprehensive orchestration prompt
-                orchestration_prompt = f"""You are a medical information assistant providing evidence-based answers from verified sources.
-        USER QUERY: {full_user_context}
-        
-        STEP 1: ANALYZE THE QUERY
-        Analyze the query type (choose the most relevant):
-        - Factual: Simple factual medical information
-        - Symptom: Questions about symptoms
-        - Treatment: Questions about treatments
-        - Diagnosis: Questions about diagnosis
-        - Relationship: Questions about relationships between medical entities
-        - Entity: Questions about specific medical entities
-        - Comparative: Comparing different treatments/conditions
-        - Causal: Questions about causes
-        - General: General medical questions
-        - Mixed: Complex queries requiring multiple approaches
-        
-        STEP 2: EVALUATE AVAILABLE INFORMATION
-        
-        RAG (RETRIEVAL) INFORMATION:
-        {rag_content if rag_content else "No relevant retrieval information available."}
-        
-        KNOWLEDGE GRAPH INFORMATION:
-        {kg_content if kg_content else "No relevant knowledge graph information available."}
-        {f"Primary Medical Concept: {kg_data.get('disease', 'None')}" if kg_data else ""}
-        {f"Relationships: {', '.join(kg_data.get('relationships', []))}" if kg_data and kg_data.get('relationships') else ""}
-        
-        STEP 3: DETERMINE CONFIDENCE LEVELS
-        Rate the confidence of each information source on a scale of 0-1:
-        
-        RAG Confidence Score: Evaluate based on:
-        - Relevance to the query
-        - Specificity of information
-        - Presence of quantitative data or research references
-        - Absence of uncertainty markers (e.g., "may", "might", "possibly")
-        
-        Knowledge Graph Confidence Score: Evaluate based on:
-        - Clear identification of relevant medical entities
-        - Number and quality of relationships identified
-        - Direct relevance to the query
-        - Presence of specific medical knowledge
-        
-        STEP 4: SELECT OPTIMAL RESPONSE STRATEGY
-        Based on confidence scores, determine which strategy to use:
-        - RAG Only: When RAG confidence is high (>0.7) and KG confidence is low (<0.5)
-        - KG Only: When KG confidence is high (>0.7) and RAG confidence is low (<0.5)
-        - RAG+KG: When both RAG and KG confidence are high (both >0.7)
-        - RAG+LLM: When RAG confidence is medium (0.5-0.7) and KG confidence is low (<0.5)
-        - KG+LLM: When KG confidence is medium (0.5-0.7) and RAG confidence is low (<0.5)
-        - RAG+KG+LLM: When both RAG and KG have medium confidence, or for complex queries
-        - LLM Only: When both RAG and KG confidence are low (<0.5), use general medical knowledge
-        
-        STEP 5: GENERATE RESPONSE
-        Generate a response using the selected strategy, following these guidelines:
-        
-        1. SOURCE ATTRIBUTION REQUIREMENTS:
-           - For Retrieved Documents: When referencing Internal Data (DxBook), include the exact page number and full paragraph in your references section as "Internal Data: DxBook, Page X - [paragraph text]". If you don't have page number, just mention "Internal Data: DxBook - [paragraph text]".
-           - For Knowledge Graph: Reference as "[KG] Knowledge Graph" in your references section
-           - When citing information from trusted organizations, use a complete clickable Markdown link in references:
-             "[Source: Organization Name](full URL)" - Example: "[Source: American Heart Association](https://www.heart.org)"
-           - DO NOT use ellipses (...) or truncate any references
-        
-        2. RESPONSE FORMAT:
-           - Use conversational, clear language suitable for general public
-           - Organize information in logical sections with bullet points where helpful
-           - Include these sections when information is available:
-             * Possible causes or explanation
-             * Recommended approaches (if source-supported)
-             * Self-care advice (if appropriate and source-supported)
-             * When to seek medical attention
-           - End with a brief medical disclaimer AFTER the references section
-        
-        3. REFERENCE FORMAT:
-           - At the end of your response, add a section titled "## References:"
-           - Number each reference (1., 2., 3., etc.)
-           - For each reference include:
-             * For Knowledge Graph: "[KG] Knowledge Graph - [specific relationship]"
-             * For DxBook: "Internal Data: DxBook, Page [X] - [exact paragraph used]" 
-             * For external sources: "[External Source: Organization Name](URL)"
-             * For LLM-generated content (when no specific source): "[General Medical Knowledge]"
-        
-        4. TRUSTED EXTERNAL SOURCES (use when needed):
-           * Hypertension: 
-             - American Heart Association (https://www.heart.org)
-             - NHLBI (https://www.nhlbi.nih.gov)
-             - Indian Heart Association (https://indianheartassociation.org)
-           * Cardiovascular Disease: 
-             - American College of Cardiology (https://www.acc.org)
-             - CDC Heart Disease (https://www.cdc.gov/heartdisease)
-             - Heart Care Foundation of India (https://www.heartcarefoundation.org)
-           * Obesity: 
-             - CDC Obesity (https://www.cdc.gov/obesity)
-             - NIDDK Weight Management (https://www.niddk.nih.gov/health-information/weight-management)
-             - Obesity Foundation India (https://obesityfoundationindia.org)
-           * Type 2 Diabetes: 
-             - American Diabetes Association (https://www.diabetes.org)
-             - CDC Diabetes (https://www.cdc.gov/diabetes)
-             - Diabetes India (https://www.diabetesindia.org)
-           * Respiratory Infections: 
-             - CDC Respiratory Diseases (https://www.cdc.gov/respiratory)
-             - American Lung Association (https://www.lung.org)
-             - National Centre for Disease Control India (https://ncdc.gov.in)
-        
-        5. IMPORTANT RULES:
-           - If you cannot find reliable information from any of the sources above, respond: "I don't have enough reliable information to answer this medical question. Please consult with a healthcare professional for accurate guidance."
-           - Do not generate unsourced medical content
-           - Keep responses focused and concise
-           - Be reassuring while honest about medical concerns
-           - Include all URLs in full, never truncate them
-        
-        DISCLAIMER TEXT TO USE:
-        This information is not a substitute for professional medical advice. If symptoms persist or worsen, please consult with a qualified healthcare provider.
-                
-        Now, generate a complete, thoughtful response based on the query analysis and available information:
         """
-                
-                # Generate the final response
-                final_response = self.local_generate(orchestration_prompt, max_tokens=1000)
-                self.chat_history.append((user_input, final_response))
-                
-                return final_response, all_sources
+        Generate response using prompt-based orchestration between RAG and KG.
+        LLM decides which sources to prioritize based on the data and query.
+        """
+        if not user_input.strip():
+            return "", []
+    
+        if self.qa_chain is None:
+            success, message = self.initialize_qa_chain()
+            if not success:
+                return message, []
+    
+        try:
+            print(f"\n🔍 Processing query: {user_input}")
             
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                return f"Error generating response: {str(e)}", []
+            # Check if this is a response to a follow-up question
+            if self.followup_context["asked"]:
+                print("🔍 User responded to follow-up question")
+    
+            # Check if we need follow-up questions
+            missing_info = self.identify_missing_info(user_input, self.chat_history)
+    
+            # If critical information is missing, ask follow-up questions
+            if missing_info and len(missing_info) > 0:
+                follow_up_prompt = f"""
+                I need a bit more information to provide a helpful response. Could you please tell me:
+    
+                {missing_info[0]}
+    
+                This will help me give you a more accurate assessment.
+                """
+                self.chat_history.append((user_input, follow_up_prompt))
+                return follow_up_prompt.strip(), []
+    
+            # Reset follow-up context for next query
+            self.followup_context = {"asked": False, "round": 0}
+    
+            # Process with Knowledge Graph
+            print("📚 Processing with Knowledge Graph...")
+            t_start = datetime.now()
+            kg_data = self.process_with_knowledge_graph(user_input)
+            kg_content = kg_data.get("kg_answer", "")
+            kg_confidence = kg_data.get("kg_confidence", 0.0)
+            
+            disease = kg_data.get("disease", "")
+            symptoms = kg_data.get("symptoms", [])
+            treatments = kg_data.get("treatments", [])
+            home_remedies = kg_data.get("home_remedies", [])
+            
+            print(f"📊 KG Confidence: {kg_confidence:.4f} (took {(datetime.now() - t_start).total_seconds():.2f}s)")
+            
+            # Process with RAG
+            print("📚 Processing with RAG...")
+            t_start = datetime.now()
+            formatted_history = self.format_chat_history()
+            
+            # Get RAG response
+            rag_response = self.qa_chain.invoke({
+                "question": user_input,
+                "chat_history": formatted_history
+            })
+            
+            rag_content = rag_response["answer"]
+            if "Helpful Answer:" in rag_content:
+                rag_content = rag_content.split("Helpful Answer:")[-1]
+            
+            # Extract RAG sources
+            rag_sources = []
+            source_texts = []
+            for doc in rag_response["source_documents"][:3]:
+                source_text = doc.page_content
+                source_texts.append(source_text)
+                
+                if hasattr(doc, "metadata") and "source" in doc.metadata:
+                    source_name = doc.metadata["source"]
+                    if "dxbook" in source_name.lower() or "rawdata.pdf" in source_name:
+                        page_num = doc.metadata.get("page", "N/A")
+                        rag_sources.append(f"Internal Data: DxBook, Page {page_num} - {source_text}")
+                    else:
+                        rag_sources.append(source_text)
+                else:
+                    rag_sources.append(source_text)
+            
+            # Calculate RAG confidence based on relevance of retrieved documents
+            rag_relevance_scores = []
+            for text in source_texts:
+                # Simple keyword matching
+                query_keywords = set(word.lower() for word in user_input.split() if len(word) > 3)
+                content_lower = text.lower()
+                matches = sum(1 for kw in query_keywords if kw in content_lower)
+                score = min(matches / max(len(query_keywords), 1), 1.0)
+                rag_relevance_scores.append(score)
+            
+            # Average relevance score
+            rag_confidence = sum(rag_relevance_scores) / max(len(rag_relevance_scores), 1)
+            print(f"📊 RAG Confidence: {rag_confidence:.4f} (took {(datetime.now() - t_start).total_seconds():.2f}s)")
+            
+            # Combine all sources for reference
+            all_sources = rag_sources
+            if disease:
+                all_sources.append(f"[KG] Knowledge Graph: {disease}")
+            
+            # Determine user context (previous conversation if relevant)
+            full_user_context = user_input
+            if self.chat_history and len(self.chat_history) >= 1:
+                prev_user_msg, prev_bot_msg = self.chat_history[-1]
+                if "more information" in prev_bot_msg or "please tell me" in prev_bot_msg:
+                    full_user_context = f"Context from previous message: {prev_user_msg}\nCurrent message: {user_input}"
+            
+            # Build orchestration prompt - let the LLM decide what sources to use and how to combine them
+            orchestration_prompt = f"""You are a medical information assistant processing a user query.
+    
+    USER QUERY: {full_user_context}
+    
+    I have two knowledge sources with different information. Help me decide which to use:
+    
+    1. KNOWLEDGE GRAPH DATA (Confidence: {kg_confidence:.2f}):
+       Disease: {disease if disease else "None identified"}
+       Symptoms: {", ".join(symptoms) if symptoms else "None identified"}
+       Treatments: {", ".join(treatments) if treatments else "None identified"}
+       Home Remedies: {", ".join(home_remedies) if home_remedies else "None identified"}
+       
+    2. DOCUMENT SEARCH RESULTS (Confidence: {rag_confidence:.2f}):
+    {rag_content}
+    
+    USER TYPE: {user_type}
+    
+    ORCHESTRATION INSTRUCTIONS:
+    1. Analyze both data sources and determine the optimal strategy:
+       - KG_ONLY: Use only Knowledge Graph when it has high confidence (>0.75) for factual queries
+       - RAG_ONLY: Use only Document Search when it has high confidence (>0.75) with comprehensive information
+       - KG_RAG_COMBINED: Use both when they complement each other and both have decent confidence
+       - KG_ENRICHED: Start with KG data and enhance with your medical knowledge
+       - RAG_ENRICHED: Start with Document data and enhance with your medical knowledge
+       - SYNTHESIS: Combine all available data with your medical knowledge when both sources have low/medium confidence
+       - FALLBACK: Use general medical knowledge when both sources have very low confidence
+    
+    2. First, determine which strategy to use. Your reasoning should consider:
+       - Query type (factual, personal, treatment, complex)
+       - Confidence scores of each source
+       - Completeness of information from each source
+       - Whether sources complement or contradict each other
+    
+    3. Reply in this format:
+       SELECTED_STRATEGY: [Name of strategy]
+       REASONING: [Brief explanation of why this strategy is best]
+       RESPONSE: [Your complete answer using the selected strategy]
+    
+    IMPORTANT GUIDELINES:
+    - For KG_ONLY: Focus on providing factual, concise information directly from the Knowledge Graph.
+    - For RAG_ONLY: Focus on information from the document search, citing specific passages.
+    - For combined approaches: Integrate both sources, highlighting where they complement each other.
+    - For physician users: Focus more on diagnostic information and less on patient-friendly explanations.
+    - For regular users: Use clear, accessible language with practical guidance.
+    - Always add this medical disclaimer at the end: "This information is not a substitute for professional medical advice. If symptoms persist or worsen, please consult with a qualified healthcare provider."
+    - Include references to your sources at the end in this format:
+    
+    ## References:
+    1. [Source description]
+    2. [Source description]
+    
+    """
+    
+            # Get orchestration decision and response
+            print("🧠 Generating orchestrated response...")
+            t_start = datetime.now()
+            orchestration_result = self.local_generate(orchestration_prompt, max_tokens=1000)
+            print(f"✅ Response generated (took {(datetime.now() - t_start).total_seconds():.2f}s)")
+            
+            # Log the orchestration decision for analysis
+            strategy = self.log_orchestration_decision(user_input, orchestration_result, kg_confidence, rag_confidence)
+            self.last_strategy = strategy  # Store for testing
+            
+            # Extract the final response from the orchestration result
+            if "RESPONSE:" in orchestration_result:
+                parts = orchestration_result.split("RESPONSE:")
+                final_response = parts[1].strip()
+            else:
+                # If format wasn't followed, use the full response
+                final_response = orchestration_result
+            
+            # Add references if not included
+            if "## References:" not in final_response and all_sources:
+                references = "\n\n## References:\n"
+                for i, src in enumerate(all_sources, 1):
+                    references += f"{i}. {src}\n\n"
+                
+                # Check if response already has disclaimer
+                if "This information is not a substitute" in final_response:
+                    # Add references before disclaimer
+                    disclaimer_pattern = r'(This information is not a substitute.*?provider\.)'
+                    disclaimer_match = re.search(disclaimer_pattern, final_response, re.DOTALL)
+                    if disclaimer_match:
+                        disclaimer = disclaimer_match.group(1)
+                        final_response = re.sub(disclaimer_pattern, '', final_response, flags=re.DOTALL)
+                        final_response = final_response.strip() + "\n\n" + references + "\n\n" + disclaimer
+                else:
+                    # Add references and standard disclaimer
+                    disclaimer = "This information is not a substitute for professional medical advice. If symptoms persist or worsen, please consult with a qualified healthcare provider."
+                    final_response = final_response.strip() + "\n\n" + references + "\n\n" + disclaimer
+            
+            # Collect response metrics
+            metrics = {
+                "query": user_input,
+                "kg_confidence": kg_confidence,
+                "rag_confidence": rag_confidence,
+                "strategy": strategy,
+                "response_length": len(final_response),
+                "processing_time": (datetime.now() - t_start).total_seconds(),
+                "source_count": len(all_sources)
+            }
+            
+            # Log metrics to CSV
+            self.log_response_metrics(metrics)
+            
+            # Add to chat history
+            self.chat_history.append((user_input, final_response))
+            
+            # Return response and sources
+            return final_response, all_sources
+            
+        except Exception as e:
+            import traceback
+            print(f"⚠️ Error in generate_response: {e}")
+            print(traceback.format_exc())
+            return f"Error generating response: {str(e)}", []
+            
+    def log_response_metrics(self, metrics):
+        """Log response generation metrics to CSV for analysis."""
+        try:
+            log_file = "response_metrics.csv"
+            file_exists = os.path.isfile(log_file)
+            
+            metrics["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            with open(log_file, mode='a', newline='', encoding='utf-8') as file:
+                fieldnames = ['timestamp', 'query', 'kg_confidence', 'rag_confidence', 
+                              'strategy', 'response_length', 'processing_time', 'source_count']
+                writer = csv.DictWriter(file, fieldnames=fieldnames)
+                
+                if not file_exists:
+                    writer.writeheader()
+                
+                writer.writerow(metrics)
+                
+        except Exception as e:
+            print(f"⚠️ Error logging response metrics: {e}")
 
     def reset_conversation(self):
       """Reset the conversation history"""
