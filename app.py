@@ -1513,6 +1513,13 @@ class DocumentChatBot:
         if rag_missing:
             print(f"RAG missing elements: {rag_missing}")
         
+        # Initialize source contributions tracking
+        source_contributions = {
+            "KG": False,
+            "RAG": False,
+            "LLM": False
+        }
+        
         # 4. DECISION TREE FOR SOURCE SELECTION
         # Follows priority order: KG > RAG > Combined > LLM
         
@@ -1522,7 +1529,8 @@ class DocumentChatBot:
             # Case 1: Very high confidence KG answers
             if kg_confidence is not None and kg_confidence >= KG_HIGH_THRESHOLD and kg_covers_all_aspects:
                 print("Reflection decision: KG_ONLY - Very high confidence KG answer")
-                return kg_answer, "KG_ONLY"
+                source_contributions["KG"] = True
+                return kg_answer, "KG_ONLY", source_contributions
             
             # Case 2: Disease identification queries with good KG results
             if is_disease_identification and (
@@ -1533,7 +1541,8 @@ class DocumentChatBot:
                 # For multi-part queries, check if KG covers all aspects
                 if not is_multi_part or (is_multi_part and kg_covers_all_aspects):
                     print("Reflection decision: KG_ONLY - Disease identification query with KG results")
-                    return kg_answer, "KG_ONLY"
+                    source_contributions["KG"] = True
+                    return kg_answer, "KG_ONLY", source_contributions
             
             # Case 3: Treatment queries with good KG results
             if is_treatment_query and (
@@ -1545,18 +1554,21 @@ class DocumentChatBot:
                 # For multi-part queries, check if KG covers all aspects
                 if not is_multi_part or (is_multi_part and kg_covers_all_aspects):
                     print("Reflection decision: KG_ONLY - Treatment query with KG results")
-                    return kg_answer, "KG_ONLY"
+                    source_contributions["KG"] = True
+                    return kg_answer, "KG_ONLY", source_contributions
             
             # Case 4: Medium confidence KG answers that are complete
             if kg_confidence is not None and kg_confidence >= KG_MEDIUM_THRESHOLD and kg_completeness >= COMPLETENESS_THRESHOLD:
                 print(f"Reflection decision: KG_ONLY - Good confidence KG answer ({kg_confidence:.4f})")
-                return kg_answer, "KG_ONLY"
+                source_contributions["KG"] = True
+                return kg_answer, "KG_ONLY", source_contributions
         
         # 4.2 RAG-ONLY ROUTE (Second Priority)
         # When RAG provides a highly complete answer
         if rag_answer and rag_completeness >= COMPLETENESS_THRESHOLD and rag_covers_all_aspects:
             print("Reflection decision: RAG_ONLY - RAG answer is complete")
-            return rag_answer, "RAG_ONLY"
+            source_contributions["RAG"] = True
+            return rag_answer, "RAG_ONLY", source_contributions
         
         # 4.3 COMBINED SOURCE ROUTES
         print("\n--- Combination Evaluation ---")
@@ -1568,7 +1580,9 @@ class DocumentChatBot:
             
             if kg_rag_completeness >= COMPLETENESS_THRESHOLD:
                 print("Reflection decision: KG_RAG_COMBINED - Combined KG and RAG answer is complete")
-                return kg_rag_combined, "KG_RAG_COMBINED"
+                source_contributions["KG"] = True
+                source_contributions["RAG"] = True
+                return kg_rag_combined, "KG_RAG_COMBINED", source_contributions
         
         # 4.4 LLM ROUTES
         # Generate an LLM answer focused on the missing elements
@@ -1580,7 +1594,8 @@ class DocumentChatBot:
         # Check if LLM alone is sufficient
         if llm_completeness >= COMPLETENESS_THRESHOLD:
             print("Reflection decision: LLM_ONLY - LLM answer is complete")
-            return llm_answer, "LLM_ONLY"
+            source_contributions["LLM"] = True
+            return llm_answer, "LLM_ONLY", source_contributions
         
         # Try KG + LLM combination
         if kg_answer:
@@ -1590,7 +1605,9 @@ class DocumentChatBot:
             
             if kg_llm_completeness >= COMPLETENESS_THRESHOLD:
                 print("Reflection decision: KG_LLM_COMBINED - Combined KG and LLM answer is complete")
-                return kg_llm_combined, "KG_LLM_COMBINED"
+                source_contributions["KG"] = True
+                source_contributions["LLM"] = True
+                return kg_llm_combined, "KG_LLM_COMBINED", source_contributions
         
         # Try RAG + LLM combination
         if rag_answer:
@@ -1600,7 +1617,9 @@ class DocumentChatBot:
             
             if rag_llm_completeness >= COMPLETENESS_THRESHOLD:
                 print("Reflection decision: RAG_LLM_COMBINED - Combined RAG and LLM answer is complete")
-                return rag_llm_combined, "RAG_LLM_COMBINED"
+                source_contributions["RAG"] = True
+                source_contributions["LLM"] = True
+                return rag_llm_combined, "RAG_LLM_COMBINED", source_contributions
         
         # Try KG + RAG + LLM combination (all three sources)
         if kg_answer and rag_answer:
@@ -1610,7 +1629,10 @@ class DocumentChatBot:
             
             if all_combined_completeness >= COMPLETENESS_THRESHOLD:
                 print("Reflection decision: KG_RAG_LLM_COMBINED - All sources combined answer is complete")
-                return all_combined, "KG_RAG_LLM_COMBINED"
+                source_contributions["KG"] = True
+                source_contributions["RAG"] = True
+                source_contributions["LLM"] = True
+                return all_combined, "KG_RAG_LLM_COMBINED", source_contributions
         
         # 5. FALLBACK TO BEST AVAILABLE
         # If no combination meets the threshold, choose the highest scoring option
@@ -1630,25 +1652,37 @@ class DocumentChatBot:
         # Return the option with the highest completeness score
         if kg_answer and best_completeness == kg_completeness:
             print("Reflection decision: KG_ONLY - Best available answer")
-            return kg_answer, "KG_ONLY"
+            source_contributions["KG"] = True
+            return kg_answer, "KG_ONLY", source_contributions
         elif rag_answer and best_completeness == rag_completeness:
             print("Reflection decision: RAG_ONLY - Best available answer")
-            return rag_answer, "RAG_ONLY"
+            source_contributions["RAG"] = True
+            return rag_answer, "RAG_ONLY", source_contributions
         elif best_completeness == llm_completeness:
             print("Reflection decision: LLM_ONLY - Best available answer")
-            return llm_answer, "LLM_ONLY"
+            source_contributions["LLM"] = True
+            return llm_answer, "LLM_ONLY", source_contributions
         elif 'kg_rag_completeness' in locals() and best_completeness == kg_rag_completeness:
             print("Reflection decision: KG_RAG_COMBINED - Best available answer")
-            return kg_rag_combined, "KG_RAG_COMBINED"
+            source_contributions["KG"] = True
+            source_contributions["RAG"] = True
+            return kg_rag_combined, "KG_RAG_COMBINED", source_contributions
         elif 'kg_llm_completeness' in locals() and best_completeness == kg_llm_completeness:
             print("Reflection decision: KG_LLM_COMBINED - Best available answer")
-            return kg_llm_combined, "KG_LLM_COMBINED"
+            source_contributions["KG"] = True
+            source_contributions["LLM"] = True
+            return kg_llm_combined, "KG_LLM_COMBINED", source_contributions
         elif 'rag_llm_completeness' in locals() and best_completeness == rag_llm_completeness:
             print("Reflection decision: RAG_LLM_COMBINED - Best available answer")
-            return rag_llm_combined, "RAG_LLM_COMBINED"
+            source_contributions["RAG"] = True
+            source_contributions["LLM"] = True
+            return rag_llm_combined, "RAG_LLM_COMBINED", source_contributions
         else:
             print("Reflection decision: KG_RAG_LLM_COMBINED - Best available answer")
-            return all_combined, "KG_RAG_LLM_COMBINED"
+            source_contributions["KG"] = True
+            source_contributions["RAG"] = True
+            source_contributions["LLM"] = True
+            return all_combined, "KG_RAG_LLM_COMBINED", source_contributions
             
     def segment_query(self, user_query: str) -> Dict[str, bool]:
         """Identify different aspects of the query"""
@@ -1942,7 +1976,7 @@ class DocumentChatBot:
         # Handle the case when secondary_answer is None or empty
         if not secondary_answer or (isinstance(secondary_answer, str) and secondary_answer.strip() == ""):
             return primary_answer
-
+    
         # If we're prioritizing KG (improvement #4)
         if prioritize_kg:
             # Create a formatted answer that clearly prioritizes KG content
@@ -1958,11 +1992,11 @@ class DocumentChatBot:
                 
             # Format the combined answer to emphasize KG content
             formatted_answer = f"""
-{primary_content}
-
-**Additional Information:**
-{secondary_content}
-"""
+    {primary_content}
+    
+    **Additional Information:**
+    {secondary_content}
+    """
             return formatted_answer.strip()
             
         missing_elements_text = ""
@@ -1972,9 +2006,9 @@ class DocumentChatBot:
         prompt = f"""
         You are creating a comprehensive medical answer by combining information from multiple sources.
         
-        PRIMARY ANSWER: {primary_answer}
+        PRIMARY ANSWER (SOURCE A): {primary_answer}
         
-        SECONDARY ANSWER: {secondary_answer}
+        SECONDARY ANSWER (SOURCE B): {secondary_answer}
         
         {missing_elements_text}
         
@@ -1985,7 +2019,8 @@ class DocumentChatBot:
         4. Ensures all medical information is accurate
         5. Uses clear and patient-friendly language
         
-        The combined answer should be comprehensive but concise.
+        IMPORTANT: In your answer, DO NOT explicitly label which parts came from which source.
+        However, ensure the combined answer retains the key elements from each source.
         """
         
         try:
@@ -2011,10 +2046,7 @@ class DocumentChatBot:
         """
         # First combine KG and RAG
         kg_rag_combined = self.combine_answers(kg_answer, rag_answer, llm_client=llm_client)
-        
-        # Then add LLM content
         return self.combine_answers(kg_rag_combined, llm_answer, llm_client=llm_client)
-    
     
     def generate_followup_request(self, kg_missing=None, rag_missing=None):
         """
@@ -2153,68 +2185,84 @@ class DocumentChatBot:
             t_start = datetime.now()
             
             # Use the reflection agent to evaluate and combine answers
-            final_answer, strategy_used = self.reflection_agent(user_input, kg_content, rag_content, kg_confidence)
+            final_answer, strategy_used, source_contributions = self.reflection_agent(user_input, kg_content, rag_content, kg_confidence)
             
             print(f"📊 Reflection Strategy: {strategy_used}")
             print(f"✅ Response generated (took {(datetime.now() - t_start).total_seconds():.2f}s)")
             
-            # Combine all sources for reference
-            all_sources = rag_sources
-            if disease:
-                all_sources.append(f"[KG] Knowledge Graph: {disease}")
+            # Format source information including the routing strategy
+            routing_info = f"Route: {strategy_used}"
+            
+            # Prepare to collect appropriate sources for the reference section
+            formatted_sources = []
+            
+            # Add sources based on the contribution flags
+            if source_contributions["KG"]:
+                # Add KG sources
+                if disease:
+                    formatted_sources.append(f"- Knowledge Graph: Used for disease identification ({disease})")
+                elif symptoms:
+                    formatted_sources.append(f"- Knowledge Graph: Used for symptom analysis ({', '.join(symptoms)})")
+                else:
+                    formatted_sources.append("- Knowledge Graph: Used for medical entity extraction")
+            
+            if source_contributions["RAG"]:
+                # Add RAG document sources
+                formatted_sources.append("- Document Retrieval: Used for detailed medical information")
+                
+                # Include the specific document references
+                for i, src in enumerate(rag_sources, 1):
+                    # Format the source reference nicely
+                    if "Internal Data:" in src:
+                        # Extract just the page number and a snippet
+                        page_match = re.search(r'Page (\d+)', src)
+                        page_num = page_match.group(1) if page_match else "N/A"
+                        
+                        # Limit the text snippet to a reasonable length
+                        content = src.split(" - ", 1)[1] if " - " in src else src
+                        content = content[:100] + "..." if len(content) > 100 else content
+                        
+                        formatted_sources.append(f"  • Internal Data: DxBook, Page {page_num}")
+                    else:
+                        # External source or unknown format
+                        formatted_sources.append(f"  • {src[:100]}...")
+            
+            if source_contributions["LLM"]:
+                # Add LLM contribution
+                formatted_sources.append("- Medical Knowledge: Used to supplement or synthesize information not found in structured sources")
+            
+            # Construct references section
+            references = "\n\n## References:\n"
+            references += f"{routing_info}\n"
+            for src in formatted_sources:
+                references += f"{src}\n"
+            
+            # Add disclaimer
+            disclaimer = "\n\nThis information is not a substitute for professional medical advice. If symptoms persist or worsen, please consult with a qualified healthcare provider."
+            
+            # Check if response already has a references section
+            if "## References:" in final_answer:
+                # Replace existing references section
+                parts = final_answer.split("## References:")
+                final_response = parts[0].strip() + references + disclaimer
+            else:
+                # Add new references section
+                final_response = final_answer.strip() + references + disclaimer
             
             # Log the orchestration decision for analysis
             self.log_orchestration_decision(
                 user_input,
-                f"SELECTED_STRATEGY: {strategy_used}\nREASONING: Determined by reflection agent based on answer completeness evaluation.\nRESPONSE: {final_answer[:100]}...",
+                f"SELECTED_STRATEGY: {strategy_used}\nREASONING: Determined by reflection agent based on answer completeness evaluation.\nSOURCES: {','.join(k for k, v in source_contributions.items() if v)}\nRESPONSE: {final_answer[:100]}...",
                 kg_confidence,
                 rag_confidence
             )
             self.last_strategy = strategy_used  # Store for testing
             
-            # Add references if not included
-            if "## References:" not in final_answer and all_sources:
-                references = "\n\n## References:\n"
-                for i, src in enumerate(all_sources, 1):
-                    references += f"{i}. {src}\n\n"
-                
-                # Check if response already has disclaimer
-                if "This information is not a substitute" in final_answer:
-                    # Add references before disclaimer
-                    disclaimer_pattern = r'(This information is not a substitute.*?provider\.)'
-                    disclaimer_match = re.search(disclaimer_pattern, final_answer, re.DOTALL)
-                    if disclaimer_match:
-                        disclaimer = disclaimer_match.group(1)
-                        final_response = re.sub(disclaimer_pattern, '', final_answer, flags=re.DOTALL)
-                        final_response = final_response.strip() + "\n\n" + references + "\n\n" + disclaimer
-                    else:
-                        final_response = final_answer.strip() + "\n\n" + references
-                else:
-                    # Add references and standard disclaimer
-                    disclaimer = "This information is not a substitute for professional medical advice. If symptoms persist or worsen, please consult with a qualified healthcare provider."
-                    final_response = final_answer.strip() + "\n\n" + references + "\n\n" + disclaimer
-            else:
-                final_response = final_answer
-            
-            # Collect response metrics
-            metrics = {
-                "query": user_input,
-                "kg_confidence": kg_confidence,
-                "rag_confidence": rag_confidence,
-                "strategy": strategy_used,
-                "response_length": len(final_response),
-                "processing_time": (datetime.now() - t_start).total_seconds(),
-                "source_count": len(all_sources)
-            }
-            
-            # Log metrics to CSV
-            self.log_response_metrics(metrics)
-            
             # Add to chat history
             self.chat_history.append((user_input, final_response))
             
             # Return response and sources
-            return final_response, all_sources
+            return final_response, formatted_sources
             
         except Exception as e:
             import traceback
@@ -2252,14 +2300,19 @@ class DocumentChatBot:
             # Extract strategy and reasoning
             strategy = "UNKNOWN"
             reasoning = "Not provided"
+            sources_used = []
             
             if "SELECTED_STRATEGY:" in orchestration_result:
                 strategy_part = orchestration_result.split("SELECTED_STRATEGY:")[1].split("\n")[0].strip()
                 strategy = strategy_part
                 
             if "REASONING:" in orchestration_result:
-                reasoning_parts = orchestration_result.split("REASONING:")[1].split("RESPONSE:")[0].strip()
+                reasoning_parts = orchestration_result.split("REASONING:")[1].split("SOURCES:")[0].strip()
                 reasoning = reasoning_parts.strip()
+                
+            if "SOURCES:" in orchestration_result:
+                sources_part = orchestration_result.split("SOURCES:")[1].split("RESPONSE:")[0].strip()
+                sources_used = sources_part.split(",")
             
             # Log the decision
             log_entry = {
@@ -2268,13 +2321,17 @@ class DocumentChatBot:
                 "strategy": strategy,
                 "reasoning": reasoning,
                 "kg_confidence": kg_confidence,
-                "rag_confidence": rag_confidence
+                "rag_confidence": rag_confidence,
+                "kg_used": "KG" in sources_used,
+                "rag_used": "RAG" in sources_used,
+                "llm_used": "LLM" in sources_used
             }
             
             # Print logging information
             print(f"📊 Orchestration Decision:")
             print(f"   Query: {query}")
             print(f"   Strategy: {strategy}")
+            print(f"   Sources: {sources_used}")
             print(f"   KG Confidence: {kg_confidence:.4f}")
             print(f"   RAG Confidence: {rag_confidence:.4f}")
             print(f"   Reasoning: {reasoning}")
@@ -2284,7 +2341,8 @@ class DocumentChatBot:
             file_exists = os.path.isfile(log_file)
             
             with open(log_file, mode='a', newline='', encoding='utf-8') as file:
-                fieldnames = ['timestamp', 'query', 'strategy', 'reasoning', 'kg_confidence', 'rag_confidence']
+                fieldnames = ['timestamp', 'query', 'strategy', 'reasoning', 'kg_confidence', 'rag_confidence', 
+                             'kg_used', 'rag_used', 'llm_used']
                 writer = csv.DictWriter(file, fieldnames=fieldnames)
                 
                 if not file_exists:
