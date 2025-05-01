@@ -97,7 +97,8 @@ class DocumentChatBot:
         self.qa_chain = None
         self.vectordb = None
         self.chat_history = []
-        
+        self.identified_diseases = []
+        self.disease_confidence = 0.0
         # Initialize embedding model during initialization
         try:
             self.embedding_model = HuggingFaceEmbeddings(
@@ -458,7 +459,31 @@ class DocumentChatBot:
                 print(f"⚠️ Error identifying missing information: {e}")
             
             return []
-
+                                 
+    def extract_diseases_from_kg_answer(self, kg_answer):
+        """
+        Extracts disease information from a formatted KG answer string.
+        """
+        self.identified_diseases = []
+        
+        if not kg_answer:
+            return
+            
+        # Try to extract diseases from structured KG answer
+        if "Possible Diseases:" in kg_answer:
+            # Find the section with diseases
+            disease_section = kg_answer.split("Possible Diseases:")[1].split("\n\n")[0]
+            # Extract disease names (assuming they're listed with bullet points or numbers)
+            import re
+            disease_matches = re.findall(r'[•*\-\d.]\s*([^•*\-\n]+)', disease_section)
+            if disease_matches:
+                self.identified_diseases = [d.strip() for d in disease_matches if d.strip()]
+        elif "Disease:" in kg_answer:
+            # Extract single disease
+            disease_section = kg_answer.split("Disease:")[1].split("\n")[0]
+            if disease_section.strip():
+                self.identified_diseases = [disease_section.strip()]
+                          
     def get_kg_symptoms(self) -> Tuple[List[str], np.ndarray]:
             """Get all symptoms from Neo4j knowledge graph"""
             cache_key = "kg_symptoms"
@@ -1133,6 +1158,9 @@ class DocumentChatBot:
         Returns:
             tuple: (final_answer, strategy_used)
         """
+        if not self.identified_diseases and kg_answer:
+            self.extract_diseases_from_kg_answer(kg_answer)
+                            
         # Special case for disease identification with KG results - ENHANCED
         if self.is_disease_identification_query(user_query):
             if isinstance(self.identified_diseases, list) and len(self.identified_diseases) > 0:
@@ -1505,46 +1533,6 @@ class DocumentChatBot:
         # Then add LLM content
         return self.combine_answers(kg_rag_combined, llm_answer, llm_client=llm_client)
     
-    def _llm_answer(query, kg_missing=None, rag_missing=None):
-        """
-        s an LLM answer focused on addressing missing elements.
-        
-        Args:
-            query: Original user query
-            kg_missing: Elements missing from KG answer
-            rag_missing: Elements missing from RAG answer
-            
-        Returns:
-            str: LLM-d answer
-        """
-        # Construct focus areas from missing elements
-        focus_areas = set()
-        if kg_missing:
-            focus_areas.update(kg_missing)
-        if rag_missing:
-            focus_areas.update(rag_missing)
-        
-        focus_text = ""
-        if focus_areas:
-            focus_text = "Focus particularly on these aspects: " + ", ".join(focus_areas)
-        
-        prompt = f"""
-        You are a medical AI assistant providing information about a health question.
-        
-        USER QUESTION: {query}
-        
-        {focus_text}
-        
-        Provide a helpful, accurate answer to the user's question.
-        Include appropriate disclaimers about consulting healthcare professionals.
-        """
-        
-        try:
-            response = self.local_(prompt, max_tokens=1000)
-            return response.strip()
-        except Exception as e:
-            print(f"Error generating LLM answer: {e}")
-            return "I'm sorry, but I couldn't generate a specific answer to your question. Please consult a healthcare professional for personalized advice."
     
     def generate_followup_request(self, kg_missing=None, rag_missing=None):
         """
