@@ -34,10 +34,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Get environment variables with fallback to hardcoded values
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_API_KEY")
-NEO4J_URI = os.getenv("NEO4J_URI", "neo4j+s://your_instance.databases.neo4j.io")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBv-I8Ld-k09Lxu9Yi7HPffZHKXIqGSdHU")
+NEO4J_URI = os.getenv("NEO4J_URI", "neo4j+s://1b47920f.databases.neo4j.io")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "your_password")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "eCqDfyhDcuGMLzbYfiqL6jsvjH3LIXr86xQGAEKmY8Y")
 
 # Update the NEO4J_AUTH variable to use environment variables
 NEO4J_AUTH = (NEO4J_USER, NEO4J_PASSWORD)
