@@ -699,23 +699,52 @@ class DocumentChatBot:
         return [], 0.0
 
     def is_disease_identification_query(self, query):
-        """Determine if a query is specifically asking what disease matches symptoms"""
-        query = query.lower()
+        query_lower = query.lower()
         
-        # Check for symptom-to-disease query patterns
-        disease_patterns = [
-            r"what (could|might|can) (i|my|the patient|they) have",
-            r"what (is|are) (the )?(possible|potential) (disease|diagnosis|condition)",
-            r"what (disease|condition|diagnosis) (matches|is indicated by|could cause)",
-            r"what (might|could) (be|cause) (these|the|my|their) symptoms"
-        ]
+        # Keywords that suggest disease identification
+        disease_keywords = ["what disease", "what condition", "what could be causing", 
+                            "what might be causing", "possible disease", "possible condition",
+                            "diagnosis", "diagnose", "what causes", "what is causing"]
         
-        for pattern in disease_patterns:
-            if re.search(pattern, query):
-                return True
+        # Check for symptom mentions
+        has_symptoms = any(symptom in query_lower for symptom in [
+            "chest pain", "shortness of breath", "cough", "fever", "headache", 
+            "fatigue", "dizziness", "symptom"
+        ])
         
-        return False
-                   
+        # Check for disease identification intent
+        is_asking_for_disease = any(keyword in query_lower for keyword in disease_keywords)
+        
+        return has_symptoms and (is_asking_for_disease or "?" in query)
+            
+     def format_disease_list_answer(self, query, disease_list, confidence=None):
+            """
+            Formats a list of diseases into a user-friendly answer.
+            
+            Args:
+                query: The original user question
+                disease_list: List of diseases identified
+                confidence: Confidence score (if available)
+                
+            Returns:
+                str: Formatted answer with the disease list
+            """
+            symptoms_mentioned = self.extract_symptoms_from_query(query)
+            symptoms_text = ", ".join(symptoms_mentioned) if symptoms_mentioned else "your symptoms"
+            
+            # Start with a clinical introduction
+            answer = f"Based on {symptoms_text}, the following conditions could potentially be causing your symptoms:\n\n"
+            
+            # Add each disease with a bullet point
+            for i, disease in enumerate(disease_list, 1):
+                answer += f"{i}. {disease}\n"
+            
+            # Add important medical disclaimer
+            answer += "\nIMPORTANT: This is not a definitive diagnosis. These are potential conditions that can cause the symptoms you described. "
+            answer += "Chest pain and shortness of breath can be symptoms of serious conditions that require immediate medical attention. "
+            answer += "Please consult with a healthcare provider as soon as possible for proper evaluation, diagnosis, and treatment."
+            
+            return answer              
     def knowledge_graph_agent(self, state: Dict) -> Dict:
         """
         Knowledge Graph Agent
@@ -1089,7 +1118,7 @@ class DocumentChatBot:
         
         return result
                     
-    def reflection_agent(self, user_query, kg_answer, rag_answer, kg_confidence=None):
+   def reflection_agent(self, user_query, kg_answer, rag_answer, kg_confidence=None):
         """
         Evaluates all possible combinations of knowledge sources to provide the most
         complete answer to the user query.
@@ -1103,10 +1132,21 @@ class DocumentChatBot:
         Returns:
             tuple: (final_answer, strategy_used)
         """
+        # Special case for disease identification with KG results - ENHANCED
+        if self.is_disease_identification_query(user_query):
+            if isinstance(self.identified_diseases, list) and len(self.identified_diseases) > 0:
+                # Format the diseases directly from the list
+                formatted_answer = self.format_disease_list_answer(user_query, self.identified_diseases, self.disease_confidence)
+                print(f"Reflection decision: KG_ONLY - Disease identification with {len(self.identified_diseases)} diseases")
+                return formatted_answer, "KG_ONLY"
+            elif "Possible Diseases:" in kg_answer or "Disease:" in kg_answer:
+                print("Reflection decision: KG_ONLY - Disease identification query with KG results")
+                return kg_answer, "KG_ONLY"
+        
         # Check if KG confidence score is available and high enough
-        if kg_confidence is not None and kg_confidence >= 0.75:
+        if kg_confidence is not None and kg_confidence >= 0.65:
             print(f"Reflection decision: KG_ONLY - High confidence KG answer ({kg_confidence})")
-            return kg_answer, "KG_ONLY"
+            return kg_answer, "KG_ONLY
             
         # Special case for disease identification with KG results
         if self.is_disease_identification_query(user_query) and ("Possible Diseases:" in kg_answer or "Disease:" in kg_answer):
@@ -1114,7 +1154,7 @@ class DocumentChatBot:
             return kg_answer, "KG_ONLY"
             
         # Set threshold for considering an answer complete
-        COMPLETENESS_THRESHOLD = 0.85
+        COMPLETENESS_THRESHOLD = 0.65
         
         # Start logging the reflection process
         print(f"Reflection agent analyzing query: {user_query}")
@@ -1331,6 +1371,7 @@ class DocumentChatBot:
         except Exception as e:
             print(f"Error identifying missing elements: {e}")
             return ["Unable to identify specific missing elements"]
+                      
     def is_kg_answer_high_quality(self, user_query, kg_answer):
         """
         Evaluates if the KG answer is high quality enough to use on its own.
