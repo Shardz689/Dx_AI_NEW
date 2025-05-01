@@ -1106,8 +1106,8 @@ class DocumentChatBot:
                 print("Reflection decision: KG_ONLY - Disease identification query with KG results")
                 return kg_answer, "KG_ONLY"
             # Set threshold for considering an answer complete
-            COMPLETENESS_THRESHOLD = 0.85
-            
+            COMPLETENESS_THRESHOLD = 0.6
+                            
             # Start logging the reflection process
             print(f"Reflection agent analyzing query: {user_query}")
             
