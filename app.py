@@ -1158,41 +1158,71 @@ class DocumentChatBot:
         Returns:
             tuple: (final_answer, strategy_used)
         """
+        # Add detailed logging at the beginning
+        logger.info(f"Processing query: {user_query}")
+        logger.info(f"Disease query? {self.is_disease_identification_query(user_query)}")
+        
         if not self.identified_diseases and kg_answer:
             self.extract_diseases_from_kg_answer(kg_answer)
+        
+        # Log KG metrics - improvement #5: Add Debugging Logs
+        if hasattr(kg_answer, 'confidence'):
+            logger.info(f"KG Confidence: {kg_answer.confidence}, Symptoms: {getattr(kg_answer, 'symptoms', [])}")
+        elif isinstance(kg_answer, dict):
+            logger.info(f"KG Confidence: {kg_answer.get('confidence', kg_confidence)}, " 
+                       f"Symptoms: {kg_answer.get('symptoms', [])}")
+        else:
+            logger.info(f"KG Confidence: {kg_confidence}, Symptoms: Unknown format")
+        
+        # Check if answer meets quality criteria - improvement #2: Adjust KG Answer Quality Checks
+        is_high_quality = False
+        if isinstance(kg_answer, dict):
+            is_high_quality = (
+                (kg_answer.get('confidence', kg_confidence or 0) >= 0.7) and  # Reduced from 0.9
+                (len(kg_answer.get('symptoms', [])) >= 1 or len(kg_answer.get('causes', [])) >= 1)
+            )
+        logger.info(f"KG Quality: {is_high_quality}")
                             
         # Special case for disease identification with KG results - ENHANCED
+        # Improvement #1: Refine Disease Identification Logic is applied in the is_disease_identification_query method
         if self.is_disease_identification_query(user_query):
+            # Improvement #3: Improve Reflection Agent Prioritization
             if isinstance(self.identified_diseases, list) and len(self.identified_diseases) > 0:
                 # Format the diseases directly from the list
                 formatted_answer = self.format_disease_list_answer(user_query, self.identified_diseases, self.disease_confidence)
-                print(f"Reflection decision: KG_ONLY - Disease identification with {len(self.identified_diseases)} diseases")
+                logger.info(f"Reflection decision: KG_ONLY - Disease identification with {len(self.identified_diseases)} diseases")
                 return formatted_answer, "KG_ONLY"
-            elif "Possible Diseases:" in kg_answer or "Disease:" in kg_answer:
-                print("Reflection decision: KG_ONLY - Disease identification query with KG results")
-                return kg_answer, "KG_ONLY"
+            elif is_high_quality or "Possible Diseases:" in kg_answer or "Disease:" in kg_answer:
+                logger.info("Reflection decision: KG_ONLY - Disease identification query with KG results")
+                
+                # Improvement #4: Enhance Answer Combination Logic
+                if is_high_quality:
+                    # Include RAG as supplementary when explicitly prioritizing KG
+                    combined = self.combine_answers(kg_answer, rag_answer, prioritize_kg=True)
+                    return combined, "KG_PRIORITIZED_WITH_RAG"
+                else:
+                    return kg_answer, "KG_ONLY"
         
         # Check if KG confidence score is available and high enough
-        if kg_confidence is not None and kg_confidence >= 0.65:
-            print(f"Reflection decision: KG_ONLY - High confidence KG answer ({kg_confidence})")
-            return kg_answer, "KG_ONLY"
+        # Lowered threshold according to improvement #2
+        if kg_confidence is not None and kg_confidence >= 0.7:  # Changed from 0.65
+            logger.info(f"Reflection decision: KG_ONLY - High confidence KG answer ({kg_confidence})")
             
-        # Special case for disease identification with KG results
-        if self.is_disease_identification_query(user_query) and ("Possible Diseases:" in kg_answer or "Disease:" in kg_answer):
-            print("Reflection decision: KG_ONLY - Disease identification query with KG results")
-            return kg_answer, "KG_ONLY"
+            # Improvement #4: Include RAG as supplementary
+            combined = self.combine_answers(kg_answer, rag_answer, prioritize_kg=True)
+            return combined, "KG_PRIORITIZED_WITH_RAG"
             
         # Set threshold for considering an answer complete
         COMPLETENESS_THRESHOLD = 0.65
         
         # Start logging the reflection process
-        print(f"Reflection agent analyzing query: {user_query}")
+        logger.info(f"Reflection agent analyzing query: {user_query}")
         
         # Evaluate completeness of individual sources
         kg_completeness = self.evaluate_answer_completeness(user_query, kg_answer)
         rag_completeness = self.evaluate_answer_completeness(user_query, rag_answer)
         
-        print(f"KG completeness: {kg_completeness}, RAG completeness: {rag_completeness}")
+        logger.info(f"KG completeness: {kg_completeness}, RAG completeness: {rag_completeness}")
         
         # Evaluate what's missing from each source
         kg_missing = self.identify_missing_elements(user_query, kg_answer)
@@ -1200,63 +1230,66 @@ class DocumentChatBot:
         
         # Case 1: KG only - sufficient
         if kg_completeness >= COMPLETENESS_THRESHOLD:
-            print("Reflection decision: KG_ONLY - KG answer is complete")
-            return kg_answer, "KG_ONLY"
+            logger.info("Reflection decision: KG_ONLY - KG answer is complete")
+            
+            # Improvement #4: Include RAG as supplementary when KG is prioritized
+            combined = self.combine_answers(kg_answer, rag_answer, prioritize_kg=True)
+            return combined, "KG_PRIORITIZED_WITH_RAG"
         
         # Case 2: RAG only - sufficient
         if rag_completeness >= COMPLETENESS_THRESHOLD:
-            print("Reflection decision: RAG_ONLY - RAG answer is complete")
+            logger.info("Reflection decision: RAG_ONLY - RAG answer is complete")
             return rag_answer, "RAG_ONLY"
         
         # Case 3: KG + RAG combination
         kg_rag_combined = self.combine_answers(kg_answer, rag_answer, kg_missing)
         kg_rag_completeness = self.evaluate_answer_completeness(user_query, kg_rag_combined)
         
-        print(f"KG+RAG completeness: {kg_rag_completeness}")
+        logger.info(f"KG+RAG completeness: {kg_rag_completeness}")
         
         if kg_rag_completeness >= COMPLETENESS_THRESHOLD:
-            print("Reflection decision: KG_RAG_COMBINED - Combined KG and RAG answer is complete")
+            logger.info("Reflection decision: KG_RAG_COMBINED - Combined KG and RAG answer is complete")
             return kg_rag_combined, "KG_RAG_COMBINED"
         
         # Generate LLM answer for missing parts
         llm_answer = self.generate_llm_answer(user_query, kg_missing, rag_missing)
         llm_completeness = self.evaluate_answer_completeness(user_query, llm_answer)
         
-        print(f"LLM completeness: {llm_completeness}")
+        logger.info(f"LLM completeness: {llm_completeness}")
         
         # Case 4: LLM only - sufficient
         if llm_completeness >= COMPLETENESS_THRESHOLD:
-            print("Reflection decision: LLM_ONLY - LLM answer is complete")
+            logger.info("Reflection decision: LLM_ONLY - LLM answer is complete")
             return llm_answer, "LLM_ONLY"
         
         # Case 5: KG + LLM combination
         kg_llm_combined = self.combine_answers(kg_answer, llm_answer, kg_missing)
         kg_llm_completeness = self.evaluate_answer_completeness(user_query, kg_llm_combined)
         
-        print(f"KG+LLM completeness: {kg_llm_completeness}")
+        logger.info(f"KG+LLM completeness: {kg_llm_completeness}")
         
         if kg_llm_completeness >= COMPLETENESS_THRESHOLD:
-            print("Reflection decision: KG_LLM_COMBINED - Combined KG and LLM answer is complete")
+            logger.info("Reflection decision: KG_LLM_COMBINED - Combined KG and LLM answer is complete")
             return kg_llm_combined, "KG_LLM_COMBINED"
         
         # Case 6: RAG + LLM combination
         rag_llm_combined = self.combine_answers(rag_answer, llm_answer, rag_missing)
         rag_llm_completeness = self.evaluate_answer_completeness(user_query, rag_llm_combined)
         
-        print(f"RAG+LLM completeness: {rag_llm_completeness}")
+        logger.info(f"RAG+LLM completeness: {rag_llm_completeness}")
         
         if rag_llm_completeness >= COMPLETENESS_THRESHOLD:
-            print("Reflection decision: RAG_LLM_COMBINED - Combined RAG and LLM answer is complete")
+            logger.info("Reflection decision: RAG_LLM_COMBINED - Combined RAG and LLM answer is complete")
             return rag_llm_combined, "RAG_LLM_COMBINED"
         
         # Case 7: KG + RAG + LLM combination
         all_combined = self.combine_all_answers(kg_answer, rag_answer, llm_answer)
         all_combined_completeness = self.evaluate_answer_completeness(user_query, all_combined)
         
-        print(f"All sources combined completeness: {all_combined_completeness}")
+        logger.info(f"All sources combined completeness: {all_combined_completeness}")
         
         if all_combined_completeness >= COMPLETENESS_THRESHOLD:
-            print("Reflection decision: KG_RAG_LLM_COMBINED - All sources combined answer is complete")
+            logger.info("Reflection decision: KG_RAG_LLM_COMBINED - All sources combined answer is complete")
             return all_combined, "KG_RAG_LLM_COMBINED"
         
         # Case 8: Best available answer (even if below threshold)
@@ -1264,34 +1297,36 @@ class DocumentChatBot:
                                kg_rag_completeness, kg_llm_completeness, 
                                rag_llm_completeness, all_combined_completeness)
         
-        # If KG answer is already quite good (above 0.7), prioritize it for simplicity
+        # If KG answer is already quite good (above 0.7), prioritize it for simplicity - improvement #3
         if kg_completeness >= 0.7 and kg_completeness == best_completeness:
-            print("Reflection decision: KG_ONLY - Good enough KG answer prioritized")
-            return kg_answer, "KG_ONLY"
+            logger.info("Reflection decision: KG_ONLY - Good enough KG answer prioritized")
+            # Include RAG as supplementary when prioritizing KG - improvement #4
+            combined = self.combine_answers(kg_answer, rag_answer, prioritize_kg=True)
+            return combined, "KG_PRIORITIZED_WITH_RAG"
             
         # Choose the best answer based on completeness scores
         if best_completeness == kg_completeness:
-            print("Reflection decision: KG_ONLY - Best available answer")
+            logger.info("Reflection decision: KG_ONLY - Best available answer")
             return kg_answer, "KG_ONLY"
         elif best_completeness == rag_completeness:
-            print("Reflection decision: RAG_ONLY - Best available answer")
+            logger.info("Reflection decision: RAG_ONLY - Best available answer")
             return rag_answer, "RAG_ONLY"
         elif best_completeness == llm_completeness:
-            print("Reflection decision: LLM_ONLY - Best available answer")
+            logger.info("Reflection decision: LLM_ONLY - Best available answer")
             return llm_answer, "LLM_ONLY"
         elif best_completeness == kg_rag_completeness:
-            print("Reflection decision: KG_RAG_COMBINED - Best available answer")
+            logger.info("Reflection decision: KG_RAG_COMBINED - Best available answer")
             return kg_rag_combined, "KG_RAG_COMBINED"
         elif best_completeness == kg_llm_completeness:
-            print("Reflection decision: KG_LLM_COMBINED - Best available answer")
+            logger.info("Reflection decision: KG_LLM_COMBINED - Best available answer")
             return kg_llm_combined, "KG_LLM_COMBINED"
         elif best_completeness == rag_llm_completeness:
-            print("Reflection decision: RAG_LLM_COMBINED - Best available answer")
+            logger.info("Reflection decision: RAG_LLM_COMBINED - Best available answer")
             return rag_llm_combined, "RAG_LLM_COMBINED"
         else:
-            print("Reflection decision: KG_RAG_LLM_COMBINED - Best available answer")
+            logger.info("Reflection decision: KG_RAG_LLM_COMBINED - Best available answer")
             return all_combined, "KG_RAG_LLM_COMBINED"
-                   
+                       
     def evaluate_answer_completeness(self, query, answer, llm_client=None):
         """
         Evaluates how completely an answer addresses the user query.
@@ -1401,7 +1436,7 @@ class DocumentChatBot:
             print(f"Error identifying missing elements: {e}")
             return ["Unable to identify specific missing elements"]
                       
-    def is_kg_answer_high_quality(self, user_query, kg_answer):
+    def is_kg_answer_high_quality(self, user_query, kg_answer, kg_confidence=None):
         """
         Evaluates if the KG answer is high quality enough to use on its own.
         This function acts as an additional check focused specifically on KG answer quality.
@@ -1409,12 +1444,46 @@ class DocumentChatBot:
         Args:
             user_query: The original user question
             kg_answer: Answer from Knowledge Graph
+            kg_confidence: Optional confidence score from KG
             
         Returns:
             bool: True if the KG answer is high quality, False otherwise
         """
-        if not kg_answer or kg_answer.strip() == "":
+        # Add detailed logging
+        logger.info(f"Evaluating KG answer quality for query: {user_query}")
+        
+        # Handle various input formats for kg_answer
+        content = kg_answer
+        confidence = kg_confidence
+        symptoms = []
+        causes = []
+        
+        if isinstance(kg_answer, dict):
+            content = kg_answer.get('content', kg_answer)
+            confidence = kg_answer.get('confidence', kg_confidence)
+            symptoms = kg_answer.get('symptoms', [])
+            causes = kg_answer.get('causes', [])
+        
+        # Check if content is empty
+        if not content or (isinstance(content, str) and content.strip() == ""):
+            logger.info("KG answer rejected: Empty content")
             return False
+            
+        # Log KG metrics 
+        logger.info(f"KG evaluation - Confidence: {confidence}, Symptoms: {len(symptoms)}, Causes: {len(causes)}")
+        
+        # Improvement #2: Adjusted KG Answer Quality Checks - Reduce threshold to 0.7
+        QUALITY_THRESHOLD = 0.7  # Reduced from 0.9
+        
+        # If confidence score is available and high, consider it high quality
+        if confidence is not None and confidence >= QUALITY_THRESHOLD:
+            logger.info(f"KG answer accepted: High confidence score {confidence}")
+            return True
+            
+        # Improvement #2: Check for at least 1 symptom OR 1 cause
+        if len(symptoms) >= 1 or len(causes) >= 1:
+            logger.info(f"KG answer accepted: Has sufficient symptoms ({len(symptoms)}) or causes ({len(causes)})")
+            return True
         
         # Check for indicators of a high-quality KG answer
         indicators = [
@@ -1427,45 +1496,61 @@ class DocumentChatBot:
         ]
         
         # Count how many quality indicators are present
-        indicator_count = sum(1 for indicator in indicators if indicator.lower() in kg_answer.lower())
+        indicator_count = sum(1 for indicator in indicators if isinstance(content, str) and indicator.lower() in content.lower())
         
         # Check for structured information patterns
-        has_structured_info = any([
-            ":" in kg_answer,  # Key-value pairs
-            "\n-" in kg_answer,  # Bulleted lists
-            "1." in kg_answer,   # Numbered lists
-            "•" in kg_answer     # Bullet points
-        ])
+        has_structured_info = False
+        if isinstance(content, str):
+            has_structured_info = any([
+                ":" in content,  # Key-value pairs
+                "\n-" in content,  # Bulleted lists
+                "1." in content,   # Numbered lists
+                "•" in content     # Bullet points
+            ])
         
         # Create a prompt to evaluate KG quality
-        prompt = f"""
-        You are evaluating whether a Knowledge Graph-based medical answer is high quality enough to use on its own.
-        
-        USER QUESTION: {user_query}
-        
-        KG ANSWER: {kg_answer}
-        
-        A high-quality Knowledge Graph answer should:
-        1. Provide specific, factual medical information directly relevant to the query
-        2. Present information in a structured, organized manner
-        3. Include specifics like symptoms, causes, treatments, or definitions as appropriate
-        4. Not contain hedging language like "I'm not sure" or "I think"
-        5. Present information authoritatively based on medical knowledge
-        
-        Is this KG answer high quality enough to use on its own? Respond with only "YES" or "NO".
-        """
-        
-        try:
-            response_text = self.local_generate(prompt, max_tokens=50)
-            is_high_quality = "YES" in response_text.upper()
+        if isinstance(content, str):
+            prompt = f"""
+            You are evaluating whether a Knowledge Graph-based medical answer is high quality enough to use on its own.
             
-            # If the answer has multiple quality indicators OR structured information AND the LLM says it's high quality
-            return (indicator_count >= 2 or has_structured_info) and is_high_quality
-        except Exception as e:
-            print(f"Error evaluating KG answer quality: {e}")
-            return False
+            USER QUESTION: {user_query}
+            
+            KG ANSWER: {content}
+            
+            A high-quality Knowledge Graph answer should:
+            1. Provide specific, factual medical information directly relevant to the query
+            2. Present information in a structured, organized manner
+            3. Include specifics like symptoms, causes, treatments, or definitions as appropriate
+            4. Not contain hedging language like "I'm not sure" or "I think"
+            5. Present information authoritatively based on medical knowledge
+            
+            Is this KG answer high quality enough to use on its own? Respond with only "YES" or "NO".
+            """
+            
+            try:
+                response_text = self.local_generate(prompt, max_tokens=50)
+                is_high_quality = "YES" in response_text.upper()
+                
+                # Improvement #2: Relaxed quality conditions
+                # If the answer has multiple quality indicators OR structured information AND the LLM says it's high quality
+                result = (indicator_count >= 1 or has_structured_info) and is_high_quality  # Reduced from indicator_count >= 2
+                
+                if result:
+                    logger.info(f"KG answer accepted: Quality indicators: {indicator_count}, Structured: {has_structured_info}, LLM: {is_high_quality}")
+                else:
+                    logger.info(f"KG answer rejected: Quality indicators: {indicator_count}, Structured: {has_structured_info}, LLM: {is_high_quality}")
+                
+                return result
+            except Exception as e:
+                logger.error(f"Error evaluating KG answer quality: {e}")
+                return False
+        else:
+            # If content is not a string and we can't evaluate with the LLM,
+            # fall back to checking for symptoms or causes
+            logger.info("KG answer evaluated using fallback method")
+            return len(symptoms) >= 1 or len(causes) >= 1
                        
-    def combine_answers(self, primary_answer, secondary_answer, missing_elements=None, llm_client=None):
+    def combine_answers(self, primary_answer, secondary_answer, missing_elements=None, prioritize_kg=False, llm_client=None):
         """
         Intelligently combines two answers to provide a more complete response.
         
@@ -1473,16 +1558,45 @@ class DocumentChatBot:
             primary_answer: The answer from the primary/preferred source
             secondary_answer: The answer from the secondary source
             missing_elements: Optional list of elements missing from primary answer
+            prioritize_kg: Boolean flag indicating if KG should be prioritized
+            llm_client: Optional LLM client for more sophisticated combining
             
         Returns:
             str: Combined answer with proper attribution and flow
         """
-        if not primary_answer or primary_answer.strip() == "":
+        # Log the combination process
+        logger.info(f"Combining answers with prioritize_kg={prioritize_kg}")
+        
+        # Handle the case when primary_answer is None or empty
+        if not primary_answer or (isinstance(primary_answer, str) and primary_answer.strip() == ""):
             return secondary_answer
         
-        if not secondary_answer or secondary_answer.strip() == "":
+        # Handle the case when secondary_answer is None or empty
+        if not secondary_answer or (isinstance(secondary_answer, str) and secondary_answer.strip() == ""):
             return primary_answer
-        
+
+        # If we're prioritizing KG (improvement #4)
+        if prioritize_kg:
+            # Create a formatted answer that clearly prioritizes KG content
+            if isinstance(primary_answer, dict):
+                primary_content = primary_answer.get('content', str(primary_answer))
+            else:
+                primary_content = primary_answer
+                
+            if isinstance(secondary_answer, dict):
+                secondary_content = secondary_answer.get('content', str(secondary_answer))
+            else:
+                secondary_content = secondary_answer
+                
+            # Format the combined answer to emphasize KG content
+            formatted_answer = f"""
+{primary_content}
+
+**Additional Information:**
+{secondary_content}
+"""
+            return formatted_answer.strip()
+            
         missing_elements_text = ""
         if missing_elements and len(missing_elements) > 0:
             missing_elements_text = "The primary answer is missing these elements: " + ", ".join(missing_elements)
@@ -1507,10 +1621,10 @@ class DocumentChatBot:
         """
         
         try:
-            combined = self.local_(prompt, max_tokens=1000)
+            combined = self.local_generate(prompt, max_tokens=1000)
             return combined.strip()
         except Exception as e:
-            print(f"Error combining answers: {e}")
+            logger.error(f"Error combining answers: {e}")
             # Fallback: Simple concatenation with separator
             return f"{primary_answer}\n\nAdditional information:\n{secondary_answer}"
     
