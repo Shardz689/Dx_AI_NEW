@@ -593,15 +593,16 @@ class DocumentChatBot:
             print("🧠 Using cached symptom extraction.")
             return cached
 
-        SYMPTOM_PROMPT = f"""You are a medical assistant.
+        SYMPTOM_PROMPT = """
+            You are a medical assistant.
             Extract and correct all symptoms mentioned in the following user query.
             For each symptom, assign a confidence score between 0.0 and 1.0 indicating how certain you are.
             **Important:** Return your answer in exactly the following format:
-            Extracted Symptoms: [{{"symptom": "symptom1", "confidence": 0.9}}, {{"symptom": "symptom2", "confidence": 0.8}}, ...]
-    
+            Extracted Symptoms: [{"symptom": "symptom1", "confidence": 0.9}, {"symptom": "symptom2", "confidence": 0.8}, ...]
+            
             User Query: 
-            "{{user_query}}"
-                """
+            "{query}"
+            """.format(query=user_query)
 
         try:
             response = self.local_generate(SYMPTOM_PROMPT, max_tokens=500).strip()
