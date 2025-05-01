@@ -1119,7 +1119,7 @@ class DocumentChatBot:
         
         return result
                     
-   def reflection_agent(self, user_query, kg_answer, rag_answer, kg_confidence=None):
+    def reflection_agent(self, user_query, kg_answer, rag_answer, kg_confidence=None):
         """
         Evaluates all possible combinations of knowledge sources to provide the most
         complete answer to the user query.
