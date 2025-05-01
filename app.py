@@ -46,7 +46,7 @@ NEO4J_AUTH = (NEO4J_USER, NEO4J_PASSWORD)
 THRESHOLDS = {
     "symptom_extraction": 0.6,
     "disease_matching": 0.5,
-    "knowledge_graph": 0.6,
+    "": 0.6,
 }
 
 # Load and convert the image to base64
@@ -634,34 +634,34 @@ class DocumentChatBot:
         Extracts symptoms, identifies diseases, and recommends treatments using the knowledge graph
         """
         print("Knowledge Graph Agent")
-
+    
         # Use proper enum comparison
         if state.get("halt_execution") == ExecutionState.HALTED:
             return state
-
+    
         subtasks = state.get("subtasks", [])
         subtask_results = state.get("subtask_results", {})
         updated_results = {**subtask_results}  # Clone to avoid modifying the original
-
+    
         # Create a new state to collect all updates
         new_state = {**state}
-
+    
         # Track progress
         processed_tasks = 0
         successful_tasks = 0
-
+    
         # Loop through the tasks
         for task in subtasks:
             if task.get("data_source") != "KG" or task.get("id") in updated_results:
                 continue
-
+    
             processed_tasks += 1
             task_id = task.get("id")
             task_query = task.get("subtask_query", task.get("description", ""))
             print(f"📚 Processing KG task: {task_id} - {task_query}")
-
+    
             task_desc = task_query.lower()
-
+    
             try:
                 # Initialize task result with standard structure
                 task_result = {
@@ -672,22 +672,22 @@ class DocumentChatBot:
                     "status": "failed",  # Default status
                     "data_source": "KG"
                 }
-
+    
                 if "symptom" in task_desc:
                     symptoms, conf = self.extract_symptoms(state["user_query"])
-
+    
                     # Update task result
                     task_result["subtask_answer"] = ", ".join(symptoms) if symptoms else None
                     task_result["confidence"] = conf
                     task_result["status"] = "completed" if (conf >= THRESHOLDS["symptom_extraction"] and symptoms) else "failed"
-
+    
                     # Update main state if successful
                     if task_result["status"] == "completed":
                         new_state["symptoms"] = symptoms
                         new_state["symptom_confidence"] = conf
                         successful_tasks += 1
                         print(f"✔️ Symptoms extraction successful with confidence {conf:.4f}")
-
+    
                 elif "disease" in task_desc:
                     # Get symptoms from either earlier subtask results or state
                     symptoms = []
@@ -695,18 +695,18 @@ class DocumentChatBot:
                         if r.get("status") == "completed" and "symptom" in r.get("subtask_query", "").lower():
                             if r.get("subtask_answer"):
                                 symptoms = [s.strip() for s in r.get("subtask_answer").split(",")]
-
+    
                     if not symptoms:
                         symptoms = state.get("symptoms", [])
-
+    
                     if symptoms:
                         disease, conf, matched, alt = self.query_disease_from_symptoms(symptoms)
-
+    
                         # Update task result
                         task_result["subtask_answer"] = disease
                         task_result["confidence"] = conf
                         task_result["status"] = "completed" if conf >= THRESHOLDS["disease_matching"] else "failed"
-
+    
                         # Update main state if successful
                         if task_result["status"] == "completed":
                             new_state["disease"] = disease
@@ -718,25 +718,25 @@ class DocumentChatBot:
                     else:
                         task_result["status"] = "failed"
                         task_result["subtask_answer"] = "Could not identify disease - no symptoms provided"
-
+    
                 elif "treatment" in task_desc:
                     # Get disease from earlier subtask results or state
                     disease = None
                     for r in updated_results.values():
                         if r.get("status") == "completed" and "disease" in r.get("subtask_query", "").lower():
                             disease = r.get("subtask_answer")
-
+    
                     if not disease:
                         disease = state.get("disease")
-
+    
                     if disease:
                         treatments, conf = self.query_treatments(disease)
-
+    
                         # Update task result
                         task_result["subtask_answer"] = ", ".join(treatments) if treatments else None
                         task_result["confidence"] = conf
                         task_result["status"] = "completed" if (conf >= THRESHOLDS["knowledge_graph"] and treatments) else "failed"
-
+    
                         # Update main state if successful
                         if task_result["status"] == "completed":
                             new_state["treatments"] = treatments
@@ -746,25 +746,25 @@ class DocumentChatBot:
                     else:
                         task_result["status"] = "failed"
                         task_result["subtask_answer"] = "Could not find treatments - no disease identified"
-
+    
                 elif "remedy" in task_desc:
                     # Get disease from earlier subtask results or state
                     disease = None
                     for r in updated_results.values():
                         if r.get("status") == "completed" and "disease" in r.get("subtask_query", "").lower():
                             disease = r.get("subtask_answer")
-
+    
                     if not disease:
                         disease = state.get("disease")
-
+    
                     if disease:
                         remedies, conf = self.query_home_remedies(disease)
-
+    
                         # Update task result
                         task_result["subtask_answer"] = ", ".join(remedies) if remedies else None
                         task_result["confidence"] = conf
                         task_result["status"] = "completed" if (conf >= THRESHOLDS["knowledge_graph"] and remedies) else "failed"
-
+    
                         # Update main state if successful
                         if task_result["status"] == "completed":
                             new_state["home_remedies"] = remedies
@@ -774,10 +774,10 @@ class DocumentChatBot:
                     else:
                         task_result["status"] = "failed"
                         task_result["subtask_answer"] = "Could not find home remedies - no disease identified"
-
+    
                 # Save task result
                 updated_results[task_id] = task_result
-
+    
             except Exception as e:
                 print(f"⚠️ Error processing task {task_id}: {e}")
                 updated_results[task_id] = {
@@ -788,25 +788,27 @@ class DocumentChatBot:
                     "status": "failed",
                     "data_source": "KG"
                 }
-
+    
         # Calculate completion rate
         completion_rate = successful_tasks / max(processed_tasks, 1)
         print(f"KG Task Completion Rate: {completion_rate:.2f}")
-
+    
         # Update state with all collected changes
         new_state["subtask_results"] = updated_results
         new_state["kg_completion_rate"] = completion_rate
-
+    
         # Set kg_answer for reflection agent
         if successful_tasks > 0:
             kg_answers = []
             if new_state.get("disease"):
                 kg_answers.append(f"Disease: {new_state['disease']}")
+            if new_state.get("symptoms"):
+                kg_answers.append(f"Symptoms: {', '.join(new_state['symptoms'])}")
             if new_state.get("treatments"):
                 kg_answers.append(f"Treatments: {', '.join(new_state['treatments'])}")
             if new_state.get("home_remedies"):
                 kg_answers.append(f"Home Remedies: {', '.join(new_state['home_remedies'])}")
-
+    
             if kg_answers:
                 new_state["kg_answer"] = "\n".join(kg_answers)
                 new_state["kg_confidence"] = max(
@@ -814,21 +816,27 @@ class DocumentChatBot:
                     new_state.get("treatment_confidence", 0.0),
                     new_state.get("remedy_confidence", 0.0)
                 )
-
+        else:
+            # Make sure we have at least an empty kg_answer field for the reflection agent
+            new_state["kg_answer"] = ""
+            new_state["kg_confidence"] = 0.0
+    
         return new_state
 
     def process_with_knowledge_graph(self, user_query: str) -> Dict:
         """Process user query with knowledge graph agent"""
         print(f"Processing with knowledge graph: {user_query}")
-
+        
         # Initialize state
         state = {
             "user_query": user_query,
             "halt_execution": ExecutionState.ACTIVE,
             "subtasks": [],
-            "subtask_results": {}
+            "subtask_results": {},
+            "kg_answer": "",  # Initialize empty kg_answer
+            "kg_confidence": 0.0  # Initialize kg_confidence
         }
-
+        
         # Create subtasks for the knowledge graph
         subtasks = [
             {"id": "kg_symptom", "description": "Extract symptoms from user query", "data_source": "KG"},
@@ -836,298 +844,534 @@ class DocumentChatBot:
             {"id": "kg_treatment", "description": "Find treatments for the disease", "data_source": "KG"},
             {"id": "kg_remedy", "description": "Find home remedies for the disease", "data_source": "KG"}
         ]
-
         state["subtasks"] = subtasks
-
+        
         # Process knowledge graph tasks
-        return self.knowledge_graph_agent(state)
+        result = self.knowledge_graph_agent(state)
+        
+        # Ensure we have kg_answer field even if knowledge_graph_agent doesn't set it
+        if "kg_answer" not in result:
+            result["kg_answer"] = ""
+        if "kg_confidence" not in result:
+            result["kg_confidence"] = 0.0
+        
+        return result
 
-    def reflection_agent(self, user_query, rag_response, kg_data):
-        """
-        Reflection agent that analyzes if combined RAG+KG responses fully answer the user query.
-        Removed supplementary information generation.
-        """
-        # Skip reflection if either source is missing
-        if not rag_response or not kg_data:
-            return None, []
-
-        reflection_prompt = f"""
-        You are a medical reflection agent. Analyze if the available information fully answers the user's query:
-
-        USER QUERY: {user_query}
-
-        INFORMATION FROM DOCUMENT SEARCH:
-        {rag_response}
-
-        INFORMATION FROM KNOWLEDGE GRAPH:
-        {kg_data.get('kg_answer', 'No knowledge graph data available')}
-
-        Your task:
-        1. Identify what specific information the user is asking for.
-        2. Determine if the combined information fully addresses all aspects of the query.
-        3. List any MISSING INFORMATION that neither source provides.
-        4. DO NOT repeat information already covered by the sources.
-
-        Format your response as:
-        QUERY INTENT: [Summarize what the user is specifically asking]
-        COVERAGE ANALYSIS: [0-100% indicating how completely the sources answer the query]
-        MISSING INFORMATION: [List specific aspects not covered by either source]
-
-        If coverage is 100%, just write "COMPLETE".
-        """
-
-        # Get reflection analysis from LLM
-        try:
-            reflection_result = self.local_generate(reflection_prompt, max_tokens=800)
-            print(f"🔍 Reflection result: {reflection_result}")
-
-            # Extract missing information points
-            missing_info = []
-            if "MISSING INFORMATION:" in reflection_result:
-                missing_section = reflection_result.split("MISSING INFORMATION:")[1].strip()
-                if missing_section and "COMPLETE" not in missing_section:
-                    # Extract missing points as a list
-                    missing_raw = missing_section.split("\n")
-                    for point in missing_raw:
-                        clean_point = re.sub(r"^\d+\.\s*", "", point.strip())
-                        if clean_point and len(clean_point) > 5:
-                            missing_info.append(clean_point)
-
-            # No longer generate supplementary information
-            return None, missing_info
-
-        except Exception as e:
-            print(f"⚠️ Error in reflection process: {e}")
-            return None, []
-
-
-    def generate_response(self, user_input, user_type="User / Family"):
-        """
-        Generate response using prompt-based orchestration between RAG and KG.
-        LLM decides which sources to prioritize based on the data and query.
-        """
-        if not user_input.strip():
-            return "", []
-    
-        if self.qa_chain is None:
-            success, message = self.initialize_qa_chain()
-            if not success:
-                return message, []
-    
-        try:
-            print(f"\n🔍 Processing query: {user_input}")
+    def reflection_agent(self, user_query, kg_answer, rag_answer):
+            """
+            Evaluates all possible combinations of knowledge sources to provide the most
+            complete answer to the user query.
             
-            # Check if this is a response to a follow-up question
-            if self.followup_context["asked"]:
-                print("🔍 User responded to follow-up question")
-    
-            # Check if we need follow-up questions
-            missing_info = self.identify_missing_info(user_input, self.chat_history)
-    
-            # If critical information is missing, ask follow-up questions
-            if missing_info and len(missing_info) > 0:
-                follow_up_prompt = f"""
-                I need a bit more information to provide a helpful response. Could you please tell me:
-    
-                {missing_info[0]}
-    
-                This will help me give you a more accurate assessment.
-                """
-                self.chat_history.append((user_input, follow_up_prompt))
-                return follow_up_prompt.strip(), []
-    
-            # Reset follow-up context for next query
-            self.followup_context = {"asked": False, "round": 0}
-    
-            # Process with Knowledge Graph
-            print("📚 Processing with Knowledge Graph...")
-            t_start = datetime.now()
-            kg_data = self.process_with_knowledge_graph(user_input)
-            kg_content = kg_data.get("kg_answer", "")
-            kg_confidence = kg_data.get("kg_confidence", 0.0)
-            
-            disease = kg_data.get("disease", "")
-            symptoms = kg_data.get("symptoms", [])
-            treatments = kg_data.get("treatments", [])
-            home_remedies = kg_data.get("home_remedies", [])
-            
-            print(f"📊 KG Confidence: {kg_confidence:.4f} (took {(datetime.now() - t_start).total_seconds():.2f}s)")
-            
-            # Process with RAG
-            print("📚 Processing with RAG...")
-            t_start = datetime.now()
-            formatted_history = self.format_chat_history()
-            
-            # Get RAG response
-            rag_response = self.qa_chain.invoke({
-                "question": user_input,
-                "chat_history": formatted_history
-            })
-            
-            rag_content = rag_response["answer"]
-            if "Helpful Answer:" in rag_content:
-                rag_content = rag_content.split("Helpful Answer:")[-1]
-            
-            # Extract RAG sources
-            rag_sources = []
-            source_texts = []
-            for doc in rag_response["source_documents"][:3]:
-                source_text = doc.page_content
-                source_texts.append(source_text)
+            Args:
+                user_query: The original user question
+                kg_answer: Answer from Knowledge Graph (refined by LLM)
+                rag_answer: Answer from RAG
                 
-                if hasattr(doc, "metadata") and "source" in doc.metadata:
-                    source_name = doc.metadata["source"]
-                    if "dxbook" in source_name.lower() or "rawdata.pdf" in source_name:
-                        page_num = doc.metadata.get("page", "N/A")
-                        rag_sources.append(f"Internal Data: DxBook, Page {page_num} - {source_text}")
+            Returns:
+                tuple: (final_answer, strategy_used)
+            """
+            # Set threshold for considering an answer complete
+            COMPLETENESS_THRESHOLD = 0.85
+            
+            # Start logging the reflection process
+            print(f"Reflection agent analyzing query: {user_query}")
+            
+            # Evaluate completeness of individual sources
+            kg_completeness = self.evaluate_answer_completeness(user_query, kg_answer)
+            rag_completeness = self.evaluate_answer_completeness(user_query, rag_answer)
+            
+            print(f"KG completeness: {kg_completeness}, RAG completeness: {rag_completeness}")
+            
+            # Evaluate what's missing from each source
+            kg_missing = self.identify_missing_elements(user_query, kg_answer)
+            rag_missing = self.identify_missing_elements(user_query, rag_answer)
+            
+            # Case 1: KG only - sufficient
+            if kg_completeness >= COMPLETENESS_THRESHOLD:
+                print("Reflection decision: KG_ONLY - KG answer is complete")
+                return kg_answer, "KG_ONLY"
+            
+            # Case 2: RAG only - sufficient
+            if rag_completeness >= COMPLETENESS_THRESHOLD:
+                print("Reflection decision: RAG_ONLY - RAG answer is complete")
+                return rag_answer, "RAG_ONLY"
+            
+            # Case 3: KG + RAG combination
+            kg_rag_combined = self.combine_answers(kg_answer, rag_answer, kg_missing)
+            kg_rag_completeness = self.evaluate_answer_completeness(user_query, kg_rag_combined)
+            
+            print(f"KG+RAG completeness: {kg_rag_completeness}")
+            
+            if kg_rag_completeness >= COMPLETENESS_THRESHOLD:
+                print("Reflection decision: KG_RAG_COMBINED - Combined KG and RAG answer is complete")
+                return kg_rag_combined, "KG_RAG_COMBINED"
+            
+            # Generate LLM answer for missing parts
+            llm_answer = self.generate_llm_answer(user_query, kg_missing, rag_missing)
+            llm_completeness = self.evaluate_answer_completeness(user_query, llm_answer)
+            
+            print(f"LLM completeness: {llm_completeness}")
+            
+            # Case 4: LLM only - sufficient
+            if llm_completeness >= COMPLETENESS_THRESHOLD:
+                print("Reflection decision: LLM_ONLY - LLM answer is complete")
+                return llm_answer, "LLM_ONLY"
+            
+            # Case 5: KG + LLM combination
+            kg_llm_combined = self.combine_answers(kg_answer, llm_answer, kg_missing)
+            kg_llm_completeness = self.evaluate_answer_completeness(user_query, kg_llm_combined)
+            
+            print(f"KG+LLM completeness: {kg_llm_completeness}")
+            
+            if kg_llm_completeness >= COMPLETENESS_THRESHOLD:
+                print("Reflection decision: KG_LLM_COMBINED - Combined KG and LLM answer is complete")
+                return kg_llm_combined, "KG_LLM_COMBINED"
+            
+            # Case 6: RAG + LLM combination
+            rag_llm_combined = self.combine_answers(rag_answer, llm_answer, rag_missing)
+            rag_llm_completeness = self.evaluate_answer_completeness(user_query, rag_llm_combined)
+            
+            print(f"RAG+LLM completeness: {rag_llm_completeness}")
+            
+            if rag_llm_completeness >= COMPLETENESS_THRESHOLD:
+                print("Reflection decision: RAG_LLM_COMBINED - Combined RAG and LLM answer is complete")
+                return rag_llm_combined, "RAG_LLM_COMBINED"
+            
+            # Case 7: KG + RAG + LLM combination
+            all_combined = self.combine_all_answers(kg_answer, rag_answer, llm_answer)
+            all_combined_completeness = self.evaluate_answer_completeness(user_query, all_combined)
+            
+            print(f"All sources combined completeness: {all_combined_completeness}")
+            
+            if all_combined_completeness >= COMPLETENESS_THRESHOLD:
+                print("Reflection decision: KG_RAG_LLM_COMBINED - All sources combined answer is complete")
+                return all_combined, "KG_RAG_LLM_COMBINED"
+            
+            # Case 8: Best available answer (even if below threshold)
+            best_completeness = max(kg_completeness, rag_completeness, llm_completeness, 
+                                   kg_rag_completeness, kg_llm_completeness, 
+                                   rag_llm_completeness, all_combined_completeness)
+            
+            # Choose the best answer based on completeness scores
+            if best_completeness == kg_completeness:
+                print("Reflection decision: KG_ONLY - Best available answer")
+                return kg_answer, "KG_ONLY"
+            elif best_completeness == rag_completeness:
+                print("Reflection decision: RAG_ONLY - Best available answer")
+                return rag_answer, "RAG_ONLY"
+            elif best_completeness == llm_completeness:
+                print("Reflection decision: LLM_ONLY - Best available answer")
+                return llm_answer, "LLM_ONLY"
+            elif best_completeness == kg_rag_completeness:
+                print("Reflection decision: KG_RAG_COMBINED - Best available answer")
+                return kg_rag_combined, "KG_RAG_COMBINED"
+            elif best_completeness == kg_llm_completeness:
+                print("Reflection decision: KG_LLM_COMBINED - Best available answer")
+                return kg_llm_combined, "KG_LLM_COMBINED"
+            elif best_completeness == rag_llm_completeness:
+                print("Reflection decision: RAG_LLM_COMBINED - Best available answer")
+                return rag_llm_combined, "RAG_LLM_COMBINED"
+            else:
+                print("Reflection decision: KG_RAG_LLM_COMBINED - Best available answer")
+                return all_combined, "KG_RAG_LLM_COMBINED"
+                   
+    def evaluate_answer_completeness(query, answer, llm_client=None):
+        """
+        Evaluates how completely an answer addresses the user query.
+        
+        Args:
+            query: The original user question
+            answer: The answer to evaluate
+            llm_client: Optional LLM client for evaluation
+            
+        Returns:
+            float: Score between 0.0 and 1.0 representing completeness
+        """
+        if not answer or answer.strip() == "":
+            return 0.0
+        
+        # Create the prompt for evaluation
+        prompt = f"""
+        You are evaluating how completely an answer addresses a medical question.
+        
+        USER QUESTION: {query}
+        
+        ANSWER TO EVALUATE: {answer}
+        
+        On a scale of 0.0 to 1.0, how completely does this answer address all aspects of the user's question?
+        - 0.0 means it doesn't address the question at all
+        - 0.5 means it partially addresses the question
+        - 1.0 means it fully addresses all aspects of the question
+        
+        Provide only a single number as your response.
+        """
+        
+        try:
+            # Use the local_generate method to evaluate with Gemini
+            response_text = self.local_generate(prompt, max_tokens=100)
+            
+            # Extract just the number using regex
+            import re
+            score_match = re.search(r'([0-9]*\.?[0-9]+)', response_text)
+            if score_match:
+                score = float(score_match.group(1))
+                return min(max(score, 0.0), 1.0)  # Ensure score is between 0.0 and 1.0
+            return 0.5  # Default to middle score if parsing fails
+        except Exception as e:
+            print(f"Error evaluating answer completeness: {e}")
+            return 0.5  # Default to middle score on error
+    
+    def identify_missing_elements(query, answer):
+        """
+        Identifies what aspects of the query are not addressed in the answer.
+        
+        Args:
+            query: The original user question
+            answer: The current answer
+            
+        Returns:
+            list: List of missing elements or aspects
+        """
+        if not answer or answer.strip() == "":
+            return ["The entire query is unanswered"]
+        
+        prompt = f"""
+        You are analyzing a medical answer to identify what aspects of the user's question remain unaddressed.
+        
+        USER QUESTION: {query}
+        
+        CURRENT ANSWER: {answer}
+        
+        What specific aspects or parts of the user's question are NOT adequately addressed in this answer?
+        List each missing element in a separate line. If the answer is complete, respond with "COMPLETE".
+        """
+        
+        try:
+            response_text = self.local_(prompt, max_tokens=500)
+            
+            if "COMPLETE" in response_text:
+                return []
+            
+            # Parse the missing elements (one per line)
+            missing_elements = [line.strip() for line in response_text.split('\n') if line.strip()]
+            return missing_elements
+        except Exception as e:
+            print(f"Error identifying missing elements: {e}")
+            return ["Unable to identify specific missing elements"]
+    
+    def combine_answers(primary_answer, secondary_answer, missing_elements=None):
+        """
+        Intelligently combines two answers to provide a more complete response.
+        
+        Args:
+            primary_answer: The answer from the primary/preferred source
+            secondary_answer: The answer from the secondary source
+            missing_elements: Optional list of elements missing from primary answer
+            
+        Returns:
+            str: Combined answer with proper attribution and flow
+        """
+        if not primary_answer or primary_answer.strip() == "":
+            return secondary_answer
+        
+        if not secondary_answer or secondary_answer.strip() == "":
+            return primary_answer
+        
+        missing_elements_text = ""
+        if missing_elements and len(missing_elements) > 0:
+            missing_elements_text = "The primary answer is missing these elements: " + ", ".join(missing_elements)
+        
+        prompt = f"""
+        You are creating a comprehensive medical answer by combining information from multiple sources.
+        
+        PRIMARY ANSWER: {primary_answer}
+        
+        SECONDARY ANSWER: {secondary_answer}
+        
+        {missing_elements_text}
+        
+        Create a unified answer that:
+        1. Preserves all relevant information from both sources
+        2. Eliminates redundancy
+        3. Maintains a coherent, flowing narrative
+        4. Ensures all medical information is accurate
+        5. Uses clear and patient-friendly language
+        
+        The combined answer should be comprehensive but concise.
+        """
+        
+        try:
+            combined = self.local_(prompt, max_tokens=1000)
+            return combined.strip()
+        except Exception as e:
+            print(f"Error combining answers: {e}")
+            # Fallback: Simple concatenation with separator
+            return f"{primary_answer}\n\nAdditional information:\n{secondary_answer}"
+    
+    def combine_all_answers(kg_answer, rag_answer, llm_answer):
+        """
+        Combines answers from all three sources into a single comprehensive response.
+        
+        Args:
+            kg_answer: Answer from Knowledge Graph
+            rag_answer: Answer from RAG
+            llm_answer: Answer from LLM
+            
+        Returns:
+            str: Fully combined answer
+        """
+        # First combine KG and RAG
+        kg_rag_combined = self.combine_answers(kg_answer, rag_answer)
+        
+        # Then add LLM content
+        return self.combine_answers(kg_rag_combined, llm_answer)
+    
+    def _llm_answer(query, kg_missing=None, rag_missing=None):
+        """
+        s an LLM answer focused on addressing missing elements.
+        
+        Args:
+            query: Original user query
+            kg_missing: Elements missing from KG answer
+            rag_missing: Elements missing from RAG answer
+            
+        Returns:
+            str: LLM-d answer
+        """
+        # Construct focus areas from missing elements
+        focus_areas = set()
+        if kg_missing:
+            focus_areas.update(kg_missing)
+        if rag_missing:
+            focus_areas.update(rag_missing)
+        
+        focus_text = ""
+        if focus_areas:
+            focus_text = "Focus particularly on these aspects: " + ", ".join(focus_areas)
+        
+        prompt = f"""
+        You are a medical AI assistant providing information about a health question.
+        
+        USER QUESTION: {query}
+        
+        {focus_text}
+        
+        Provide a helpful, accurate answer to the user's question.
+        Include appropriate disclaimers about consulting healthcare professionals.
+        """
+        
+        try:
+            response = self.local_(prompt, max_tokens=1000)
+            return response.strip()
+        except Exception as e:
+            print(f"Error generating LLM answer: {e}")
+            return "I'm sorry, but I couldn't generate a specific answer to your question. Please consult a healthcare professional for personalized advice."
+    
+    def generate_followup_request(kg_missing=None, rag_missing=None):
+        """
+        Generates a request for the user to provide more information.
+        
+        Args:
+            kg_missing: Elements missing from KG answer
+            rag_missing: Elements missing from RAG answer
+            
+        Returns:
+            str: Follow-up request message
+        """
+        # Combine missing elements
+        missing_elements = set()
+        if kg_missing:
+            missing_elements.update(kg_missing)
+        if rag_missing:
+            missing_elements.update(rag_missing)
+        
+        base_message = "To provide you with better guidance, I need some additional information."
+        
+        if missing_elements:
+            specifics = "\n\nSpecifically, could you please provide more details about:\n"
+            for element in missing_elements:
+                specifics += f"- {element}\n"
+            
+            return base_message + specifics
+        else:
+            return base_message + "\n\nCould you provide more context about your symptoms, when they started, and any other medical conditions or medications you're taking?"
+                            
+    def generate_response(self, user_input, user_type="User / Family"):
+            """
+            Generate response using reflection agent to evaluate and combine multiple knowledge sources.
+            """
+            if not user_input.strip():
+                return "", []
+        
+            if self.qa_chain is None:
+                success, message = self.initialize_qa_chain()
+                if not success:
+                    return message, []
+        
+            try:
+                print(f"\n🔍 Processing query: {user_input}")
+                
+                # Check if this is a response to a follow-up question
+                if self.followup_context["asked"]:
+                    print("🔍 User responded to follow-up question")
+        
+                # Check if we need follow-up questions
+                missing_info = self.identify_missing_info(user_input, self.chat_history)
+        
+                # If critical information is missing, ask follow-up questions
+                if missing_info and len(missing_info) > 0:
+                    follow_up_prompt = f"""
+                    I need a bit more information to provide a helpful response. Could you please tell me:
+        
+                    {missing_info[0]}
+        
+                    This will help me give you a more accurate assessment.
+                    """
+                    self.chat_history.append((user_input, follow_up_prompt))
+                    return follow_up_prompt.strip(), []
+        
+                # Reset follow-up context for next query
+                self.followup_context = {"asked": False, "round": 0}
+        
+                # Process with Knowledge Graph
+                print("📚 Processing with Knowledge Graph...")
+                t_start = datetime.now()
+                kg_data = self.process_with_(user_input)
+                kg_content = kg_data.get("kg_answer", "")
+                kg_confidence = kg_data.get("kg_confidence", 0.0)
+                
+                disease = kg_data.get("disease", "")
+                symptoms = kg_data.get("symptoms", [])
+                treatments = kg_data.get("treatments", [])
+                home_remedies = kg_data.get("home_remedies", [])
+                
+                print(f"📊 KG Confidence: {kg_confidence:.4f} (took {(datetime.now() - t_start).total_seconds():.2f}s)")
+                
+                # Process with RAG
+                print("📚 Processing with RAG...")
+                t_start = datetime.now()
+                formatted_history = self.format_chat_history()
+                
+                # Get RAG response
+                rag_response = self.qa_chain.invoke({
+                    "question": user_input,
+                    "chat_history": formatted_history
+                })
+                
+                rag_content = rag_response["answer"]
+                if "Helpful Answer:" in rag_content:
+                    rag_content = rag_content.split("Helpful Answer:")[-1]
+                
+                # Extract RAG sources
+                rag_sources = []
+                source_texts = []
+                for doc in rag_response["source_documents"][:3]:
+                    source_text = doc.page_content
+                    source_texts.append(source_text)
+                    
+                    if hasattr(doc, "metadata") and "source" in doc.metadata:
+                        source_name = doc.metadata["source"]
+                        if "dxbook" in source_name.lower() or "rawdata.pdf" in source_name:
+                            page_num = doc.metadata.get("page", "N/A")
+                            rag_sources.append(f"Internal Data: DxBook, Page {page_num} - {source_text}")
+                        else:
+                            rag_sources.append(source_text)
                     else:
                         rag_sources.append(source_text)
-                else:
-                    rag_sources.append(source_text)
-            
-            # Calculate RAG confidence based on relevance of retrieved documents
-            rag_relevance_scores = []
-            for text in source_texts:
-                # Simple keyword matching
-                query_keywords = set(word.lower() for word in user_input.split() if len(word) > 3)
-                content_lower = text.lower()
-                matches = sum(1 for kw in query_keywords if kw in content_lower)
-                score = min(matches / max(len(query_keywords), 1), 1.0)
-                rag_relevance_scores.append(score)
-            
-            # Average relevance score
-            rag_confidence = sum(rag_relevance_scores) / max(len(rag_relevance_scores), 1)
-            print(f"📊 RAG Confidence: {rag_confidence:.4f} (took {(datetime.now() - t_start).total_seconds():.2f}s)")
-            
-            # Combine all sources for reference
-            all_sources = rag_sources
-            if disease:
-                all_sources.append(f"[KG] Knowledge Graph: {disease}")
-            
-            # Determine user context (previous conversation if relevant)
-            full_user_context = user_input
-            if self.chat_history and len(self.chat_history) >= 1:
-                prev_user_msg, prev_bot_msg = self.chat_history[-1]
-                if "more information" in prev_bot_msg or "please tell me" in prev_bot_msg:
-                    full_user_context = f"Context from previous message: {prev_user_msg}\nCurrent message: {user_input}"
-            
-            # Build orchestration prompt - let the LLM decide what sources to use and how to combine them
-            orchestration_prompt = f"""You are a medical information assistant processing a user query.
-    
-    USER QUERY: {full_user_context}
-    
-    I have two knowledge sources with different information. Help me decide which to use:
-    
-    1. KNOWLEDGE GRAPH DATA (Confidence: {kg_confidence:.2f}):
-       Disease: {disease if disease else "None identified"}
-       Symptoms: {", ".join(symptoms) if symptoms else "None identified"}
-       Treatments: {", ".join(treatments) if treatments else "None identified"}
-       Home Remedies: {", ".join(home_remedies) if home_remedies else "None identified"}
-       
-    2. DOCUMENT SEARCH RESULTS (Confidence: {rag_confidence:.2f}):
-    {rag_content}
-    
-    USER TYPE: {user_type}
-    
-    ORCHESTRATION INSTRUCTIONS:
-    1. Analyze both data sources and determine the optimal strategy:
-       - KG_ONLY: Use only Knowledge Graph when it has high confidence (>0.75) for factual queries
-       - RAG_ONLY: Use only Document Search when it has high confidence (>0.75) with comprehensive information
-       - KG_RAG_COMBINED: Use both when they complement each other and both have decent confidence
-       - KG_ENRICHED: Start with KG data and enhance with your medical knowledge
-       - RAG_ENRICHED: Start with Document data and enhance with your medical knowledge
-       - SYNTHESIS: Combine all available data with your medical knowledge when both sources have low/medium confidence
-       - FALLBACK: Use general medical knowledge when both sources have very low confidence
-    
-    2. First, determine which strategy to use. Your reasoning should consider:
-       - Query type (factual, personal, treatment, complex)
-       - Confidence scores of each source
-       - Completeness of information from each source
-       - Whether sources complement or contradict each other
-    
-    3. Reply in this format:
-       SELECTED_STRATEGY: [Name of strategy]
-       REASONING: [Brief explanation of why this strategy is best]
-       RESPONSE: [Your complete answer using the selected strategy]
-    
-    IMPORTANT GUIDELINES:
-    - For KG_ONLY: Focus on providing factual, concise information directly from the Knowledge Graph.
-    - For RAG_ONLY: Focus on information from the document search, citing specific passages.
-    - For combined approaches: Integrate both sources, highlighting where they complement each other.
-    - For physician users: Focus more on diagnostic information and less on patient-friendly explanations.
-    - For regular users: Use clear, accessible language with practical guidance.
-    - Always add this medical disclaimer at the end: "This information is not a substitute for professional medical advice. If symptoms persist or worsen, please consult with a qualified healthcare provider."
-    - Include references to your sources at the end in this format:
-    
-    ## References:
-    1. [Source description]
-    2. [Source description]
-    
-    """
-    
-            # Get orchestration decision and response
-            print("🧠 Generating orchestrated response...")
-            t_start = datetime.now()
-            orchestration_result = self.local_generate(orchestration_prompt, max_tokens=1000)
-            print(f"✅ Response generated (took {(datetime.now() - t_start).total_seconds():.2f}s)")
-            
-            # Log the orchestration decision for analysis
-            strategy = self.log_orchestration_decision(user_input, orchestration_result, kg_confidence, rag_confidence)
-            self.last_strategy = strategy  # Store for testing
-            
-            # Extract the final response from the orchestration result
-            if "RESPONSE:" in orchestration_result:
-                parts = orchestration_result.split("RESPONSE:")
-                final_response = parts[1].strip()
-            else:
-                # If format wasn't followed, use the full response
-                final_response = orchestration_result
-            
-            # Add references if not included
-            if "## References:" not in final_response and all_sources:
-                references = "\n\n## References:\n"
-                for i, src in enumerate(all_sources, 1):
-                    references += f"{i}. {src}\n\n"
                 
-                # Check if response already has disclaimer
-                if "This information is not a substitute" in final_response:
-                    # Add references before disclaimer
-                    disclaimer_pattern = r'(This information is not a substitute.*?provider\.)'
-                    disclaimer_match = re.search(disclaimer_pattern, final_response, re.DOTALL)
-                    if disclaimer_match:
-                        disclaimer = disclaimer_match.group(1)
-                        final_response = re.sub(disclaimer_pattern, '', final_response, flags=re.DOTALL)
-                        final_response = final_response.strip() + "\n\n" + references + "\n\n" + disclaimer
+                # Calculate RAG confidence based on relevance of retrieved documents
+                rag_relevance_scores = []
+                for text in source_texts:
+                    # Simple keyword matching
+                    query_keywords = set(word.lower() for word in user_input.split() if len(word) > 3)
+                    content_lower = text.lower()
+                    matches = sum(1 for kw in query_keywords if kw in content_lower)
+                    score = min(matches / max(len(query_keywords), 1), 1.0)
+                    rag_relevance_scores.append(score)
+                
+                # Average relevance score
+                rag_confidence = sum(rag_relevance_scores) / max(len(rag_relevance_scores), 1)
+                print(f"📊 RAG Confidence: {rag_confidence:.4f} (took {(datetime.now() - t_start).total_seconds():.2f}s)")
+                
+                # Log confidence scores and query
+                print(f"📊 Orchestration Decision:")
+                print(f"   Query: {user_input}")
+                print(f"   KG Confidence: {kg_confidence:.4f}")
+                print(f"   RAG Confidence: {rag_confidence:.4f}")
+                
+                # Use reflection agent to determine the best answer
+                print("🧠 Using reflection agent to evaluate and combine answers...")
+                t_start = datetime.now()
+                
+                # Use the reflection agent to evaluate and combine answers
+                final_answer, strategy_used = self.reflection_agent(user_input, kg_content, rag_content)
+                
+                print(f"📊 Reflection Strategy: {strategy_used}")
+                print(f"✅ Response generated (took {(datetime.now() - t_start).total_seconds():.2f}s)")
+                
+                # Combine all sources for reference
+                all_sources = rag_sources
+                if disease:
+                    all_sources.append(f"[KG] Knowledge Graph: {disease}")
+                
+                # Log the orchestration decision for analysis
+                self.log_orchestration_decision(
+                    user_input,
+                    f"SELECTED_STRATEGY: {strategy_used}\nREASONING: Determined by reflection agent based on answer completeness evaluation.\nRESPONSE: {final_answer[:100]}...",
+                    kg_confidence,
+                    rag_confidence
+                )
+                self.last_strategy = strategy_used  # Store for testing
+                
+                # Add references if not included
+                if "## References:" not in final_answer and all_sources:
+                    references = "\n\n## References:\n"
+                    for i, src in enumerate(all_sources, 1):
+                        references += f"{i}. {src}\n\n"
+                    
+                    # Check if response already has disclaimer
+                    if "This information is not a substitute" in final_answer:
+                        # Add references before disclaimer
+                        disclaimer_pattern = r'(This information is not a substitute.*?provider\.)'
+                        disclaimer_match = re.search(disclaimer_pattern, final_answer, re.DOTALL)
+                        if disclaimer_match:
+                            disclaimer = disclaimer_match.group(1)
+                            final_response = re.sub(disclaimer_pattern, '', final_answer, flags=re.DOTALL)
+                            final_response = final_response.strip() + "\n\n" + references + "\n\n" + disclaimer
+                        else:
+                            final_response = final_answer.strip() + "\n\n" + references
+                    else:
+                        # Add references and standard disclaimer
+                        disclaimer = "This information is not a substitute for professional medical advice. If symptoms persist or worsen, please consult with a qualified healthcare provider."
+                        final_response = final_answer.strip() + "\n\n" + references + "\n\n" + disclaimer
                 else:
-                    # Add references and standard disclaimer
-                    disclaimer = "This information is not a substitute for professional medical advice. If symptoms persist or worsen, please consult with a qualified healthcare provider."
-                    final_response = final_response.strip() + "\n\n" + references + "\n\n" + disclaimer
-            
-            # Collect response metrics
-            metrics = {
-                "query": user_input,
-                "kg_confidence": kg_confidence,
-                "rag_confidence": rag_confidence,
-                "strategy": strategy,
-                "response_length": len(final_response),
-                "processing_time": (datetime.now() - t_start).total_seconds(),
-                "source_count": len(all_sources)
-            }
-            
-            # Log metrics to CSV
-            self.log_response_metrics(metrics)
-            
-            # Add to chat history
-            self.chat_history.append((user_input, final_response))
-            
-            # Return response and sources
-            return final_response, all_sources
-            
-        except Exception as e:
-            import traceback
-            print(f"⚠️ Error in generate_response: {e}")
-            print(traceback.format_exc())
-            return f"Error generating response: {str(e)}", []
+                    final_response = final_answer
+                
+                # Collect response metrics
+                metrics = {
+                    "query": user_input,
+                    "kg_confidence": kg_confidence,
+                    "rag_confidence": rag_confidence,
+                    "strategy": strategy_used,
+                    "response_length": len(final_response),
+                    "processing_time": (datetime.now() - t_start).total_seconds(),
+                    "source_count": len(all_sources)
+                }
+                
+                # Log metrics to CSV
+                self.log_response_metrics(metrics)
+                
+                # Add to chat history
+                self.chat_history.append((user_input, final_response))
+                
+                # Return response and sources
+                return final_response, all_sources
+                
+            except Exception as e:
+                import traceback
+                print(f"⚠️ Error in generate_response: {e}")
+                print(traceback.format_exc())
+                return f"Error generating response: {str(e)}", []
             
     def log_response_metrics(self, metrics):
         """Log response generation metrics to CSV for analysis."""
