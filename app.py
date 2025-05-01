@@ -717,7 +717,7 @@ class DocumentChatBot:
         
         return has_symptoms and (is_asking_for_disease or "?" in query)
             
-     def format_disease_list_answer(self, query, disease_list, confidence=None):
+    def format_disease_list_answer(self, query, disease_list, confidence=None):
             """
             Formats a list of diseases into a user-friendly answer.
             
@@ -744,7 +744,8 @@ class DocumentChatBot:
             answer += "Chest pain and shortness of breath can be symptoms of serious conditions that require immediate medical attention. "
             answer += "Please consult with a healthcare provider as soon as possible for proper evaluation, diagnosis, and treatment."
             
-            return answer              
+            return answer 
+                   
     def knowledge_graph_agent(self, state: Dict) -> Dict:
         """
         Knowledge Graph Agent
