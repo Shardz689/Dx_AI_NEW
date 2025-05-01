@@ -593,15 +593,15 @@ class DocumentChatBot:
             print("🧠 Using cached symptom extraction.")
             return cached
 
-        SYMPTOM_PROMPT = f"""
-        You are a medical assistant.
-        Extract and correct all symptoms mentioned in the following user query.
-        For each symptom, assign a confidence score between 0.0 and 1.0 indicating how certain you are.
-        **Important:** Return your answer in exactly the following format:
-        Extracted Symptoms: [{{"symptom": "symptom1", "confidence": 0.9}}, {{"symptom": "symptom2", "confidence": 0.8}}, ...]
-
-        User Query: "{user_query}"
-        """
+        SYMPTOM_PROMPT = f"""You are a medical assistant.
+            Extract and correct all symptoms mentioned in the following user query.
+            For each symptom, assign a confidence score between 0.0 and 1.0 indicating how certain you are.
+            **Important:** Return your answer in exactly the following format:
+            Extracted Symptoms: [{{"symptom": "symptom1", "confidence": 0.9}}, {{"symptom": "symptom2", "confidence": 0.8}}, ...]
+    
+            User Query: 
+            "{{user_query}}"
+                """
 
         try:
             response = self.local_generate(SYMPTOM_PROMPT, max_tokens=500).strip()
@@ -913,7 +913,27 @@ class DocumentChatBot:
                     if not symptoms:
                         symptoms = state.get("symptoms", [])
     
-                    if symptoms:
+                    # Check for direct disease mention in query first
+                    if state.get("direct_disease_mention"):
+                        direct_disease = state.get("direct_disease_mention")
+                        direct_confidence = state.get("direct_disease_confidence", 0.95)
+                        
+                        # Set as the identified disease
+                        task_result["subtask_answer"] = direct_disease
+                        task_result["confidence"] = direct_confidence
+                        task_result["status"] = "completed"
+                        
+                        # Update main state
+                        new_state["disease"] = direct_disease
+                        new_state["diseases"] = [direct_disease]
+                        new_state["disease_confidence"] = direct_confidence
+                        new_state["disease_confidences"] = [direct_confidence]
+                        new_state["matched_symptoms"] = symptoms if symptoms else ["mentioned directly"]
+                        successful_tasks += 1
+                        print(f"✔️ Disease identified from direct mention: {direct_disease} with confidence {direct_confidence:.4f}")
+                    
+                    # Otherwise try to match symptoms to diseases
+                    elif symptoms:
                         disease, conf, matched, alt = self.query_disease_from_symptoms(symptoms)
     
                         # Update task result
@@ -944,26 +964,28 @@ class DocumentChatBot:
                                 print(f"✔️ Disease identified: {disease} with confidence {conf:.4f}")
                     else:
                         task_result["status"] = "failed"
-                        task_result["subtask_answer"] = "Could not identify disease - no symptoms provided"
+                        task_result["subtask_answer"] = "Could not identify disease - no symptoms provided or direct mention"
     
                 elif "treatment" in task_desc:
-                    # Get disease from earlier subtask results or state
-                    disease = None
-                    for r in updated_results.values():
-                        if r.get("status") == "completed" and "disease" in r.get("subtask_query", "").lower():
-                            disease = r.get("subtask_answer")
+                    # Get disease from either direct mention, earlier subtask results, or state
+                    disease = state.get("direct_disease_mention")
+                    
+                    if not disease:
+                        for r in updated_results.values():
+                            if r.get("status") == "completed" and "disease" in r.get("subtask_query", "").lower():
+                                disease = r.get("subtask_answer")
     
                     if not disease:
                         disease = state.get("disease")
     
                     if disease:
                         treatments, conf = self.query_treatments(disease)
-    
+                        
                         # Update task result
                         task_result["subtask_answer"] = ", ".join(treatments) if treatments else None
                         task_result["confidence"] = conf
                         task_result["status"] = "completed" if (conf >= THRESHOLDS["knowledge_graph"] and treatments) else "failed"
-    
+                        
                         # Update main state if successful
                         if task_result["status"] == "completed":
                             new_state["treatments"] = treatments
@@ -975,23 +997,25 @@ class DocumentChatBot:
                         task_result["subtask_answer"] = "Could not find treatments - no disease identified"
     
                 elif "remedy" in task_desc:
-                    # Get disease from earlier subtask results or state
-                    disease = None
-                    for r in updated_results.values():
-                        if r.get("status") == "completed" and "disease" in r.get("subtask_query", "").lower():
-                            disease = r.get("subtask_answer")
+                    # Get disease from either direct mention, earlier subtask results, or state
+                    disease = state.get("direct_disease_mention")
+                    
+                    if not disease:
+                        for r in updated_results.values():
+                            if r.get("status") == "completed" and "disease" in r.get("subtask_query", "").lower():
+                                disease = r.get("subtask_answer")
     
                     if not disease:
                         disease = state.get("disease")
     
                     if disease:
                         remedies, conf = self.query_home_remedies(disease)
-    
+                        
                         # Update task result
                         task_result["subtask_answer"] = ", ".join(remedies) if remedies else None
                         task_result["confidence"] = conf
                         task_result["status"] = "completed" if (conf >= THRESHOLDS["knowledge_graph"] and remedies) else "failed"
-    
+                        
                         # Update main state if successful
                         if task_result["status"] == "completed":
                             new_state["home_remedies"] = remedies
@@ -1023,6 +1047,14 @@ class DocumentChatBot:
         # Update state with all collected changes
         new_state["subtask_results"] = updated_results
         new_state["kg_completion_rate"] = completion_rate
+        
+        # Copy important flags from state to new_state
+        if state.get("direct_disease_mention"):
+            new_state["direct_disease_mention"] = state.get("direct_disease_mention")
+            new_state["direct_disease_confidence"] = state.get("direct_disease_confidence", 0.95)
+        
+        if state.get("is_treatment_query"):
+            new_state["is_treatment_query"] = True
     
         # Set kg_answer for reflection agent
         if successful_tasks > 0:
@@ -1062,16 +1094,9 @@ class DocumentChatBot:
             new_state["kg_answer"] = ""
             new_state["kg_confidence"] = 0.0
         
-        # Check if this is a disease identification query
+        # Special handling for disease identification queries
         query = new_state.get("user_query", "").lower()
-        disease_patterns = [
-            r"what (could|might|can) (i|my|the patient|they) have",
-            r"what (is|are) (the )?(possible|potential) (disease|diagnosis|condition)",
-            r"what (disease|condition|diagnosis) (matches|is indicated by|could cause)",
-            r"what (might|could) (be|cause) (these|the|my|their) symptoms"
-        ]
-        
-        is_disease_query = any(re.search(pattern, query) for pattern in disease_patterns)
+        is_disease_query = self.is_disease_identification_query(query)
         
         # If it's a disease query and we found diseases, boost confidence
         if is_disease_query and (new_state.get("diseases") or new_state.get("disease")):
@@ -1112,11 +1137,47 @@ class DocumentChatBot:
             new_state["kg_answer"] = disease_answer
             
             # Boost confidence to ensure KG-only route
-            new_state["kg_confidence"] = 1.0  # Maximum confidence
+            new_state["kg_confidence"] = 1.0
             print("✅ Disease identification query detected, boosting KG confidence to maximum")
-
+        
+        # Special handling for treatment queries
+        is_treatment_query = new_state.get("is_treatment_query", False) or self.is_treatment_query(query)
+        has_disease = new_state.get("direct_disease_mention") or new_state.get("disease")
+        has_treatments = new_state.get("treatments") or new_state.get("home_remedies")
+        
+        if is_treatment_query and has_disease and has_treatments:
+            disease = new_state.get("direct_disease_mention", new_state.get("disease", "this condition"))
+            
+            treatment_answer = f"# Treatment Options for {disease.title()}\n\n"
+            
+            # Add treatments if available
+            if new_state.get("treatments"):
+                treatment_answer += "## Medical Treatments\n"
+                for treatment in new_state.get("treatments", []):
+                    treatment_answer += f"- {treatment}\n"
+                treatment_answer += "\n"
+            
+            # Add home remedies if available
+            if new_state.get("home_remedies"):
+                treatment_answer += "## Home Remedies\n"
+                for remedy in new_state.get("home_remedies", []):
+                    treatment_answer += f"- {remedy}\n"
+                treatment_answer += "\n"
+            
+            # Add general information
+            treatment_answer += "## General Information\n"
+            treatment_answer += f"Treatment for {disease} typically involves a combination of medical interventions and lifestyle adjustments. "
+            treatment_answer += "The specific approach depends on the severity of the condition, the patient's overall health, and other individual factors. "
+            treatment_answer += "Always consult a healthcare provider for personalized medical advice.\n"
+            
+            # Override the existing kg_answer with the treatment-focused answer
+            new_state["kg_answer"] = treatment_answer
+            
+            # Boost confidence to ensure KG-only route
+            new_state["kg_confidence"] = 1.0
+            print(f"✅ Treatment query detected for {disease}, formatted response with maximum confidence")
+    
         return new_state
-
     def process_with_knowledge_graph(self, user_query: str) -> Dict:
         """Process user query with knowledge graph agent"""
         print(f"Processing with knowledge graph: {user_query}")
@@ -1130,6 +1191,17 @@ class DocumentChatBot:
             "kg_answer": "",  # Initialize empty kg_answer
             "kg_confidence": 0.0  # Initialize kg_confidence
         }
+        
+        # Check if query directly mentions a disease
+        extracted_disease, disease_confidence = self.extract_disease_from_query(user_query)
+        if extracted_disease and disease_confidence >= 0.7:
+            print(f"📊 Query mentions disease: {extracted_disease} (confidence: {disease_confidence:.4f})")
+            state["direct_disease_mention"] = extracted_disease
+            state["direct_disease_confidence"] = disease_confidence
+            
+            # Check if it's a treatment query
+            if self.is_treatment_query(user_query):
+                state["is_treatment_query"] = True
         
         # Create subtasks for the knowledge graph
         subtasks = [
@@ -1149,7 +1221,9 @@ class DocumentChatBot:
         if "kg_confidence" not in result:
             result["kg_confidence"] = 0.0
         
-        # Check if this is a disease identification query
+        # Check for two types of queries:
+        
+        # 1. Disease identification query
         if self.is_disease_identification_query(user_query) and (result.get("diseases") or result.get("disease")):
             # Format a more comprehensive symptom-to-disease answer
             diseases = result.get("diseases", [])
@@ -1198,8 +1272,44 @@ class DocumentChatBot:
             result["kg_answer"] = disease_answer
             
             # Boost confidence for disease identification queries to maximum
-            result["kg_confidence"] = 1.0  # Changed from 0.85 to 1.0
+            result["kg_confidence"] = 1.0
             print("✅ Disease identification query detected, formatted comprehensive KG response with maximum confidence")
+        
+        # 2. Treatment query for specific disease
+        elif (result.get("is_treatment_query", False) or self.is_treatment_query(user_query)) and \
+             (result.get("direct_disease_mention") or result.get("disease")) and \
+             (result.get("treatments") or result.get("home_remedies")):
+            
+            disease = result.get("direct_disease_mention", result.get("disease", "this condition"))
+            
+            treatment_answer = f"# Treatment Options for {disease.title()}\n\n"
+            
+            # Add treatments if available
+            if result.get("treatments"):
+                treatment_answer += "## Medical Treatments\n"
+                for treatment in result.get("treatments", []):
+                    treatment_answer += f"- {treatment}\n"
+                treatment_answer += "\n"
+            
+            # Add home remedies if available
+            if result.get("home_remedies"):
+                treatment_answer += "## Home Remedies\n"
+                for remedy in result.get("home_remedies", []):
+                    treatment_answer += f"- {remedy}\n"
+                treatment_answer += "\n"
+            
+            # Add general information
+            treatment_answer += "## General Information\n"
+            treatment_answer += f"Treatment for {disease} typically involves a combination of medical interventions and lifestyle adjustments. "
+            treatment_answer += "The specific approach depends on the severity of the condition, the patient's overall health, and other individual factors. "
+            treatment_answer += "Always consult a healthcare provider for personalized medical advice.\n"
+            
+            # Override the existing kg_answer with the treatment-focused answer
+            result["kg_answer"] = treatment_answer
+            
+            # Boost confidence to ensure KG-only route
+            result["kg_confidence"] = 1.0
+            print(f"✅ Treatment query detected for {disease}, formatted response with maximum confidence")
         
         return result
                     
@@ -1211,6 +1321,7 @@ class DocumentChatBot:
         # Add detailed logging at the beginning
         print(f"Processing query: {user_query}")
         print(f"Disease query? {self.is_disease_identification_query(user_query)}")
+        print(f"Treatment query? {self.is_treatment_query(user_query)}")
         print(f"KG Confidence: {kg_confidence}")
         
         if not self.identified_diseases and kg_answer:
@@ -1231,6 +1342,14 @@ class DocumentChatBot:
             elif "Possible Diseases:" in kg_answer or "Disease:" in kg_answer or "# Possible Diagnoses" in kg_answer:
                 print("Reflection decision: KG_ONLY - Disease identification query with KG results")
                 return kg_answer, "KG_ONLY"
+        
+        # Special case for treatment queries with KG results
+        if self.is_treatment_query(user_query) and ("Treatment Options for" in kg_answer or 
+                                                   "Medical Treatments" in kg_answer or 
+                                                   "Home Remedies" in kg_answer or
+                                                   "Treatments:" in kg_answer):
+            print("Reflection decision: KG_ONLY - Treatment query with KG results")
+            return kg_answer, "KG_ONLY"
         
         # For high but not extremely high confidence (0.7-0.9)
         if kg_confidence is not None and kg_confidence >= 0.7:
@@ -1742,52 +1861,6 @@ class DocumentChatBot:
             home_remedies = kg_data.get("home_remedies", [])
             
             print(f"📊 KG Confidence: {kg_confidence:.4f} (took {(datetime.now() - t_start).total_seconds():.2f}s)")
-            
-            # Early decision for very high confidence KG answers
-            if kg_confidence >= 0.95 or (self.is_disease_identification_query(user_input) and kg_confidence >= 0.85):
-                print(f"✅ High confidence KG answer detected ({kg_confidence}), skipping RAG processing")
-                
-                # Prepare sources
-                sources = []
-                if disease:
-                    sources.append(f"[KG] Knowledge Graph: {disease}")
-                
-                # Log decision
-                self.log_orchestration_decision(
-                    user_input,
-                    f"SELECTED_STRATEGY: KG_ONLY\nREASONING: High confidence knowledge graph answer.\nRESPONSE: {kg_content[:100]}...",
-                    kg_confidence,
-                    0.0  # No RAG confidence since we skipped it
-                )
-                
-                # Format response
-                if "## References:" not in kg_content and sources:
-                    references = "\n\n## References:\n"
-                    for i, src in enumerate(sources, 1):
-                        references += f"{i}. {src}\n\n"
-                    
-                    # Add disclaimer if not present
-                    if "This information is not a substitute" not in kg_content:
-                        disclaimer = "This information is not a substitute for professional medical advice. If symptoms persist or worsen, please consult with a qualified healthcare provider."
-                        final_response = kg_content.strip() + references + "\n\n" + disclaimer
-                    else:
-                        # Keep existing disclaimer
-                        disclaimer_pattern = r'(This information is not a substitute.*?provider\.)'
-                        disclaimer_match = re.search(disclaimer_pattern, kg_content, re.DOTALL)
-                        if disclaimer_match:
-                            disclaimer = disclaimer_match.group(1)
-                            kg_content_no_disclaimer = re.sub(disclaimer_pattern, '', kg_content, flags=re.DOTALL)
-                            final_response = kg_content_no_disclaimer.strip() + references + "\n\n" + disclaimer
-                        else:
-                            final_response = kg_content.strip() + references
-                else:
-                    final_response = kg_content
-                
-                # Add to chat history
-                self.chat_history.append((user_input, final_response))
-                
-                # Return response and sources
-                return final_response, sources
             
             # Process with RAG
             print("📚 Processing with RAG...")
