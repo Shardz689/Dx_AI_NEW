@@ -396,37 +396,29 @@ class DocumentChatBot:
             except Exception:
                 pass  # Continue to LLM evaluation if KG fails
         
-            MISSING_INFO_PROMPT = f"""
-            You are a medical assistant analyzing a patient query and conversation.
-            Determine if any CRITICAL information is still missing to properly assess their situation.
-        
-            Conversation history:
-            {context}
-        
-            Latest patient input: "{user_query}"
-        
-            CRITICALLY EVALUATE if you have enough information to provide a reasonable medical assessment.
-            Only ask follow-up questions if ABSOLUTELY NECESSARY for basic assessment.
-        
-            Rules for determining if information is sufficient:
-            1. If the patient has provided symptoms, duration, and basic severity, that's usually enough
-            2. If you've already asked follow-up questions once, avoid asking more unless critical
-            3. If a general assessment can be made with current information, proceed without more questions
-            4. ONLY ask about truly essential missing information
-            5. If the query is about general medical information (not about a specific case), NO follow-up needed
-            6. If the question is about treatments, medication, or general information, NO follow-up needed
-        
-            Return your answer in this exact JSON format:
-            {{
-                "needs_followup": true/false,
-                "reasoning": "brief explanation of why more information is needed or not",
-                "missing_info": [
-                    {{"question": "specific follow-up question 1"}}
-                ]
-            }}
-        
-            Only include 1 question if follow-up is needed.
-            """
+           MISSING_INFO_PROMPT = (
+                f"You are a medical assistant analyzing a patient query and conversation.\n"
+                f"Determine if any CRITICAL information is still missing to properly assess their situation.\n\n"
+                f"Conversation history:\n{context}\n\n"
+                f"Latest patient input: \"{user_query}\"\n\n"
+                "CRITICALLY EVALUATE if you have enough information to provide a reasonable medical assessment.\n"
+                "Only ask follow-up questions if ABSOLUTELY NECESSARY for basic assessment.\n\n"
+                "Rules for determining if information is sufficient:\n"
+                "1. If the patient has provided symptoms, duration, and basic severity, that's usually enough\n"
+                "2. If you've already asked follow-up questions once, avoid asking more unless critical\n"
+                "3. If a general assessment can be made with current information, proceed without more questions\n"
+                "4. ONLY ask about truly essential missing information\n"
+                "5. If the query is about general medical information (not about a specific case), NO follow-up needed\n"
+                "6. If the question is about treatments, medication, or general information, NO follow-up needed\n\n"
+                "Return your answer in this exact JSON format:\n"
+                "{{\n"
+                '    "needs_followup": true/false,\n'
+                '    "reasoning": "brief explanation of why more information is needed or not",\n'
+                '    "missing_info": [\n'
+                '        {{"question": "specific follow-up question 1"}}\n'
+                "    ]\n"
+                "}}"
+            )
         
             try:
                 response = self.local_generate(MISSING_INFO_PROMPT, max_tokens=500).strip()
@@ -477,18 +469,16 @@ class DocumentChatBot:
                 return disease, 0.95
     
         # If no direct match, use LLM to extract
-        DISEASE_PROMPT = f"""
-        You are a medical assistant.
-        Extract and identify any disease, medical condition, or health disorder mentioned in the following user query.
-        Assign a confidence score between 0.0 and 1.0 indicating how certain you are.
-        **Important:** Return your answer in exactly the following format:
-        Extracted Disease: {{"disease": "disease_name", "confidence": 0.9}}
-    
-        If no disease is mentioned, respond with:
-        Extracted Disease: {{"disease": null, "confidence": 0.0}}
-    
-        User Query: "{user_query}"
-        """
+        DISEASE_PROMPT = (
+            "You are a medical assistant.\n"
+            "Extract and identify any disease, medical condition, or health disorder mentioned in the following user query.\n"
+            "Assign a confidence score between 0.0 and 1.0 indicating how certain you are.\n"
+            "**Important:** Return your answer in exactly the following format:\n"
+            "Extracted Disease: {\"disease\": \"disease_name\", \"confidence\": 0.9}\n\n"
+            "If no disease is mentioned, respond with:\n"
+            "Extracted Disease: {\"disease\": null, \"confidence\": 0.0}\n\n"
+            f"User Query: \"{user_query}\""
+        )
     
         try:
             response = self.local_generate(DISEASE_PROMPT, max_tokens=250).strip()
@@ -601,7 +591,7 @@ class DocumentChatBot:
             Extracted Symptoms: [{"symptom": "symptom1", "confidence": 0.9}, {"symptom": "symptom2", "confidence": 0.8}, ...]
             
             User Query: 
-            "{query}"
+            "query"
             """.format(query=user_query)
 
         try:
@@ -2102,13 +2092,11 @@ class DocumentChatBot:
     
             # If critical information is missing, ask follow-up questions
             if missing_info and len(missing_info) > 0:
-                follow_up_prompt = f"""
-                I need a bit more information to provide a helpful response. Could you please tell me:
-    
-                {missing_info[0]}
-    
-                This will help me give you a more accurate assessment.
-                """
+                follow_up_prompt = (
+                        f"I need a bit more information to provide a helpful response. Could you please tell me:\n\n"
+                        f"{missing_info[0]}\n\n"
+                        "This will help me give you a more accurate assessment."
+                    )
                 self.chat_history.append((user_input, follow_up_prompt))
                 return follow_up_prompt.strip(), []
     
