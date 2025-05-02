@@ -1365,9 +1365,9 @@ class DocumentChatBot:
         
         # 2. THRESHOLD DEFINITIONS
         # Define thresholds for different decisions
-        KG_HIGH_THRESHOLD = 0.90    # Extremely high confidence for KG
-        KG_MEDIUM_THRESHOLD = 0.75  # Good confidence for KG
-        COMPLETENESS_THRESHOLD = 0.65  # Basic threshold for answer completeness
+        KG_HIGH_THRESHOLD = 0.70    # Extremely high confidence for KG
+        KG_MEDIUM_THRESHOLD = 0.60  # Good confidence for KG
+        COMPLETENESS_THRESHOLD = 0.50  # Basic threshold for answer completeness
         
         # 3. INDIVIDUAL SOURCE EVALUATION
         # Evaluate the completeness of each individual source
