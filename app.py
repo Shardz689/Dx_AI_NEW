@@ -1159,7 +1159,7 @@ class DocumentChatBot:
                                        new_state.get("disease_confidences", [0.7])):
                     answer_sections.append(f"## {disease} (Confidence: {conf:.2f})")
                     if new_state.get("matched_symptoms"):
-                        answer_sections.append(f"Matching Symptoms: {', '.join(new_state['matched_symptoms']}")
+                        answer_sections.append(f"Matching Symptoms: {', '.join(new_state['matched_symptoms'])}")
             
             # Treatment response
             if new_state.get("treatments") and self.is_treatment_query(state["user_query"]):
