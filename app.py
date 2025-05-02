@@ -289,6 +289,23 @@ class DocumentChatBot:
             formatted_history.append(f"Assistant: {bot_msg}")
         return formatted_history
 
+    def calculate_kg_completeness(self, state: Dict) -> float:
+        """Improved completeness scoring for diagnostic queries"""
+        base_score = 0.0
+        
+        if state.get("disease"):
+            base_score = 0.7  # Base score for having a disease
+            
+            # Bonus for symptom matches
+            if state.get("matched_symptoms"):
+                base_score += min(0.3, len(state["matched_symptoms"]) * 0.1)
+                
+            # Bonus for direct mention
+            if state.get("direct_disease_mention"):
+                base_score = min(1.0, base_score + 0.2)
+        
+        return min(1.0, base_score)
+    
     def local_generate(self, prompt, max_tokens=500):
         """Generate text using Gemini Flash 1.5"""
         if self.llm is None:
@@ -996,20 +1013,21 @@ class DocumentChatBot:
         """
         Knowledge Graph Agent
         Extracts symptoms, identifies diseases, and recommends treatments using the knowledge graph
-        Implements symptom-first logic while preserving all original functionality
+        Implements optimized symptom-first logic with improved validation and separation of concerns
         """
         print("Knowledge Graph Agent - Optimized Symptom-First Logic")
     
         if state.get("halt_execution") == ExecutionState.HALTED:
             return state
     
+        new_state = {**state}
+        query = state["user_query"].lower()
         subtasks = state.get("subtasks", [])
         subtask_results = state.get("subtask_results", {})
         updated_results = {**subtask_results}
-        new_state = {**state}
         
-        # Extract query aspects for multi-part handling (preserves original functionality)
-        query_aspects = self.segment_query(state["user_query"])
+        # Extract query aspects for multi-part handling
+        query_aspects = self.segment_query(query)
         is_multi_part = sum(1 for aspect in query_aspects.values() if aspect) > 1
         
         if is_multi_part:
@@ -1021,11 +1039,8 @@ class DocumentChatBot:
                 "cause_info": []
             })
     
-        processed_tasks = 0
-        successful_tasks = 0
-    
-        # NEW LOGIC: Symptom extraction first
-        symptoms, symptom_conf = self.extract_symptoms(state["user_query"])
+        # 1. Enhanced symptom extraction - always do this first
+        symptoms, symptom_conf = self.extract_symptoms(query)
         if symptoms and symptom_conf >= THRESHOLDS["symptom_extraction"]:
             new_state.update({
                 "symptoms": symptoms,
@@ -1033,7 +1048,34 @@ class DocumentChatBot:
             })
             print(f"✔️ Primary symptom extraction: {symptoms} (conf: {symptom_conf:.2f})")
     
-        # Process tasks with symptom-first priority
+        # 2. Improved disease identification
+        direct_disease, disease_conf = self.extract_disease_from_query(query)
+        if direct_disease and disease_conf >= THRESHOLDS["disease_extraction"]:
+            new_state.update({
+                "direct_disease_mention": direct_disease,
+                "direct_disease_confidence": disease_conf,
+                "disease": direct_disease,
+                "diseases": [direct_disease],
+                "disease_confidence": disease_conf,
+                "matched_symptoms": new_state.get("symptoms", ["mentioned directly"])
+            })
+            print(f"✔️ Direct disease mention: {direct_disease} (conf: {disease_conf:.2f})")
+        elif new_state.get("symptoms"):
+            # Only query diseases if no direct mention exists
+            disease_data = self.query_disease_from_symptoms(new_state["symptoms"])
+            if disease_data[1] >= THRESHOLDS["disease_matching"]:
+                new_state.update({
+                    "disease": disease_data[0],
+                    "diseases": [disease_data[0]],
+                    "disease_confidence": disease_data[1],
+                    "matched_symptoms": disease_data[2]
+                })
+                print(f"✔️ Disease matched from symptoms: {disease_data[0]} (conf: {disease_data[1]:.2f})")
+    
+        # Process tasks selectively based on identified information
+        processed_tasks = 0
+        successful_tasks = 0
+    
         for task in subtasks:
             if task.get("data_source") != "KG" or task.get("id") in updated_results:
                 continue
@@ -1053,7 +1095,7 @@ class DocumentChatBot:
                     "data_source": "KG"
                 }
     
-                # Symptom extraction task (already done above)
+                # Symptom extraction task
                 if "symptom" in task_desc:
                     if new_state.get("symptoms"):
                         task_result.update({
@@ -1062,71 +1104,47 @@ class DocumentChatBot:
                             "status": "completed"
                         })
                         successful_tasks += 1
-                    continue
     
-                # Disease identification - check direct mentions first
+                # Disease identification task
                 elif "disease" in task_desc:
-                    direct_disease = state.get("direct_disease_mention")
-                    if direct_disease:
+                    if new_state.get("disease"):
                         task_result.update({
-                            "subtask_answer": direct_disease,
-                            "confidence": state.get("direct_disease_confidence", 0.95),
+                            "subtask_answer": new_state["disease"],
+                            "confidence": new_state["disease_confidence"],
                             "status": "completed"
                         })
-                        new_state.update({
-                            "disease": direct_disease,
-                            "diseases": [direct_disease],
-                            "disease_confidence": state.get("direct_disease_confidence", 0.95),
-                            "matched_symptoms": new_state.get("symptoms", ["mentioned directly"])
-                        })
                         successful_tasks += 1
-                    elif new_state.get("symptoms"):
-                        disease_data = self.query_disease_from_symptoms(new_state["symptoms"])
-                        if disease_data[1] >= THRESHOLDS["disease_matching"]:
-                            task_result.update({
-                                "subtask_answer": disease_data[0],
-                                "confidence": disease_data[1],
-                                "status": "completed"
-                            })
-                            new_state.update({
-                                "disease": disease_data[0],
-                                "diseases": [disease_data[0]],
-                                "disease_confidence": disease_data[1],
-                                "matched_symptoms": disease_data[2]
-                            })
-                            successful_tasks += 1
     
                 # Treatment/remedy tasks only if disease identified
-                elif "treatment" in task_desc or "remedy" in task_desc:
+                elif ("treatment" in task_desc or "remedy" in task_desc) and new_state.get("disease"):
                     disease = new_state.get("disease")
-                    if disease:
-                        if "treatment" in task_desc:
-                            treatments, conf = self.query_treatments(disease)
-                            if conf >= THRESHOLDS["knowledge_graph"]:
-                                task_result.update({
-                                    "subtask_answer": ", ".join(treatments),
-                                    "confidence": conf,
-                                    "status": "completed"
-                                })
-                                new_state["treatments"] = treatments
-                                successful_tasks += 1
-                                
-                                # Preserve multi-part handling
-                                if is_multi_part:
-                                    new_state["prevention_info"] = [t for t in treatments 
-                                        if any(kw in t.lower() for kw in ["prevent", "avoid"])]
-                                    new_state["cause_info"] = [t for t in treatments 
-                                        if any(kw in t.lower() for kw in ["cause", "factor"])]
-                        else:  # remedy
-                            remedies, conf = self.query_home_remedies(disease)
-                            if conf >= THRESHOLDS["knowledge_graph"]:
-                                task_result.update({
-                                    "subtask_answer": ", ".join(remedies),
-                                    "confidence": conf,
-                                    "status": "completed"
-                                })
-                                new_state["home_remedies"] = remedies
-                                successful_tasks += 1
+                    if "treatment" in task_desc:
+                        treatments, conf = self.query_treatments(disease)
+                        if conf >= THRESHOLDS["knowledge_graph"]:
+                            task_result.update({
+                                "subtask_answer": ", ".join(treatments),
+                                "confidence": conf,
+                                "status": "completed"
+                            })
+                            new_state["treatments"] = treatments
+                            successful_tasks += 1
+                            
+                            # Preserve multi-part handling
+                            if is_multi_part:
+                                new_state["prevention_info"] = [t for t in treatments 
+                                    if any(kw in t.lower() for kw in ["prevent", "avoid"])]
+                                new_state["cause_info"] = [t for t in treatments 
+                                    if any(kw in t.lower() for kw in ["cause", "factor"])]
+                    else:  # remedy
+                        remedies, conf = self.query_home_remedies(disease)
+                        if conf >= THRESHOLDS["knowledge_graph"]:
+                            task_result.update({
+                                "subtask_answer": ", ".join(remedies),
+                                "confidence": conf,
+                                "status": "completed"
+                            })
+                            new_state["home_remedies"] = remedies
+                            successful_tasks += 1
     
                 updated_results[task_id] = task_result
     
@@ -1141,55 +1159,19 @@ class DocumentChatBot:
                     "data_source": "KG"
                 }
     
-        # Preserve original answer formatting logic
+        # Update completion metrics
         completion_rate = successful_tasks / max(processed_tasks, 1)
         new_state.update({
             "subtask_results": updated_results,
-            "kg_completion_rate": completion_rate
+            "kg_completion_rate": completion_rate,
+            "kg_completeness": self.calculate_kg_completeness(new_state)
         })
     
-        # Original answer generation with symptom-first prioritization
-        if successful_tasks > 0:
-            answer_sections = []
-            
-            # Disease identification response
-            if new_state.get("diseases"):
-                answer_sections.append("# Possible Conditions")
-                for disease, conf in zip(new_state["diseases"], 
-                                       new_state.get("disease_confidences", [0.7])):
-                    answer_sections.append(f"## {disease} (Confidence: {conf:.2f})")
-                    if new_state.get("matched_symptoms"):
-                        answer_sections.append(f"Matching Symptoms: {', '.join(new_state['matched_symptoms'])}")
-            
-            # Treatment response
-            if new_state.get("treatments") and self.is_treatment_query(state["user_query"]):
-                answer_sections.append("\n# Treatment Options")
-                answer_sections.extend([f"- {t}" for t in new_state["treatments"]])
-            
-            # Home remedies
-            if new_state.get("home_remedies"):
-                answer_sections.append("\n# Home Care")
-                answer_sections.extend([f"- {r}" for r in new_state["home_remedies"]])
-            
-            # Multi-part sections
-            if is_multi_part:
-                if new_state["prevention_info"]:
-                    answer_sections.append("\n# Prevention")
-                    answer_sections.extend([f"- {p}" for p in new_state["prevention_info"]])
-                if new_state["cause_info"]:
-                    answer_sections.append("\n# Causes")
-                    answer_sections.extend([f"- {c}" for c in new_state["cause_info"]])
-            
-            new_state["kg_answer"] = "\n".join(answer_sections)
-            
-            # Dynamic confidence calculation
-            base_conf = max(
-                new_state.get("disease_confidence", 0),
-                new_state.get("treatment_confidence", 0),
-                new_state.get("remedy_confidence", 0)
-            )
-            new_state["kg_confidence"] = min(1.0, base_conf + (0.3 * completion_rate))
-    
+        # Generate comprehensive answer
+        if new_state.get("disease") or new_state.get("symptoms"):
+            new_state["kg_answer"] = self.format_kg_diagnostic_answer(new_state)
+            new_state["kg_confidence"] = self.calculate_kg_confidence(new_state)
+        
         return new_state
         
     def process_with_knowledge_graph(self, user_query: str) -> Dict:
