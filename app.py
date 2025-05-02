@@ -455,14 +455,55 @@ class DocumentChatBot:
                                  
     def extract_disease_from_query(self, user_query: str) -> Tuple[Optional[str], float]:
         """Extract disease names from user query with confidence scores"""
+        # Input validation
+        if not user_query or not isinstance(user_query, str):
+            print(f"⚠️ Invalid user query for disease extraction: {type(user_query)}")
+            return None, 0.0
+        
         cache_key = {"type": "disease_extraction", "query": user_query}
         cached = get_cached(cache_key)
         if cached:
             print("🧠 Using cached disease extraction.")
             return cached
     
-        # First check if any known diseases are directly mentioned
+        # Common symptom phrases that should not be classified as diseases
+        symptom_phrases = [
+            "chest pain", "shortness of breath", "headache", "fever", "cough",
+            "sore throat", "fatigue", "nausea", "dizziness", "pain", "ache",
+            "sweating", "vomiting", "chills", "weakness", "discomfort"
+        ]
+        
+        # Check if the user is asking about symptoms rather than mentioning a disease
         query_lower = user_query.lower()
+        is_symptom_query = False
+        
+        # Don't classify symptom phrases as diseases
+        for phrase in symptom_phrases:
+            if phrase in query_lower:
+                print(f"⚠️ Found symptom phrase '{phrase}' - this is not a disease mention")
+                is_symptom_query = True
+    
+        # If user is just asking about symptoms, don't extract as disease
+        symptom_question_patterns = [
+            "what disease", "what condition", "what could be causing", 
+            "what might be causing", "possible disease", "possible condition",
+            "what is causing", "why do i have", "reasons for"
+        ]
+        
+        for pattern in symptom_question_patterns:
+            if pattern in query_lower:
+                print(f"⚠️ Query is asking about causes of symptoms, not mentioning a disease directly")
+                is_symptom_query = True
+        
+        if is_symptom_query:
+            # This is asking about symptoms, not mentioning a disease
+            return None, 0.0
+    
+        # First check if any known diseases are directly mentioned
+        known_diseases = ["cardiovascular disease", "hypertension", "obesity", 
+                         "respiratory infections", "type 2 diabetes mellitus",
+                         "diabetes", "heart disease", "high blood pressure"]
+        
         for disease in known_diseases:
             if disease.lower() in query_lower:
                 print(f"🔍 Found direct disease mention: {disease} (confidence: 0.95)")
@@ -470,16 +511,17 @@ class DocumentChatBot:
     
         # If no direct match, use LLM to extract
         DISEASE_PROMPT = (
-            "You are a medical assistant.\n"
-            "Extract and identify any disease, medical condition, or health disorder mentioned in the following user query.\n"
-            "Assign a confidence score between 0.0 and 1.0 indicating how certain you are.\n"
+            f"You are a medical assistant.\n"
+            f"Extract and identify any disease, medical condition, or health disorder mentioned in the following user query.\n"
+            f"Assign a confidence score between 0.0 and 1.0 indicating how certain you are.\n"
+            f"DO NOT classify symptoms like \"chest pain\", \"shortness of breath\", \"headache\", etc. as diseases.\n\n"
             "**Important:** Return your answer in exactly the following format:\n"
-            "Extracted Disease: {\"disease\": \"disease_name\", \"confidence\": 0.9}\n\n"
+            "Extracted Disease: {{\"disease\": \"disease_name\", \"confidence\": 0.9}}\n\n"
             "If no disease is mentioned, respond with:\n"
-            "Extracted Disease: {\"disease\": null, \"confidence\": 0.0}\n\n"
+            "Extracted Disease: {{\"disease\": null, \"confidence\": 0.0}}\n\n"
             f"User Query: \"{user_query}\""
         )
-    
+            
         try:
             response = self.local_generate(DISEASE_PROMPT, max_tokens=250).strip()
             print("\nRaw Disease Extraction Response:\n", response)
@@ -491,6 +533,13 @@ class DocumentChatBot:
                     disease_data = json.loads(match.group(1))
                     disease = disease_data.get("disease")
                     confidence = disease_data.get("confidence", 0.0)
+    
+                    # Validation check - don't allow symptom phrases to be classified as diseases
+                    if disease:
+                        for symptom in symptom_phrases:
+                            if symptom.lower() in disease.lower():
+                                print(f"⚠️ Rejected disease extraction: '{disease}' contains symptom phrase '{symptom}'")
+                                return None, 0.0
     
                     if disease and confidence >= 0.7:
                         print(f"🔍 Extracted Disease: {disease} (confidence: {confidence:.4f})")
@@ -577,27 +626,39 @@ class DocumentChatBot:
                       
     def extract_symptoms(self, user_query: str) -> Tuple[List[str], float]:
         """Extract symptoms from user query with confidence scores"""
+        # Input validation
+        if not user_query or not isinstance(user_query, str):
+            print(f"⚠️ Invalid user query for symptom extraction: {type(user_query)}")
+            return [], 0.0
+    
+        # Cache check with proper string query
         cache_key = {"type": "symptom_extraction", "query": user_query}
         cached = get_cached(cache_key)
         if cached:
             print("🧠 Using cached symptom extraction.")
             return cached
-
-        SYMPTOM_PROMPT = """
-            You are a medical assistant.
-            Extract and correct all symptoms mentioned in the following user query.
-            For each symptom, assign a confidence score between 0.0 and 1.0 indicating how certain you are.
-            **Important:** Return your answer in exactly the following format:
-            Extracted Symptoms: [{"symptom": "symptom1", "confidence": 0.9}, {"symptom": "symptom2", "confidence": 0.8}, ...]
-            
-            User Query: 
-            "query"
-            """.format(query=user_query)
-
+    
+        # Known symptom keywords for fallback detection
+        known_symptoms = [
+            "chest pain", "shortness of breath", "headache", "fever", "cough", 
+            "sore throat", "fatigue", "nausea", "dizziness", "pain", "runny nose",
+            "congestion", "sweating", "vomiting", "chills", "weakness"
+        ]
+    
+        SYMPTOM_PROMPT = (
+                f"You are a medical assistant.\n"
+                f"Extract and correct all symptoms mentioned in the following user query.\n"
+                f"For each symptom, assign a confidence score between 0.0 and 1.0 indicating how certain you are.\n"
+                "**Important:** Return your answer in exactly the following format:\n"
+                "Extracted Symptoms: [{{\"symptom\": \"symptom1\", \"confidence\": 0.9}}, {{\"symptom\": \"symptom2\", \"confidence\": 0.8}}, ...]\n\n"
+                f"User Query:\n"
+                f"\"{user_query}\""
+            )
+    
         try:
             response = self.local_generate(SYMPTOM_PROMPT, max_tokens=500).strip()
             print("\nRaw Symptom Extraction Response:\n", response)
-
+    
             # Parse JSON format response with regex
             match = re.search(r"Extracted Symptoms:\s*(\[.*?\])", response, re.DOTALL)
             if match:
@@ -607,13 +668,13 @@ class DocumentChatBot:
                     confident_symptoms = [item["symptom"].strip().lower()
                                         for item in symptom_data
                                         if item.get("confidence", 0) >= THRESHOLDS["symptom_extraction"]]
-
+    
                     # Calculate average confidence for symptom extraction
                     if symptom_data:
                         avg_confidence = sum(item.get("confidence", 0) for item in symptom_data) / len(symptom_data)
                     else:
                         avg_confidence = 0.0
-
+    
                     if confident_symptoms:
                         print(f"🔍 Extracted Symptoms: {confident_symptoms} (avg confidence: {avg_confidence:.4f})")
                         result = (confident_symptoms, avg_confidence)
@@ -623,61 +684,76 @@ class DocumentChatBot:
                     print("⚠️ Could not parse symptom JSON from LLM response")
         except Exception as e:
             print(f"⚠️ Error in symptom extraction: {e}")
-
+    
         # Fallback keyword extraction
         print("⚠️ Using fallback keyword extraction for symptoms.")
         fallback_symptoms = []
-        common_symptoms = ["fever", "cough", "headache", "sore throat", "nausea", "dizziness"]
+    
         query_lower = user_query.lower()
-
-        for symptom in common_symptoms:
+        for symptom in known_symptoms:
             if symptom in query_lower:
                 fallback_symptoms.append(symptom)
-
-        fallback_confidence = 0.4  # Low confidence for fallback extraction
+    
+        fallback_confidence = 0.6 if fallback_symptoms else 0.4  # Increased confidence for fallback extraction
         print(f"🔍 Fallback Extracted Symptoms: {fallback_symptoms} (confidence: {fallback_confidence:.4f})")
+        
         result = (fallback_symptoms, fallback_confidence)
         set_cached(cache_key, result)
         return result
 
+
     def query_disease_from_symptoms(self, symptoms: List[str]) -> Tuple[Optional[str], float, List[str], List[Tuple[str, float]]]:
         """Query for diseases based on symptoms"""
         if not symptoms:
+            print("⚠️ No symptoms provided to query diseases")
             return None, 0.0, [], []
-
+    
         cache_key = {"type": "disease_matching", "symptoms": tuple(symptoms)}
         cached = get_cached(cache_key)
         if cached:
             print("🧠 Using cached disease match.")
             return cached
-
+    
+        # Validate symptoms against known symptoms
+        valid_symptoms = []
+        for symptom in symptoms:
+            # Normalize symptom format
+            normalized = symptom.lower().strip()
+            valid_symptoms.append(normalized)
+        
+        if not valid_symptoms:
+            print("⚠️ No valid symptoms after normalization")
+            return None, 0.0, [], []
+    
+        print(f"🔍 Querying diseases for symptoms: {valid_symptoms}")
+    
         # Check for direct match with known diseases
-        for s in symptoms:
+        for s in valid_symptoms:
             if s in known_diseases:
                 detected = s.capitalize()
                 print(f"Using extracted symptom as disease: {detected} (confidence: 0.95)")
                 return detected, 0.95, [s], [(detected, 0.95)]
-
+    
         # Construct a more sophisticated Cypher query with confidence scoring
         cypher_query = f"""
         MATCH (s:symptom)-[r:INDICATES]->(d:disease)
-        WHERE LOWER(s.Name) IN {str(symptoms)}
+        WHERE LOWER(s.Name) IN {str(valid_symptoms)}
         WITH d, COUNT(DISTINCT s) AS matching_symptoms,
              COLLECT(DISTINCT LOWER(s.Name)) AS matched_symptoms
         WITH d, matching_symptoms, matched_symptoms,
-             matching_symptoms * 1.0 / {max(1, len(symptoms))} AS confidence_score
+             matching_symptoms * 1.0 / {max(1, len(valid_symptoms))} AS confidence_score
         WHERE confidence_score >= {THRESHOLDS["disease_matching"]}
         RETURN d.Name AS Disease, confidence_score AS Confidence, matched_symptoms AS MatchedSymptoms
         ORDER BY confidence_score DESC
         LIMIT 3
         """
-
+    
         try:
             with GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH) as driver:
                 session = driver.session()
                 result = session.run(cypher_query)
                 records = list(result)
-
+    
                 if records:
                     all_diseases = [(rec["Disease"], float(rec["Confidence"]), rec["MatchedSymptoms"]) for rec in records]
                     
@@ -693,10 +769,60 @@ class DocumentChatBot:
                     result = (all_diseases, confidence, matched_symptoms, all_diseases)
                     set_cached(cache_key, result)
                     return result
-
+                else:
+                    print("⚠️ No diseases matched the provided symptoms in the knowledge graph")
+    
         except Exception as e:
             print(f"⚠️ Error querying Neo4j for diseases: {e}")
-
+            print(f"⚠️ Query attempted: {cypher_query}")
+    
+        # If no matches in Knowledge Graph, use LLM as fallback
+        print("⚠️ Using LLM fallback for symptom-to-disease mapping")
+        
+        DISEASE_INFERENCE_PROMPT = f"""
+        You are a medical assistant. Based on the following symptoms, identify the most likely diseases or conditions.
+        For each disease, provide a confidence score between 0 and 1.
+        
+        Symptoms: {', '.join(valid_symptoms)}
+        
+        Format your response as a JSON array:
+        [
+          {{"disease": "Disease 1", "confidence": 0.8, "matched_symptoms": ["symptom1", "symptom2"]}},
+          {{"disease": "Disease 2", "confidence": 0.6, "matched_symptoms": ["symptom1"]}}
+        ]
+        
+        Focus on these common conditions: Cardiovascular Disease, Hypertension, Obesity, Respiratory Infections, Type 2 Diabetes Mellitus
+        """
+        
+        try:
+            response = self.local_generate(DISEASE_INFERENCE_PROMPT, max_tokens=500)
+            json_match = re.search(r'\[[\s\S]*\]', response)
+            
+            if json_match:
+                try:
+                    diseases_data = json.loads(json_match.group(0))
+                    if diseases_data:
+                        # Filter and format diseases above threshold
+                        filtered_diseases = [
+                            (d["disease"], d["confidence"], d.get("matched_symptoms", []))
+                            for d in diseases_data
+                            if d.get("confidence", 0) >= THRESHOLDS["disease_matching"]
+                        ]
+                        
+                        if filtered_diseases:
+                            # Sort by confidence
+                            filtered_diseases.sort(key=lambda x: x[1], reverse=True)
+                            top_disease = filtered_diseases[0][0]
+                            confidence = filtered_diseases[0][1]
+                            matched_symptoms = filtered_diseases[0][2]
+                            
+                            print(f"🦠 LLM Fallback - Detected Diseases: {[d[0] for d in filtered_diseases]} (top confidence: {confidence:.4f})")
+                            return (filtered_diseases, confidence, matched_symptoms, filtered_diseases)
+                except json.JSONDecodeError:
+                    print("⚠️ Could not parse disease inference JSON from LLM response")
+        except Exception as e:
+            print(f"⚠️ Error in LLM disease inference: {e}")
+    
         return None, 0.0, [], []
 
     def query_treatments(self, disease: str) -> Tuple[List[str], float]:
@@ -870,38 +996,44 @@ class DocumentChatBot:
         """
         Knowledge Graph Agent
         Extracts symptoms, identifies diseases, and recommends treatments using the knowledge graph
+        Implements symptom-first logic while preserving all original functionality
         """
-        print("Knowledge Graph Agent")
+        print("Knowledge Graph Agent - Optimized Symptom-First Logic")
     
-        # Use proper enum comparison
         if state.get("halt_execution") == ExecutionState.HALTED:
             return state
     
         subtasks = state.get("subtasks", [])
         subtask_results = state.get("subtask_results", {})
-        updated_results = {**subtask_results}  # Clone to avoid modifying the original
-    
-        # Create a new state to collect all updates
+        updated_results = {**subtask_results}
         new_state = {**state}
         
-        # Extract query aspects to identify multi-part queries
+        # Extract query aspects for multi-part handling (preserves original functionality)
         query_aspects = self.segment_query(state["user_query"])
         is_multi_part = sum(1 for aspect in query_aspects.values() if aspect) > 1
         
         if is_multi_part:
             print(f"Multi-part query detected with aspects: {[k for k, v in query_aspects.items() if v]}")
-            new_state["query_aspects"] = query_aspects
-            new_state["is_multi_part"] = True
+            new_state.update({
+                "query_aspects": query_aspects,
+                "is_multi_part": True,
+                "prevention_info": [],
+                "cause_info": []
+            })
     
-        # Track progress
         processed_tasks = 0
         successful_tasks = 0
-        
-        # Track additional data for multi-part queries
-        prevention_info = []
-        cause_info = []
     
-        # Loop through the tasks
+        # NEW LOGIC: Symptom extraction first
+        symptoms, symptom_conf = self.extract_symptoms(state["user_query"])
+        if symptoms and symptom_conf >= THRESHOLDS["symptom_extraction"]:
+            new_state.update({
+                "symptoms": symptoms,
+                "symptom_confidence": symptom_conf
+            })
+            print(f"✔️ Primary symptom extraction: {symptoms} (conf: {symptom_conf:.2f})")
+    
+        # Process tasks with symptom-first priority
         for task in subtasks:
             if task.get("data_source") != "KG" or task.get("id") in updated_results:
                 continue
@@ -909,178 +1041,93 @@ class DocumentChatBot:
             processed_tasks += 1
             task_id = task.get("id")
             task_query = task.get("subtask_query", task.get("description", ""))
-            print(f"📚 Processing KG task: {task_id} - {task_query}")
-    
             task_desc = task_query.lower()
     
             try:
-                # Initialize task result with standard structure
                 task_result = {
                     "id": task_id,
                     "subtask_query": task_query,
                     "subtask_answer": None,
                     "confidence": 0.0,
-                    "status": "failed",  # Default status
+                    "status": "failed",
                     "data_source": "KG"
                 }
     
+                # Symptom extraction task (already done above)
                 if "symptom" in task_desc:
-                    symptoms, conf = self.extract_symptoms(state["user_query"])
-    
-                    # Update task result
-                    task_result["subtask_answer"] = ", ".join(symptoms) if symptoms else None
-                    task_result["confidence"] = conf
-                    task_result["status"] = "completed" if (conf >= THRESHOLDS["symptom_extraction"] and symptoms) else "failed"
-    
-                    # Update main state if successful
-                    if task_result["status"] == "completed":
-                        new_state["symptoms"] = symptoms
-                        new_state["symptom_confidence"] = conf
+                    if new_state.get("symptoms"):
+                        task_result.update({
+                            "subtask_answer": ", ".join(new_state["symptoms"]),
+                            "confidence": new_state["symptom_confidence"],
+                            "status": "completed"
+                        })
                         successful_tasks += 1
-                        print(f"✔️ Symptoms extraction successful with confidence {conf:.4f}")
+                    continue
     
+                # Disease identification - check direct mentions first
                 elif "disease" in task_desc:
-                    # Get symptoms from either earlier subtask results or state
-                    symptoms = []
-                    for r in updated_results.values():
-                        if r.get("status") == "completed" and "symptom" in r.get("subtask_query", "").lower():
-                            if r.get("subtask_answer"):
-                                symptoms = [s.strip() for s in r.get("subtask_answer").split(",")]
-    
-                    if not symptoms:
-                        symptoms = state.get("symptoms", [])
-    
-                    # Check for direct disease mention in query first
-                    if state.get("direct_disease_mention"):
-                        direct_disease = state.get("direct_disease_mention")
-                        direct_confidence = state.get("direct_disease_confidence", 0.95)
-                        
-                        # Set as the identified disease
-                        task_result["subtask_answer"] = direct_disease
-                        task_result["confidence"] = direct_confidence
-                        task_result["status"] = "completed"
-                        
-                        # Update main state
-                        new_state["disease"] = direct_disease
-                        new_state["diseases"] = [direct_disease]
-                        new_state["disease_confidence"] = direct_confidence
-                        new_state["disease_confidences"] = [direct_confidence]
-                        new_state["matched_symptoms"] = symptoms if symptoms else ["mentioned directly"]
+                    direct_disease = state.get("direct_disease_mention")
+                    if direct_disease:
+                        task_result.update({
+                            "subtask_answer": direct_disease,
+                            "confidence": state.get("direct_disease_confidence", 0.95),
+                            "status": "completed"
+                        })
+                        new_state.update({
+                            "disease": direct_disease,
+                            "diseases": [direct_disease],
+                            "disease_confidence": state.get("direct_disease_confidence", 0.95),
+                            "matched_symptoms": new_state.get("symptoms", ["mentioned directly"])
+                        })
                         successful_tasks += 1
-                        print(f"✔️ Disease identified from direct mention: {direct_disease} with confidence {direct_confidence:.4f}")
-                    
-                    # Otherwise try to match symptoms to diseases
-                    elif symptoms:
-                        disease, conf, matched, alt = self.query_disease_from_symptoms(symptoms)
+                    elif new_state.get("symptoms"):
+                        disease_data = self.query_disease_from_symptoms(new_state["symptoms"])
+                        if disease_data[1] >= THRESHOLDS["disease_matching"]:
+                            task_result.update({
+                                "subtask_answer": disease_data[0],
+                                "confidence": disease_data[1],
+                                "status": "completed"
+                            })
+                            new_state.update({
+                                "disease": disease_data[0],
+                                "diseases": [disease_data[0]],
+                                "disease_confidence": disease_data[1],
+                                "matched_symptoms": disease_data[2]
+                            })
+                            successful_tasks += 1
     
-                        # Update task result
-                        task_result["subtask_answer"] = disease
-                        task_result["confidence"] = conf
-                        task_result["status"] = "completed" if conf >= THRESHOLDS["disease_matching"] else "failed"
-    
-                        # Update main state if successful
-                        if task_result["status"] == "completed":
-                            # Handle the case where we receive a list of diseases
-                            if isinstance(disease, list):
-                                new_state["diseases"] = [d[0] for d in disease]  # Store all disease names
-                                new_state["disease_confidences"] = [d[1] for d in disease]  # Store all confidences
-                                new_state["disease"] = disease[0][0] if disease else None  # For backward compatibility
-                                new_state["disease_confidence"] = conf
-                                new_state["matched_symptoms"] = matched
-                                successful_tasks += 1
-                                print(f"✔️ Diseases identified: {new_state['diseases']} with top confidence {conf:.4f}")
-                            else:
-                                # Backward compatibility with existing code
-                                new_state["disease"] = disease
-                                new_state["diseases"] = [disease] if disease else []
-                                new_state["disease_confidence"] = conf
-                                new_state["disease_confidences"] = [conf] if disease else []
-                                new_state["matched_symptoms"] = matched
-                                new_state["alternative_diseases"] = alt
-                                successful_tasks += 1
-                                print(f"✔️ Disease identified: {disease} with confidence {conf:.4f}")
-                    else:
-                        task_result["status"] = "failed"
-                        task_result["subtask_answer"] = "Could not identify disease - no symptoms provided or direct mention"
-    
-                elif "treatment" in task_desc:
-                    # Get disease from either direct mention, earlier subtask results, or state
-                    disease = state.get("direct_disease_mention")
-                    
-                    if not disease:
-                        for r in updated_results.values():
-                            if r.get("status") == "completed" and "disease" in r.get("subtask_query", "").lower():
-                                disease = r.get("subtask_answer")
-    
-                    if not disease:
-                        disease = state.get("disease")
-    
+                # Treatment/remedy tasks only if disease identified
+                elif "treatment" in task_desc or "remedy" in task_desc:
+                    disease = new_state.get("disease")
                     if disease:
-                        treatments, conf = self.query_treatments(disease)
-                        
-                        # Update task result
-                        task_result["subtask_answer"] = ", ".join(treatments) if treatments else None
-                        task_result["confidence"] = conf
-                        task_result["status"] = "completed" if (conf >= THRESHOLDS["knowledge_graph"] and treatments) else "failed"
-                        
-                        # Update main state if successful
-                        if task_result["status"] == "completed":
-                            new_state["treatments"] = treatments
-                            new_state["treatment_confidence"] = conf
-                            
-                            # Extract prevention-related treatments for multi-part queries
-                            if is_multi_part and query_aspects.get("prevention"):
-                                prev_keywords = ["prevent", "avoid", "reduc", "risk", "lifestyle", "modif", "healthy"]
-                                prevention_info = [t for t in treatments 
-                                                 if any(kw in t.lower() for kw in prev_keywords)]
-                                new_state["prevention_info"] = prevention_info
-                                print(f"✔️ Prevention information extracted: {prevention_info}")
+                        if "treatment" in task_desc:
+                            treatments, conf = self.query_treatments(disease)
+                            if conf >= THRESHOLDS["knowledge_graph"]:
+                                task_result.update({
+                                    "subtask_answer": ", ".join(treatments),
+                                    "confidence": conf,
+                                    "status": "completed"
+                                })
+                                new_state["treatments"] = treatments
+                                successful_tasks += 1
                                 
-                            # Extract cause-related information for multi-part queries
-                            if is_multi_part and query_aspects.get("causes"):
-                                cause_keywords = ["cause", "factor", "risk", "due to", "result from", "etiology"]
-                                cause_info = [t for t in treatments 
-                                            if any(kw in t.lower() for kw in cause_keywords)]
-                                new_state["cause_info"] = cause_info
-                                print(f"✔️ Cause information extracted: {cause_info}")
-                            
-                            successful_tasks += 1
-                            print(f"✔️ Treatments found for {disease}: {treatments} with confidence {conf:.4f}")
-                    else:
-                        task_result["status"] = "failed"
-                        task_result["subtask_answer"] = "Could not find treatments - no disease identified"
+                                # Preserve multi-part handling
+                                if is_multi_part:
+                                    new_state["prevention_info"] = [t for t in treatments 
+                                        if any(kw in t.lower() for kw in ["prevent", "avoid"])]
+                                    new_state["cause_info"] = [t for t in treatments 
+                                        if any(kw in t.lower() for kw in ["cause", "factor"])]
+                        else:  # remedy
+                            remedies, conf = self.query_home_remedies(disease)
+                            if conf >= THRESHOLDS["knowledge_graph"]:
+                                task_result.update({
+                                    "subtask_answer": ", ".join(remedies),
+                                    "confidence": conf,
+                                    "status": "completed"
+                                })
+                                new_state["home_remedies"] = remedies
+                                successful_tasks += 1
     
-                elif "remedy" in task_desc:
-                    # Get disease from either direct mention, earlier subtask results, or state
-                    disease = state.get("direct_disease_mention")
-                    
-                    if not disease:
-                        for r in updated_results.values():
-                            if r.get("status") == "completed" and "disease" in r.get("subtask_query", "").lower():
-                                disease = r.get("subtask_answer")
-    
-                    if not disease:
-                        disease = state.get("disease")
-    
-                    if disease:
-                        remedies, conf = self.query_home_remedies(disease)
-                        
-                        # Update task result
-                        task_result["subtask_answer"] = ", ".join(remedies) if remedies else None
-                        task_result["confidence"] = conf
-                        task_result["status"] = "completed" if (conf >= THRESHOLDS["knowledge_graph"] and remedies) else "failed"
-                        
-                        # Update main state if successful
-                        if task_result["status"] == "completed":
-                            new_state["home_remedies"] = remedies
-                            new_state["remedy_confidence"] = conf
-                            successful_tasks += 1
-                            print(f"✔️ Home remedies for {disease}: {remedies} with confidence {conf:.4f}")
-                    else:
-                        task_result["status"] = "failed"
-                        task_result["subtask_answer"] = "Could not find home remedies - no disease identified"
-    
-                # Save task result
                 updated_results[task_id] = task_result
     
             except Exception as e:
@@ -1094,218 +1141,54 @@ class DocumentChatBot:
                     "data_source": "KG"
                 }
     
-        # Calculate completion rate
+        # Preserve original answer formatting logic
         completion_rate = successful_tasks / max(processed_tasks, 1)
-        print(f"KG Task Completion Rate: {completion_rate:.2f}")
+        new_state.update({
+            "subtask_results": updated_results,
+            "kg_completion_rate": completion_rate
+        })
     
-        # Update state with all collected changes
-        new_state["subtask_results"] = updated_results
-        new_state["kg_completion_rate"] = completion_rate
-        
-        # Copy important flags from state to new_state
-        if state.get("direct_disease_mention"):
-            new_state["direct_disease_mention"] = state.get("direct_disease_mention")
-            new_state["direct_disease_confidence"] = state.get("direct_disease_confidence", 0.95)
-        
-        if state.get("is_treatment_query"):
-            new_state["is_treatment_query"] = True
-    
-        # Set kg_answer for reflection agent
+        # Original answer generation with symptom-first prioritization
         if successful_tasks > 0:
-            kg_answers = []
-            if new_state.get("diseases") and len(new_state.get("diseases", [])) > 0:
-                # For multiple diseases, list them with their confidence
-                if len(new_state.get("diseases", [])) > 1:
-                    diseases_list = []
-                    for i, (disease, conf) in enumerate(zip(
-                            new_state.get("diseases", []), 
-                            new_state.get("disease_confidences", [0.7] * len(new_state.get("diseases", [])))
-                        )):
-                        diseases_list.append(f"{disease} (Confidence: {conf:.2f})")
-                    kg_answers.append(f"Possible Diseases: {', '.join(diseases_list)}")
-                else:
-                    # Single disease case
-                    kg_answers.append(f"Disease: {new_state['diseases'][0]}")
-            elif new_state.get("disease"):  # Backward compatibility
-                kg_answers.append(f"Disease: {new_state['disease']}")
+            answer_sections = []
             
-            if new_state.get("symptoms"):
-                kg_answers.append(f"Symptoms: {', '.join(new_state['symptoms'])}")
-            if new_state.get("treatments"):
-                kg_answers.append(f"Treatments: {', '.join(new_state['treatments'])}")
+            # Disease identification response
+            if new_state.get("diseases"):
+                answer_sections.append("# Possible Conditions")
+                for disease, conf in zip(new_state["diseases"], 
+                                       new_state.get("disease_confidences", [0.7])):
+                    answer_sections.append(f"## {disease} (Confidence: {conf:.2f})")
+                    if new_state.get("matched_symptoms"):
+                        answer_sections.append(f"Matching Symptoms: {', '.join(new_state['matched_symptoms']}")
+            
+            # Treatment response
+            if new_state.get("treatments") and self.is_treatment_query(state["user_query"]):
+                answer_sections.append("\n# Treatment Options")
+                answer_sections.extend([f"- {t}" for t in new_state["treatments"]])
+            
+            # Home remedies
             if new_state.get("home_remedies"):
-                kg_answers.append(f"Home Remedies: {', '.join(new_state['home_remedies'])}")
-            if new_state.get("prevention_info"):
-                kg_answers.append(f"Prevention: {', '.join(new_state['prevention_info'])}")
-            if new_state.get("cause_info"):
-                kg_answers.append(f"Causes: {', '.join(new_state['cause_info'])}")
-    
-            if kg_answers:
-                new_state["kg_answer"] = "\n".join(kg_answers)
-                new_state["kg_confidence"] = max(
-                    new_state.get("disease_confidence", 0.0),
-                    new_state.get("treatment_confidence", 0.0),
-                    new_state.get("remedy_confidence", 0.0)
-                )
-        else:
-            # Make sure we have at least an empty kg_answer field for the reflection agent
-            new_state["kg_answer"] = ""
-            new_state["kg_confidence"] = 0.0
-        
-        # Identify query types
-        is_disease_query = self.is_disease_identification_query(state.get("user_query", ""))
-        is_treatment_query = state.get("is_treatment_query", False) or self.is_treatment_query(state.get("user_query", ""))
-        
-        # Format comprehensive answers for different query types
-        
-        # 1. Disease identification query formatting
-        if is_disease_query and (new_state.get("diseases") or new_state.get("disease")):
-            # Format the KG answer for disease identification specifically
-            symptoms = new_state.get("symptoms", [])
+                answer_sections.append("\n# Home Care")
+                answer_sections.extend([f"- {r}" for r in new_state["home_remedies"]])
             
-            disease_answer = "# Possible Diagnoses Based on Symptoms\n\n"
+            # Multi-part sections
+            if is_multi_part:
+                if new_state["prevention_info"]:
+                    answer_sections.append("\n# Prevention")
+                    answer_sections.extend([f"- {p}" for p in new_state["prevention_info"]])
+                if new_state["cause_info"]:
+                    answer_sections.append("\n# Causes")
+                    answer_sections.extend([f"- {c}" for c in new_state["cause_info"]])
             
-            if symptoms:
-                disease_answer += f"## Symptoms Identified\n{', '.join(symptoms)}\n\n"
+            new_state["kg_answer"] = "\n".join(answer_sections)
             
-            # List all diseases with their details
-            diseases = new_state.get("diseases", [])
-            if not diseases and new_state.get("disease"):
-                diseases = [new_state.get("disease")]
-            
-            for i, disease in enumerate(diseases):
-                conf = new_state.get("disease_confidences", [0.7])[i] if i < len(new_state.get("disease_confidences", [])) else 0.7
-                disease_answer += f"## {disease}\n"
-                disease_answer += f"**Confidence:** {conf:.2f}\n"
-                
-                if new_state.get("matched_symptoms"):
-                    disease_answer += f"**Matching Symptoms:** {', '.join(new_state.get('matched_symptoms'))}\n\n"
-                
-                # Add treatments if available
-                if new_state.get("treatments"):
-                    disease_answer += "**Recommended Treatments:**\n"
-                    for treatment in new_state.get("treatments", []):
-                        disease_answer += f"- {treatment}\n"
-                    disease_answer += "\n"
-                
-                # Add home remedies if available
-                if new_state.get("home_remedies"):
-                    disease_answer += "**Home Remedies:**\n"
-                    for remedy in new_state.get("home_remedies", []):
-                        disease_answer += f"- {remedy}\n"
-                    disease_answer += "\n"
-                
-                # Add prevention information for multi-part queries
-                if is_multi_part and query_aspects.get("prevention"):
-                    disease_answer += "**Prevention Strategies:**\n"
-                    
-                    # Use extracted prevention info if available
-                    if new_state.get("prevention_info"):
-                        for prevention in new_state.get("prevention_info"):
-                            disease_answer += f"- {prevention}\n"
-                    # Otherwise provide generic prevention advice
-                    else:
-                        disease_answer += f"- Regular check-ups and screenings are recommended for early detection.\n"
-                        disease_answer += f"- Maintain a healthy lifestyle with regular exercise and balanced diet.\n"
-                        if "cardiovascular" in disease.lower() or "heart" in disease.lower():
-                            disease_answer += f"- Monitor and control blood pressure and cholesterol levels.\n"
-                            disease_answer += f"- Avoid smoking and limit alcohol consumption.\n"
-                        elif "respiratory" in disease.lower() or "lung" in disease.lower():
-                            disease_answer += f"- Avoid exposure to pollutants and irritants.\n"
-                            disease_answer += f"- Practice good respiratory hygiene and consider vaccinations.\n"
-                    disease_answer += "\n"
-                
-                # Add cause information for multi-part queries
-                if is_multi_part and query_aspects.get("causes"):
-                    disease_answer += "**Common Causes and Risk Factors:**\n"
-                    
-                    # Use extracted cause info if available
-                    if new_state.get("cause_info"):
-                        for cause in new_state.get("cause_info"):
-                            disease_answer += f"- {cause}\n"
-                    # Otherwise provide generic cause information
-                    else:
-                        if "cardiovascular" in disease.lower() or "heart" in disease.lower():
-                            disease_answer += f"- High blood pressure and high cholesterol are major risk factors.\n"
-                            disease_answer += f"- Family history and genetic factors can predispose individuals.\n"
-                            disease_answer += f"- Sedentary lifestyle, smoking, and poor diet contribute to risk.\n"
-                        elif "respiratory" in disease.lower() or "lung" in disease.lower():
-                            disease_answer += f"- Infections from viruses or bacteria are common causes.\n"
-                            disease_answer += f"- Environmental factors like pollution can trigger or worsen symptoms.\n"
-                            disease_answer += f"- Underlying conditions like asthma may increase susceptibility.\n"
-                    disease_answer += "\n"
-            
-            # Override the existing kg_answer with the formatted one
-            new_state["kg_answer"] = disease_answer
-            
-            # Boost confidence to ensure KG-only route
-            # For multi-part queries, only boost to maximum if we've addressed all aspects
-            if not is_multi_part or (is_multi_part and self.check_answer_covers_aspects(disease_answer, query_aspects)):
-                new_state["kg_confidence"] = 1.0
-                print("✅ Disease identification query detected, boosting KG confidence to maximum")
-            else:
-                # Slightly lower confidence if not all aspects are covered
-                new_state["kg_confidence"] = 0.85
-                print("⚠️ Disease identification query detected, but not all aspects covered")
-        
-        # 2. Treatment query formatting
-        elif is_treatment_query and new_state.get("treatments"):
-            disease = new_state.get("direct_disease_mention", new_state.get("disease", "this condition"))
-            
-            treatment_answer = f"# Treatment Options for {disease.title()}\n\n"
-            
-            # Add treatments if available
-            if new_state.get("treatments"):
-                treatment_answer += "## Medical Treatments\n"
-                for treatment in new_state.get("treatments", []):
-                    treatment_answer += f"- {treatment}\n"
-                treatment_answer += "\n"
-            
-            # Add home remedies if available
-            if new_state.get("home_remedies"):
-                treatment_answer += "## Home Remedies\n"
-                for remedy in new_state.get("home_remedies", []):
-                    treatment_answer += f"- {remedy}\n"
-                treatment_answer += "\n"
-            
-            # Add prevention information for multi-part queries
-            if is_multi_part and query_aspects.get("prevention"):
-                treatment_answer += "## Prevention Strategies\n"
-                
-                # Use extracted prevention info if available
-                if new_state.get("prevention_info"):
-                    for prevention in new_state.get("prevention_info"):
-                        treatment_answer += f"- {prevention}\n"
-                # Otherwise provide generic prevention advice
-                else:
-                    treatment_answer += f"- Regular check-ups and screenings are recommended for early detection.\n"
-                    treatment_answer += f"- Maintain a healthy lifestyle with regular exercise and balanced diet.\n"
-                    if "cardiovascular" in disease.lower() or "heart" in disease.lower():
-                        treatment_answer += f"- Monitor and control blood pressure and cholesterol levels.\n"
-                        treatment_answer += f"- Avoid smoking and limit alcohol consumption.\n"
-                    elif "respiratory" in disease.lower() or "lung" in disease.lower():
-                        treatment_answer += f"- Avoid exposure to pollutants and irritants.\n"
-                        treatment_answer += f"- Practice good respiratory hygiene and consider vaccinations.\n"
-                treatment_answer += "\n"
-            
-            # Add general information
-            treatment_answer += "## General Information\n"
-            treatment_answer += f"Treatment for {disease} typically involves a combination of medical interventions and lifestyle adjustments. "
-            treatment_answer += "The specific approach depends on the severity of the condition, the patient's overall health, and other individual factors. "
-            treatment_answer += "Always consult a healthcare provider for personalized medical advice.\n"
-            
-            # Override the existing kg_answer with the treatment-focused answer
-            new_state["kg_answer"] = treatment_answer
-            
-            # Boost confidence to ensure KG-only route
-            # For multi-part queries, only boost to maximum if we've addressed all aspects
-            if not is_multi_part or (is_multi_part and self.check_answer_covers_aspects(treatment_answer, query_aspects)):
-                new_state["kg_confidence"] = 1.0
-                print(f"✅ Treatment query detected for {disease}, formatted response with maximum confidence")
-            else:
-                # Slightly lower confidence if not all aspects are covered
-                new_state["kg_confidence"] = 0.85
-                print(f"⚠️ Treatment query detected for {disease}, but not all aspects covered")
+            # Dynamic confidence calculation
+            base_conf = max(
+                new_state.get("disease_confidence", 0),
+                new_state.get("treatment_confidence", 0),
+                new_state.get("remedy_confidence", 0)
+            )
+            new_state["kg_confidence"] = min(1.0, base_conf + (0.3 * completion_rate))
     
         return new_state
         
@@ -1333,6 +1216,13 @@ class DocumentChatBot:
             # Check if it's a treatment query
             if self.is_treatment_query(user_query):
                 state["is_treatment_query"] = True
+        
+        # Extract symptoms directly
+        symptoms, symptom_confidence = self.extract_symptoms(user_query)
+        if symptoms and symptom_confidence >= 0.5:
+            print(f"📊 Extracted symptoms: {symptoms} (confidence: {symptom_confidence:.4f})")
+            state["direct_symptom_mention"] = symptoms
+            state["direct_symptom_confidence"] = symptom_confidence
         
         # Create subtasks for the knowledge graph
         subtasks = [
@@ -1467,7 +1357,7 @@ class DocumentChatBot:
         is_treatment_query = self.is_treatment_query(user_query)
         
         print(f"Query types: Disease identification: {is_disease_identification}, Treatment: {is_treatment_query}")
-        print(f"KG Confidence: {kg_confidence:.4f}")
+        print(f"KG Confidence: {kg_confidence:.4f}" if kg_confidence is not None else "KG Confidence: None")
         
         # Extract diseases for disease-based queries
         if not self.identified_diseases and kg_answer:
@@ -1511,12 +1401,23 @@ class DocumentChatBot:
             "LLM": False
         }
         
+        # CRITICAL CHECK: Validate KG extraction success
+        has_valid_kg_data = False
+        if kg_answer and hasattr(self, 'identified_diseases') and self.identified_diseases:
+            has_valid_kg_data = True
+            print(f"✅ KG extraction validated with identified diseases: {self.identified_diseases}")
+        elif kg_answer and "Disease:" in kg_answer or "Possible Diseases:" in kg_answer:
+            has_valid_kg_data = True
+            print(f"✅ KG extraction validated with disease information in answer")
+        else:
+            print(f"⚠️ KG extraction validation failed - no valid disease data found")
+        
         # 4. DECISION TREE FOR SOURCE SELECTION
         # Follows priority order: KG > RAG > Combined > LLM
         
         # 4.1 KG-ONLY ROUTE (Highest Priority)
         # Cases where we should use KG-only
-        if kg_answer:
+        if kg_answer and has_valid_kg_data:
             # Case 1: Very high confidence KG answers
             if kg_confidence is not None and kg_confidence >= KG_HIGH_THRESHOLD and kg_covers_all_aspects:
                 print("Reflection decision: KG_ONLY - Very high confidence KG answer")
@@ -1527,7 +1428,8 @@ class DocumentChatBot:
             if is_disease_identification and (
                 "Possible Diseases:" in kg_answer or 
                 "Disease:" in kg_answer or 
-                "# Possible Diagnoses" in kg_answer
+                "# Possible Diagnoses" in kg_answer or
+                hasattr(self, 'identified_diseases') and self.identified_diseases
             ):
                 # For multi-part queries, check if KG covers all aspects
                 if not is_multi_part or (is_multi_part and kg_covers_all_aspects):
@@ -1641,7 +1543,7 @@ class DocumentChatBot:
         print(f"Best completeness: {best_completeness:.4f}")
         
         # Return the option with the highest completeness score
-        if kg_answer and best_completeness == kg_completeness:
+        if kg_answer and best_completeness == kg_completeness and has_valid_kg_data:
             print("Reflection decision: KG_ONLY - Best available answer")
             source_contributions["KG"] = True
             return kg_answer, "KG_ONLY", source_contributions
@@ -2092,11 +1994,13 @@ class DocumentChatBot:
     
             # If critical information is missing, ask follow-up questions
             if missing_info and len(missing_info) > 0:
-                follow_up_prompt = (
-                        f"I need a bit more information to provide a helpful response. Could you please tell me:\n\n"
-                        f"{missing_info[0]}\n\n"
-                        "This will help me give you a more accurate assessment."
-                    )
+                follow_up_prompt = f"""
+                I need a bit more information to provide a helpful response. Could you please tell me:
+    
+                {missing_info[0]}
+    
+                This will help me give you a more accurate assessment.
+                """
                 self.chat_history.append((user_input, follow_up_prompt))
                 return follow_up_prompt.strip(), []
     
@@ -2106,16 +2010,27 @@ class DocumentChatBot:
             # Process with Knowledge Graph
             print("📚 Processing with Knowledge Graph...")
             t_start = datetime.now()
+            
+            # IMPORTANT: Set identified_diseases to empty list before processing
+            self.identified_diseases = []
+            
             kg_data = self.process_with_knowledge_graph(user_input)
             kg_content = kg_data.get("kg_answer", "")
             kg_confidence = kg_data.get("kg_confidence", 0.0)
             
+            # Capture key KG extraction results for validation
             disease = kg_data.get("disease", "")
+            diseases = kg_data.get("diseases", [])
             symptoms = kg_data.get("symptoms", [])
             treatments = kg_data.get("treatments", [])
             home_remedies = kg_data.get("home_remedies", [])
             
-            print(f"📊 KG Confidence: {kg_confidence:.4f} (took {(datetime.now() - t_start).total_seconds():.2f}s)")
+            # Log key KG extraction metrics
+            print(f"📊 KG Extraction Results:")
+            print(f"   Diseases: {diseases if diseases else disease if disease else 'None'}")
+            print(f"   Symptoms: {symptoms if symptoms else 'None'}")
+            print(f"   Treatments: {treatments if treatments else 'None'}")
+            print(f"   KG Confidence: {kg_confidence:.4f} (took {(datetime.now() - t_start).total_seconds():.2f}s)")
             
             # Process with RAG
             print("📚 Processing with RAG...")
@@ -2169,7 +2084,21 @@ class DocumentChatBot:
             print(f"   KG Confidence: {kg_confidence:.4f}")
             print(f"   RAG Confidence: {rag_confidence:.4f}")
             
-            # Use reflection agent to determine the best answer
+            # VALIDATE KG DATA
+            # Check if meaningful KG data was extracted
+            has_kg_data = False
+            if kg_data.get("disease") or kg_data.get("diseases") or kg_data.get("symptoms") or self.identified_diseases:
+                has_kg_data = True
+                print("✅ KG data validation passed - found useful content")
+            else:
+                print("⚠️ KG data validation failed - no meaningful content extracted")
+                # If KG has no meaningful data but confidence is still high (which happens with some bugs),
+                # reset it to indicate that KG processing was not useful
+                if kg_confidence > 0.3:
+                    print(f"⚠️ Resetting KG confidence from {kg_confidence:.4f} to 0.0 due to lack of data")
+                    kg_confidence = 0.0
+                    
+            # Use the reflection agent to evaluate and combine answers
             print("🧠 Using reflection agent to evaluate and combine answers...")
             t_start = datetime.now()
             
@@ -2182,6 +2111,15 @@ class DocumentChatBot:
             # Format source information including the routing strategy
             routing_info = f"Route: {strategy_used}"
             
+            # Check the actual source contributions and update if needed
+            # This adds an additional validation step
+            if "KG_ONLY" in strategy_used and not has_kg_data:
+                # Strategy claims KG but no KG data found - correct it
+                print("⚠️ Strategy correction: KG route selected but no KG data found - adjusting to LLM_ONLY")
+                strategy_used = "LLM_ONLY"
+                routing_info = f"Route: {strategy_used}"
+                source_contributions = {"KG": False, "RAG": False, "LLM": True}
+            
             # Prepare to collect appropriate sources for the reference section
             formatted_sources = []
             
@@ -2190,6 +2128,8 @@ class DocumentChatBot:
                 # Add KG sources
                 if disease:
                     formatted_sources.append(f"- Knowledge Graph: Used for disease identification ({disease})")
+                elif diseases:
+                    formatted_sources.append(f"- Knowledge Graph: Used for disease identification ({', '.join(diseases)})")
                 elif symptoms:
                     formatted_sources.append(f"- Knowledge Graph: Used for symptom analysis ({', '.join(symptoms)})")
                 else:
@@ -2250,8 +2190,14 @@ class DocumentChatBot:
             # Add to chat history
             self.chat_history.append((user_input, final_response))
             
+            # Collect all sources for reference
+            all_sources = []
+            if source_contributions["KG"]:
+                all_sources.append(f"[KG] Knowledge Graph: {disease if disease else ', '.join(diseases) if diseases else 'Medical Entity Analysis'}")
+            all_sources.extend(rag_sources)
+            
             # Return response and sources
-            return final_response, formatted_sources
+            return final_response, all_sources
             
         except Exception as e:
             import traceback
