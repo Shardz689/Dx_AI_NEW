@@ -61,10 +61,10 @@ logger.info("Starting application setup...")
 
 # Get environment variables with fallback to placeholder values
 # IMPORTANT: Replace 'YOUR_GEMINI_API_KEY' with your actual key or ensure .env is set
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyAifk9Gntw6eYfaZkLOsd9d1-TkfOR1el0")
-NEO4J_URI = os.getenv("NEO4J_URI", "neo4j+s://1b47920f.databases.neo4j.io")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY_PLACEHOLDER") # Use a clear placeholder
+NEO4J_URI = os.getenv("NEO4J_URI", "neo4j+s://YOUR_NEO4J_URI_PLACEHOLDER")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "eCqDfyhDcuGMLzbYfiqL6jsvjH3LIXr86xQGAEKmY8Y")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "YOUR_NEO4J_PASSWORD_PLACEHOLDER")
 
 # Check if placeholder values are being used and log warnings
 if GEMINI_API_KEY == "YOUR_GEMINI_API_KEY_PLACEHOLDER":
@@ -2840,11 +2840,7 @@ def main():
 
                  # Store the original query context returned by generate_response (or use the core query processed)
                  # This context is crucial for the *next* call to generate_response.
-                 if ui_data and "original_query" in ui_data:
-                    st.session_state.original_query_for_followup = ui_data["original_query"]
-                 else:
-                    logger.warning("LLM followup action flag set, but ui_data did not contain 'original_query'. Using current prompt as fallback context.")
-                    st.session_state.original_query_for_followup = prompt
+                 st.session_state.original_query_for_followup = ui_data.get("original_query", core_query_for_processing) if ui_data else core_query_for_processing
                  logger.info(f"Stored original_query_for_followup: '{st.session_state.original_query_for_followup[:50]}...'")
                  st.rerun() # Rerun to display the prompt message
 
