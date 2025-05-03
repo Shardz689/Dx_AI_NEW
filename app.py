@@ -2237,8 +2237,7 @@ def main():
                  # Store the original query so generate_response knows the *next* user input is a response to *this* query thread's prompt
                  # The 'original_query_for_followup' for the *next* turn should be the 'core_query_for_processing' of *this* turn
                  # which was passed as 'original_query_context' to generate_response.
-                 st.session_state.original_query_for_followup = core_query_for_processing # Store the query that *received* the prompt
-
+                 st.session_state.original_query_for_followup = current_user_text_input # Store the query that 
 
             elif action_flag == "final_answer":
                  # Add the final answer message to messages (it's the response_text)
