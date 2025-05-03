@@ -9,10 +9,9 @@ import numpy as np
 from datetime import datetime
 from typing import List, Tuple, Dict, Optional, Any
 import base64
-import logging
+import logging # Import the logging module
 from PIL import Image
 import io
-import random # Still used for dummy confidence scores in mock KG responses if real KG fails
 
 # Import Gemini API
 import google.generativeai as genai
@@ -56,11 +55,17 @@ THRESHOLDS = {
     "medical_relevance": 0.6 # Threshold for medical relevance check
 }
 
+# Configure logging
+# Log messages to the console where streamlit is run
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+
 # Load and convert the image to base64
 def get_image_as_base64(file_path):
     """Converts an image file to a base64 string."""
     if not os.path.exists(file_path):
-        print(f"Warning: Image file not found at {file_path}")
+        logger.warning(f"Image file not found at {file_path}")
         # Return a tiny valid base64 image as a fallback
         return "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
 
@@ -68,7 +73,7 @@ def get_image_as_base64(file_path):
         with open(file_path, "rb") as image_file:
             return base64.b64encode(image_file.read()).decode()
     except Exception as e:
-        print(f"Error encoding image {file_path} to base64: {e}")
+        logger.error(f"Error encoding image {file_path} to base64: {e}")
         # Return a tiny valid base64 image as a fallback
         return "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
 
@@ -84,15 +89,15 @@ def get_cached(key):
     """Get cached result if it exists"""
     key_str = json.dumps(key, sort_keys=True) # Use JSON dump for complex keys
     if key_str in CACHE:
-        # print(f"Cache hit for key: {key_str[:50]}...")
+        logger.debug(f"Cache hit for key: {key_str[:50]}...")
         return CACHE[key_str]
-    # print(f"Cache miss for key: {key_str[:50]}...")
+    logger.debug(f"Cache miss for key: {key_str[:50]}...")
     return None
 
 def set_cached(key, value):
     """Set cache for a key"""
     key_str = json.dumps(key, sort_keys=True)
-    # print(f"Setting cache for key: {key_str[:50]}...")
+    logger.debug(f"Setting cache for key: {key_str[:50]}...")
     CACHE[key_str] = value
     return value
 
@@ -112,6 +117,7 @@ known_diseases = ["hypertension", "type 2 diabetes mellitus", "respiratory infec
 # DocumentChatBot class
 class DocumentChatBot:
     def __init__(self):
+        logger.info("DocumentChatBot initializing...")
         self.qa_chain: Optional[ConversationalRetrievalChain] = None # Langchain QA chain
         self.vectordb: Optional[FAISS] = None # Langchain Vectorstore
         self.chat_history: List[Tuple[str, str]] = [] # Stores (user_msg, bot_msg) tuples for display and history
@@ -123,7 +129,7 @@ class DocumentChatBot:
         try:
             # Check for CUDA availability and set device
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
-            print(f"Initializing SentenceTransformer embeddings on device: {device}")
+            logger.info(f"Initializing SentenceTransformer embeddings on device: {device}")
             # Use HuggingFaceEmbeddings which wraps SentenceTransformer
             self.embedding_model = HuggingFaceEmbeddings(
                 model_name='sentence-transformers/all-MiniLM-L6-v2',
@@ -135,15 +141,15 @@ class DocumentChatBot:
             try:
                 test_embedding = self.embedding_model.embed_query("test query")
                 if test_embedding and len(test_embedding) > 0:
-                     print("Embedding model initialized and tested successfully.")
+                     logger.info("Embedding model initialized and tested successfully.")
                 else:
                     raise ValueError("Test embedding was empty.")
             except Exception as test_e:
-                 print(f"Warning: Embedding model test failed: {test_e}. Embedding model may not function correctly.")
+                 logger.warning(f"Embedding model test failed: {test_e}. Setting embedding_model to None.")
                  self.embedding_model = None # Set to None if test fails
 
         except Exception as e:
-            print(f"CRITICAL ERROR: Could not initialize embedding model: {e}")
+            logger.critical(f"CRITICAL ERROR: Could not initialize embedding model: {e}")
             self.embedding_model = None # Ensure it's None on failure
 
 
@@ -153,41 +159,44 @@ class DocumentChatBot:
         self.kg_driver = None
         self.kg_connection_ok = False
         self._init_kg_connection()
+        logger.info("DocumentChatBot initialization finished.")
 
 
     def _init_kg_connection(self):
         """Attempts to connect to the Neo4j database."""
+        logger.info("Attempting to connect to Neo4j...")
         try:
             # Use a small timeout for the connection test
             self.kg_driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH, connection_timeout=5.0)
             self.kg_driver.verify_connectivity()
-            print("Successfully connected to Neo4j.")
+            logger.info("Successfully connected to Neo4j.")
             self.kg_connection_ok = True
         except Exception as e:
-            print(f"Failed to connect to Neo4j at {NEO4J_URI}: {e}. KG features will be unavailable.")
+            logger.error(f"Failed to connect to Neo4j at {NEO4J_URI}: {e}. KG features will be unavailable.")
             self.kg_driver = None
             self.kg_connection_ok = False
 
 
     def create_vectordb(self):
             """Create vector database from hardcoded PDF documents."""
+            logger.info("Creating vector database...")
             pdf_files = [Path(pdf_file) for pdf_file in HARDCODED_PDF_FILES if Path(pdf_file).exists()]
 
             if not pdf_files:
-                print("No PDF files found. Cannot create vector database.")
+                logger.warning("No PDF files found. Cannot create vector database.")
                 return None, "No PDF files found at the specified paths. Cannot create vector database."
 
             loaders = []
             for pdf_file in pdf_files:
                 try:
                     loaders.append(PyPDFLoader(str(pdf_file)))
-                    # print(f"Loaded PDF loader for: {pdf_file}")
+                    # logger.debug(f"Loaded PDF loader for: {pdf_file}")
                 except Exception as e:
-                    print(f"Error creating loader for {pdf_file}: {e}")
+                    logger.error(f"Error creating loader for {pdf_file}: {e}")
                     # Continue with other files
 
             if not loaders:
-                 print("No valid PDF loaders could be created.")
+                 logger.warning("No valid PDF loaders could be created.")
                  return None, "No valid PDF loaders could be created."
 
             pages = []
@@ -195,14 +204,14 @@ class DocumentChatBot:
                 try:
                     loaded_pages = loader.load()
                     pages.extend(loaded_pages)
-                    print(f"Loaded {len(loaded_pages)} pages from {loader.file_path}.")
+                    logger.info(f"Loaded {len(loaded_pages)} pages from {loader.file_path}.")
                 except Exception as e:
-                    print(f"Error loading pages from PDF {loader.file_path}: {e}")
+                    logger.error(f"Error loading pages from PDF {loader.file_path}: {e}")
                     # Continue loading other files
 
 
             if not pages:
-                 print("No pages were loaded from the PDFs.")
+                 logger.warning("No pages were loaded from the PDFs.")
                  return None, "No pages were loaded from the PDFs."
 
             text_splitter = RecursiveCharacterTextSplitter(
@@ -210,25 +219,25 @@ class DocumentChatBot:
                 chunk_overlap=100 # Adjust overlap if needed
             )
             splits = text_splitter.split_documents(pages)
-            print(f"Split {len(pages)} pages into {len(splits)} chunks.")
+            logger.info(f"Split {len(pages)} pages into {len(splits)} chunks.")
 
             if not splits:
-                print("No text chunks were created from the PDF pages.")
+                logger.warning("No text chunks were created from the PDF pages.")
                 return None, "No text chunks were created from the PDF pages."
 
             # Use the initialized embedding model
             if self.embedding_model is None:
-                 print("Embedding model is not initialized. Cannot create vector database.")
+                 logger.warning("Embedding model is not initialized. Cannot create vector database.")
                  return None, "Embedding model is not initialized. Cannot create vector database."
 
             try:
-                print("Creating FAISS vectorstore from documents using the embedding model...")
+                logger.info("Creating FAISS vectorstore from documents using the embedding model...")
                 # Use the real FAISS
                 vectordb = FAISS.from_documents(splits, self.embedding_model)
-                print("FAISS vectorstore created.")
+                logger.info("FAISS vectorstore created.")
                 return vectordb, "Vector database created successfully."
             except Exception as e:
-                print(f"Error creating FAISS vector database: {e}")
+                logger.error(f"Error creating FAISS vector database: {e}")
                 return None, f"Failed to create vector database: {str(e)}"
 
 
@@ -243,7 +252,7 @@ class DocumentChatBot:
             return cached
 
         if self.llm is None:
-             print("Warning: LLM not initialized. Cannot perform medical relevance check reliably.")
+             logger.warning("LLM not initialized. Cannot perform medical relevance check reliably.")
              # Fallback if LLM is not available - simple keyword check
              medical_keywords = ["symptom", "disease", "health", "medical", "pain", "cough", "fever", "treatment", "diagnose", "sick", "doctor"]
              if any(keyword in query.lower() for keyword in medical_keywords):
@@ -286,7 +295,7 @@ class DocumentChatBot:
                     set_cached(cache_key, result)
                     return result
                 except json.JSONDecodeError:
-                    print("Warning: Could not parse medical relevance JSON from LLM response.")
+                    logger.warning("Could not parse medical relevance JSON from LLM response.")
                     # Fallback if JSON parsing fails
                     medical_keywords = ["symptom", "disease", "health", "medical", "pain", "cough", "fever", "treatment", "diagnose"]
                     if any(keyword in query.lower() for keyword in medical_keywords):
@@ -294,7 +303,7 @@ class DocumentChatBot:
                     return (False, "Fallback: JSON parsing failed and no keywords found")
 
         except Exception as e:
-            print(f"Error checking medical relevance: {e}")
+            logger.error(f"Error checking medical relevance: {e}")
             # Fallback if LLM call fails
             medical_keywords = ["symptom", "disease", "health", "medical", "pain", "cough", "fever", "treatment", "diagnose"]
             if any(keyword in query.lower() for keyword in medical_keywords):
@@ -306,6 +315,7 @@ class DocumentChatBot:
 
     def initialize_qa_chain(self):
         """Initialize the QA chain with Gemini Flash 1.5 and vector database."""
+        logger.info("Initializing QA chain...")
         # This method sets up self.llm, self.embedding_model, self.vectordb, and self.qa_chain
         # self.embedding_model is already initialized in __init__
         # self.kg_driver is initialized in __init__
@@ -316,12 +326,12 @@ class DocumentChatBot:
             llm_init_success = False
             llm_init_message = "LLM initialization skipped." # Default message
             if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY":
-                print("Gemini API key not set or invalid. LLM will not be initialized.")
+                logger.warning("Gemini API key not set or invalid. LLM will not be initialized.")
                 self.llm = None # Explicitly set LLM to None
                 llm_init_message = "Gemini API key not found or invalid."
             else:
                 try:
-                    print("Initializing Gemini Flash 1.5...")
+                    logger.info("Initializing Gemini Flash 1.5...")
                     self.llm = ChatGoogleGenerativeAI(
                         model="gemini-1.5-flash",
                         google_api_key=GEMINI_API_KEY,
@@ -334,21 +344,21 @@ class DocumentChatBot:
                     try:
                          test_response = self.llm.invoke("Hello, are you ready?")
                          if test_response.content:
-                             print(f"Gemini says: {test_response.content[:50]}...") # Print start of response
-                             print("Successfully connected to Gemini Flash 1.5")
+                             logger.info(f"Gemini says: {test_response.content[:50]}...") # Print start of response
+                             logger.info("Successfully connected to Gemini Flash 1.5")
                              llm_init_success = True
                              llm_init_message = "Gemini Flash 1.5 initialized."
                          else:
                             raise ValueError("LLM test response was empty.")
                     except Exception as test_e:
-                         print(f"Warning: Initial Gemini test failed: {test_e}. LLM may not be functional.")
+                         logger.warning(f"Initial Gemini test failed: {test_e}. LLM may not be functional.")
                          self.llm = None # Set back to None if test fails
                          llm_init_success = False
                          llm_init_message = f"Gemini LLM test failed: {test_e}"
 
 
                 except Exception as e:
-                    print(f"Failed to initialize Gemini Flash 1.5: {e}")
+                    logger.error(f"Failed to initialize Gemini Flash 1.5: {e}")
                     self.llm = None # Ensure LLM is None on failure
                     llm_init_success = False
                     llm_init_message = f"Failed to initialize Gemini Flash 1.5: {str(e)}"
@@ -358,16 +368,16 @@ class DocumentChatBot:
             # This uses the embedding model initialized in __init__
             vdb_message = "Vector database initialization skipped." # Default message
             if self.embedding_model is None:
-                 print("Embedding model not initialized. Cannot create vector database.")
+                 logger.warning("Embedding model not initialized. Cannot create vector database.")
                  self.vectordb = None
                  vdb_message = "Embedding model not initialized."
             else:
                  # Create the vector database
                  self.vectordb, vdb_message = self.create_vectordb()
                  if self.vectordb is None:
-                      print(f"Vector DB creation failed: {vdb_message}")
+                      logger.warning(f"Vector DB creation failed: {vdb_message}")
                  else:
-                      print("Vector database initialized.")
+                      logger.info("Vector database initialized.")
 
 
             # --- 3. Create Retrieval QA Chain ---
@@ -375,7 +385,7 @@ class DocumentChatBot:
             try:
                  # The real ConversationalRetrievalChain requires a functional LLM and a retriever from a vectorstore
                  if self.llm is not None and self.vectordb is not None:
-                      print("Creating Real Conversational Retrieval Chain.")
+                      logger.info("Creating Real Conversational Retrieval Chain.")
                       memory = ConversationBufferMemory(
                          memory_key="chat_history", # This key must match the chain's memory key
                          output_key='answer', # Output key from the chain
@@ -392,13 +402,13 @@ class DocumentChatBot:
                       )
                       chain_message = "Real Conversational Retrieval Chain initialized."
                  else:
-                      print("Cannot create real Retrieval Chain: LLM or Vector DB not initialized.")
+                      logger.warning("Cannot create real Retrieval Chain: LLM or Vector DB not initialized.")
                       self.qa_chain = None # Ensure qa_chain is None if creation fails
                       chain_message = "Retrieval chain requires both LLM and Vector DB."
 
 
             except Exception as e:
-                print(f"Failed to create Retrieval Chain: {e}")
+                logger.error(f"Failed to create Retrieval Chain: {e}")
                 # Set qa_chain to None to indicate failure
                 self.qa_chain = None
                 chain_message = f"Failed to create Retrieval Chain: {str(e)}"
@@ -420,16 +430,18 @@ class DocumentChatBot:
             if self.kg_connection_ok: status_parts.append("KG OK")
             else: status_parts.append("KG Failed")
 
-            overall_message = f"Initialization Status: {', '.join(status_parts)}. {message}"
+            overall_message = f"Initialization Status: {', '.join(status_parts)}. {message}" # Combine init messages
 
             # Return success status based on whether critical components are available for basic function
-            overall_success = self.llm is not None # Basic function needs LLM
-            # Add more conditions if RAG or KG are considered critical for *any* success
-            # overall_success = self.llm is not None and self.qa_chain is not None and self.kg_connection_ok
+            # Basic function requires LLM. RAG requires LLM+VDB+Chain. KG requires KG driver.
+            overall_success = self.llm is not None # Assume LLM is the minimal requirement for any useful response
 
+
+            logger.info(f"QA Chain Initialization Result: Success={overall_success}, Message='{overall_message}'")
             return overall_success, overall_message
 
         # If already initialized
+        logger.info("QA Chain is already initialized.")
         return True, "Chat assistant is already initialized."
 
 
@@ -437,7 +449,7 @@ class DocumentChatBot:
         """Generate text using Gemini Flash 1.5 (direct call, not part of QA chain), with fallback."""
         if self.llm is None:
             # Fallback if LLM wasn't initialized successfully
-            print("Warning: Real LLM not initialized, using simple string fallback for local_generate.")
+            logger.warning("Real LLM not initialized, using simple string fallback for local_generate.")
             # Provide a very basic, safe fallback
             return "I'm unable to generate a specific response right now due to a technical issue. Please try again later."
 
@@ -448,9 +460,10 @@ class DocumentChatBot:
             # Use .invoke as it's standard in ChatModels
             response = self.llm.invoke(prompt, config=generation_config)
             # Access the content attribute for the generated text
+            logger.debug(f"LLM local_generate successful. Response length: {len(response.content)}")
             return response.content
         except Exception as e:
-            print(f"Error generating with Gemini (local_generate): {e}")
+            logger.error(f"Error generating with Gemini (local_generate): {e}")
             # Fallback to a simple string on error during generation
             return f"Error generating response: {str(e)}. Please try again."
 
@@ -461,10 +474,10 @@ class DocumentChatBot:
         and potentially focusing on missing elements identified.
         This is the core synthesis step in Path 2.
         """
-        print("➡️ LLM Synthesis Step")
+        logger.info("➡️ LLM Synthesis Step")
 
         if self.llm is None:
-            print("Warning: LLM not initialized. Skipping synthesis.")
+            logger.warning("LLM not initialized. Skipping synthesis.")
             # Fallback response if LLM isn't available
             return "I'm currently unable to synthesize a complete answer. Please consult a healthcare professional."
 
@@ -477,11 +490,11 @@ class DocumentChatBot:
         # Provide the initial combined answer draft to the LLM
         if initial_combined_answer and initial_combined_answer.strip() != "" and initial_combined_answer.strip() != "I found limited specific information regarding your query from my knowledge sources.":
              prompt_parts.append(f"Available Information Draft (from Knowledge Graph and Document Search):\n---\n{initial_combined_answer}\n---")
-        # If no draft (e.g., error in combination or empty), provide raw content if available and meaningful
+        # If no draft (e.g., error in combination), provide raw content if available and meaningful
         elif kg_content or rag_content:
-            if kg_content and kg_content.strip() != "" and kg_content.strip() != "Knowledge Graph did not find specific relevant information on treatments or remedies.":
+            if kg_content and kg_content.strip() != "" and kg_content.strip() != "Knowledge Graph information on treatments or remedies is unavailable." and kg_content.strip() != "Knowledge Graph did not find specific relevant information on treatments or remedies.":
                  prompt_parts.append(f"Available Medical Knowledge Graph Information:\n---\n{kg_content}\n---")
-            if rag_content and rag_content.strip() != "" and rag_content.strip() != "An error occurred while retrieving information from documents." and rag_content.strip() != "Document search is currently unavailable.":
+            if rag_content and rag_content.strip() != "" and rag_content.strip() != "An error occurred while retrieving information from documents." and rag_content.strip() != "Document search is currently unavailable." and rag_content.strip() != "I searched my documents but couldn't find specific information for that.":
                  prompt_parts.append(f"Available Retrieved Information (Document Search):\n---\n{rag_content}\n---")
             else:
                  # If raw sources were also unhelpful, explicitly state limited info
@@ -519,7 +532,7 @@ class DocumentChatBot:
             response = self.local_generate(prompt, max_tokens=1200) # Adjusted max_tokens
             return response.strip()
         except Exception as e:
-            print(f"Error generating LLM synthesis answer: {e}")
+            logger.error(f"Error generating LLM synthesis answer: {e}")
             return "I'm sorry, but I couldn't synthesize a complete answer to your question at this moment. Please consult a healthcare professional for personalized advice."
 
 
@@ -527,9 +540,9 @@ class DocumentChatBot:
         """
         Uses LLM to format the KG-identified disease and symptoms into a user-friendly statement for Path 1.
         """
-        print("➡️ LLM Formatting KG Diagnosis Step")
+        logger.info("➡️ LLM Formatting KG Diagnosis Step")
         if self.llm is None:
-            print("Warning: LLM not initialized. Skipping KG diagnosis formatting.")
+            logger.warning("LLM not initialized. Skipping KG diagnosis formatting.")
             fallback_symptoms_str = ", ".join(symptoms_list) if symptoms_list else "your symptoms"
             return f"Based on {fallback_symptoms_str}, **{disease_name}** is a potential condition. This is not a definitive diagnosis and requires professional medical evaluation."
 
@@ -556,7 +569,7 @@ class DocumentChatBot:
             response = self.local_generate(prompt, max_tokens=300) # Keep it concise
             return response.strip()
         except Exception as e:
-            print(f"Error formatting KG diagnosis with LLM: {e}")
+            logger.error(f"Error formatting KG diagnosis with LLM: {e}")
             # Fallback manual format if LLM call fails
             fallback_symptoms_str = ", ".join(symptoms_list) if symptoms_list else "your symptoms"
             return f"Based on {fallback_symptoms_str}, **{disease_name}** is a potential condition. This is not a definitive diagnosis and requires professional medical evaluation."
@@ -568,10 +581,10 @@ class DocumentChatBot:
             relative to the USER QUERY, using conversation context.
             This is used for the FINAL completeness check in Path 2.
             """
-            print("🕵️ Identifying missing info from generated answer (Final Check)...")
+            logger.info("🕵️ Identifying missing info from generated answer (Final Check)...")
 
             if self.llm is None:
-                 print("Warning: LLM not initialized. Cannot perform final completeness check.")
+                 logger.warning("LLM not initialized. Cannot perform final completeness check.")
                  return (False, []) # Cannot check completeness without LLM
 
 
@@ -628,7 +641,7 @@ class DocumentChatBot:
             try:
                 # Use local_generate for this LLM call
                 response = self.local_generate(MISSING_INFO_PROMPT, max_tokens=500).strip()
-                # print("\nRaw Missing Info Evaluation (Final Check):\n", response)
+                # logger.debug(f"\nRaw Missing Info Evaluation (Final Check):\n{response}")
 
                 # Parse JSON format response
                 json_match = re.search(r'\{[\s\S]*\}', response)
@@ -639,7 +652,7 @@ class DocumentChatBot:
                         needs_followup_llm = data.get("needs_followup", False) # LLM's opinion
 
                         if not needs_followup_llm:
-                            print("✅ Final Answer appears sufficient (LLM opinion).")
+                            logger.info("✅ Final Answer appears sufficient (LLM opinion).")
                             result = (False, [])
                             # No caching here due to dependence on conversation state and generated answer
                             return result
@@ -648,22 +661,21 @@ class DocumentChatBot:
                         reasoning = data.get("reasoning", "Answer is missing critical information.")
 
                         if missing_info_questions:
-                            print(f"❓ Critical Information Missing from Final Answer (LLM opinion): {missing_info_questions}")
-                            print(f"Reasoning: {reasoning}")
+                            logger.info(f"❓ Critical Information Missing from Final Answer (LLM opinion): {missing_info_questions}. Reasoning: {reasoning}")
                             result = (True, missing_info_questions)
                             return result
                         else:
                              # needs_followup was true from LLM, but no question provided.
-                             print("⚠️ LLM indicated missing info but provided no question. Treating as sufficient.")
+                             logger.warning("⚠️ LLM indicated missing info but provided no question. Treating as sufficient.")
                              result = (False, []) # We cannot ask a follow-up if no question is provided
                              return result
 
                     except json.JSONDecodeError:
-                        print("⚠️ Could not parse final missing info JSON from LLM response.")
+                        logger.warning("Could not parse final missing info JSON from LLM response.")
                         # Fallback: Assume no critical info is missing if LLM JSON fails
                         return (False, [])
             except Exception as e:
-                print(f"⚠️ Error identifying final missing information: {e}")
+                logger.error(f"Error identifying final missing information: {e}")
                 # Fallback: Assume no critical info is missing if LLM call fails
                 return (False, [])
 
@@ -675,7 +687,7 @@ class DocumentChatBot:
         Returns a dictionary of KG results.
         Updated to return symptom associations for the UI step.
         """
-        print("📚 Knowledge Graph Agent Initiated")
+        logger.info("📚 Knowledge Graph Agent Initiated")
 
         kg_results: Dict[str, Any] = {
             "extracted_symptoms": all_symptoms, # Symptoms used for KG query
@@ -691,11 +703,11 @@ class DocumentChatBot:
                  "symptoms_list": all_symptoms,
                  "confidence": 0.0
             },
-            "kg_content_other": "Knowledge Graph information on treatments or remedies is unavailable.", # Default message
+            "kg_content_other": "Medical Knowledge Graph information on treatments or remedies is unavailable.", # Default message
         }
 
         if not self.kg_connection_ok or self.kg_driver is None:
-             print("📚 KG Agent: Connection not OK. Skipping KG queries.")
+             logger.warning("📚 KG Agent: Connection not OK. Skipping KG queries.")
              kg_results["kg_content_other"] = "Medical Knowledge Graph is currently unavailable."
              # KG results remain empty/default
              return kg_results
@@ -704,7 +716,7 @@ class DocumentChatBot:
             with self.kg_driver.session() as session:
                 # Task 1: Identify Diseases from Symptoms
                 if all_symptoms:
-                    print(f"📚 KG Task: Identify Diseases from symptoms: {all_symptoms}")
+                    logger.info(f"📚 KG Task: Identify Diseases from symptoms: {all_symptoms}")
                     # query_disease_from_symptoms now uses the session to run queries
                     # It returns the list of dicts
                     disease_data_from_kg: List[Dict[str, Any]] = self._query_disease_from_symptoms_with_session(session, all_symptoms)
@@ -721,26 +733,26 @@ class DocumentChatBot:
                         # Use matched symptoms from KG result (should be in KG's case)
                         kg_results["kg_matched_symptoms"] = top_disease_record.get("MatchedSymptoms", [])
 
-                        print(f"✔️ Diseases Identified: {[(d['Disease'], d['Confidence']) for d in disease_data_from_kg]} (Top Confidence: {top_disease_conf:.4f})")
+                        logger.info(f"✔️ Diseases Identified: {[(d['Disease'], d['Confidence']) for d in disease_data_from_kg]} (Top Confidence: {top_disease_conf:.4f})")
 
                         # Task 2 & 3: Find Treatments/Remedies (if a primary disease was identified with decent confidence)
                         # Query treatments/remedies for the TOP identified disease
                         if top_disease_conf >= THRESHOLDS.get("knowledge_graph_general", 0.6): # Use a general threshold for finding related info
-                            print(f"📚 KG Tasks: Find Treatments & Remedies for {top_disease_name}")
+                            logger.info(f"📚 KG Tasks: Find Treatments & Remedies for {top_disease_name}")
 
                             kg_treatments, kg_treatment_confidence = self._query_treatments_with_session(session, top_disease_name)
                             kg_results["kg_treatments"] = kg_treatments
                             kg_results["kg_treatment_confidence"] = kg_treatment_confidence
-                            print(f"✔️ Treatments found: {kg_treatments} (Confidence: {kg_treatment_confidence:.4f})")
+                            logger.info(f"✔️ Treatments found: {kg_treatments} (Confidence: {kg_treatment_confidence:.4f})")
 
                             kg_remedies, kg_remedy_confidence = self._query_home_remedies_with_session(session, top_disease_name)
                             kg_results["kg_home_remedies"] = kg_remedies
                             kg_results["kg_remedy_confidence"] = kg_remedy_confidence
-                            print(f"✔️ Home Remedies found: {kg_remedies} (Confidence: {kg_remedy_confidence:.4f})")
+                            logger.info(f"✔️ Home Remedies found: {kg_remedies} (Confidence: {kg_remedy_confidence:.4f})")
                         else:
-                            print("📚 KG Tasks: Treatments/Remedies skipped - Top disease confidence below threshold.")
+                            logger.info("📚 KG Tasks: Treatments/Remedies skipped - Top disease confidence below threshold.")
                 else:
-                     print("📚 KG Task: Identify Diseases skipped - No symptoms provided.")
+                     logger.info("📚 KG Task: Identify Diseases skipped - No symptoms provided.")
 
 
                 # Prepare data needed for the LLM formatting step if Path 1 is chosen
@@ -771,14 +783,14 @@ class DocumentChatBot:
                 kg_results["kg_content_other"] = "\n".join(other_parts).strip()
                 # Only set default message if no treatments *or* remedies were actually found
                 if not kg_results["kg_content_other"] and not kg_results["kg_treatments"] and not kg_results["kg_home_remedies"]:
-                    kg_results["kg_content_other"] = "Knowledge Graph did not find specific relevant information on treatments or remedies."
+                    kg_results["kg_content_other"] = "Medical Knowledge Graph did not find specific relevant information on treatments or remedies."
 
 
-                print("📚 Knowledge Graph Agent Finished")
+                logger.info("📚 Knowledge Graph Agent Finished successfully.")
                 return kg_results
 
         except Exception as e:
-            print(f"⚠️ Error within KG Agent: {e}")
+            logger.error(f"⚠️ Error within KG Agent: {e}", exc_info=True) # Log traceback
             # Populate with error/empty info on failure
             kg_results["kg_content_diagnosis_data_for_llm"] = {
                  "disease_name": "an unidentifiable condition",
@@ -801,7 +813,7 @@ class DocumentChatBot:
          cache_key = {"type": "disease_matching_v2", "symptoms": tuple(sorted([s.lower() for s in symptoms]))} # Cache lowercase sorted symptoms
          cached = get_cached(cache_key)
          if cached:
-             # print("🧠 Using cached disease match (v2).")
+             logger.debug("🧠 Using cached disease match (v2).")
              return cached
 
          cypher_query = """
@@ -817,7 +829,7 @@ class DocumentChatBot:
          // Calculate confidence based on input symptoms matching KG symptoms for the disease
          WITH d.Name AS Disease, matched_symptoms_from_input, all_disease_symptoms_in_kg,
               CASE WHEN total_disease_symptoms_count = 0 THEN 0
-                   ELSE matching_symptoms_count * 1.0 / total_disease_symptoms_count
+                   ELSE matching_symptoms_count * 1.0 / total_disease_symptom_count
               END AS confidence_score
          WHERE matching_symptoms_count > 0 // Only return diseases with at least one matching symptom from input
          RETURN Disease, confidence_score AS Confidence, matched_symptoms_from_input AS MatchedSymptoms, all_disease_symptoms_in_kg AS AllDiseaseSymptomsKG
@@ -839,12 +851,12 @@ class DocumentChatBot:
                    for rec in records
               ]
 
-              # print(f"🦠 Executed KG Disease Query, found {len(disease_data)} results.")
+              logger.debug(f"🦠 Executed KG Disease Query, found {len(disease_data)} results.")
               set_cached(cache_key, disease_data)
               return disease_data
 
          except Exception as e:
-              print(f"⚠️ Error executing KG query for diseases: {e}")
+              logger.error(f"⚠️ Error executing KG query for diseases: {e}")
               return [] # Return empty list on failure
 
 
@@ -856,7 +868,7 @@ class DocumentChatBot:
          cache_key = {"type": "treatment_query_kg", "disease": disease.lower()}
          cached = get_cached(cache_key)
          if cached:
-             # print("🧠 Using cached KG treatments.")
+             logger.debug("🧠 Using cached KG treatments.")
              return cached
 
          cypher_query = """
@@ -883,12 +895,12 @@ class DocumentChatBot:
                    treatments_list = [t[0] for t in treatments]
                    avg_confidence = sum(t[1] for t in treatments) / len(treatments) if treatments else 0.0
 
-              # print(f"💊 Executed KG Treatment Query for {disease}, found {len(treatments_list)} treatments.")
+              logger.debug(f"💊 Executed KG Treatment Query for {disease}, found {len(treatments_list)} treatments.")
               result = (treatments_list, avg_confidence)
               set_cached(cache_key, result)
               return result
          except Exception as e:
-              print(f"⚠️ Error executing KG query for treatments: {e}")
+              logger.error(f"⚠️ Error executing KG query for treatments: {e}")
               return [], 0.0
 
 
@@ -900,7 +912,7 @@ class DocumentChatBot:
          cache_key = {"type": "remedy_query_kg", "disease": disease.lower()}
          cached = get_cached(cache_key)
          if cached:
-             # print("🧠 Using cached KG home remedies.")
+             logger.debug("🧠 Using cached KG home remedies.")
              return cached
 
          cypher_query = """
@@ -927,14 +939,13 @@ class DocumentChatBot:
                  remedies_list = [r[0] for r in remedies]
                  avg_confidence = sum(r[1] for r in remedies) / len(remedies) if remedies else 0.0
 
-             # print(f"🏡 Executed KG Remedy Query for {disease}, found {len(remedies_list)} remedies.")
+             logger.debug(f"🏡 Executed KG Remedy Query for {disease}, found {len(remedies_list)} remedies.")
              result = (remedies_list, avg_confidence)
              set_cached(cache_key, result)
              return result
          except Exception as e:
-             print(f"⚠️ Error executing KG query for home remedies: {e}")
-
-         return [], 0.0
+             logger.error(f"⚠️ Error executing KG query for home remedies: {e}")
+             return [], 0.0
 
 
     def extract_symptoms(self, user_query: str) -> Tuple[List[str], float]:
@@ -942,11 +953,11 @@ class DocumentChatBot:
         cache_key = {"type": "symptom_extraction", "query": user_query}
         cached = get_cached(cache_key)
         if cached:
-            print("🧠 Using cached symptom extraction.")
+            logger.debug("🧠 Using cached symptom extraction.")
             return cached
 
         if self.llm is None:
-             print("Warning: LLM not initialized. Cannot perform LLM symptom extraction.")
+             logger.warning("LLM not initialized. Cannot perform LLM symptom extraction.")
              # Fallback to keyword extraction if LLM is not available
              fallback_symptoms = []
              common_symptom_keywords = ["fever", "cough", "headache", "sore throat", "nausea", "dizziness", "chest pain", "shortness of breath", "fatigue", "body aches", "runny nose", "congestion", "chills", "sweats", "joint pain", "muscle aches", "rash", "swelling", "pain", "ache", "burning", "itching", "numbness", "tingling", "diarrhea", "vomiting", "difficulty breathing", "difficulty swallowing"]
@@ -955,7 +966,7 @@ class DocumentChatBot:
                  if symptom in query_lower:
                      fallback_symptoms.append(symptom.capitalize()) # Capitalize for consistency
 
-             print(f"🔍 Fallback Extracted Symptoms (LLM failed): {fallback_symptoms} (confidence: 0.4)")
+             logger.info(f"🔍 Fallback Extracted Symptoms (LLM failed): {fallback_symptoms} (confidence: 0.4)")
              result = (fallback_symptoms, 0.4) # Low confidence for fallback
              set_cached(cache_key, result)
              return result
@@ -980,7 +991,7 @@ class DocumentChatBot:
         try:
             # Use local_generate for the LLM call
             response = self.local_generate(SYMPTOM_PROMPT, max_tokens=500).strip()
-            # print("\nRaw Symptom Extraction Response:\n", response)
+            # logger.debug(f"\nRaw Symptom Extraction Response:\n{response}")
 
             # Parse JSON format response with regex
             match = re.search(r"Extracted Symptoms:\s*(\[.*?\])", response, re.DOTALL)
@@ -999,15 +1010,15 @@ class DocumentChatBot:
                         llm_avg_confidence = 0.0
 
                     llm_symptoms = llm_symptoms_confident # Use the thresholded list
-                    # print(f"🔍 LLM Extracted Symptoms (confident): {llm_symptoms} (avg raw confidence: {llm_avg_confidence:.4f})")
+                    # logger.debug(f"🔍 LLM Extracted Symptoms (confident): {llm_symptoms} (avg raw confidence: {llm_avg_confidence:.4f})")
 
                 except json.JSONDecodeError:
-                    print("⚠️ Could not parse symptom JSON from LLM response")
+                    logger.warning("Could not parse symptom JSON from LLM response")
             else:
-                 print("⚠️ Could not find 'Extracted Symptoms: [...]: in LLM response.")
+                 logger.warning("Could not find 'Extracted Symptoms: [...]: in LLM response.")
 
         except Exception as e:
-            print(f"⚠️ Error in LLM symptom extraction: {e}")
+            logger.error(f"Error in LLM symptom extraction: {e}")
 
         # Fallback/Enhancement with Keyword Matching
         # If LLM extraction failed or returned nothing, use keyword matching as the sole result.
@@ -1025,7 +1036,7 @@ class DocumentChatBot:
              # LLM failed/found nothing, rely on keywords
              combined_symptoms = list(set(fallback_symptoms_from_keywords))
              final_confidence = 0.4 # Low confidence for keyword-only extraction
-             print(f"🔍 Keyword Fallback Extracted Symptoms: {combined_symptoms} (confidence: {final_confidence:.4f})")
+             logger.info(f"🔍 Keyword Fallback Extracted Symptoms: {combined_symptoms} (confidence: {final_confidence:.4f})")
         else:
              # Combine LLM symptoms (confident ones) and keyword symptoms
              combined_symptoms = list(set(llm_symptoms + fallback_symptoms_from_keywords)) # Use set to deduplicate
@@ -1038,7 +1049,7 @@ class DocumentChatBot:
              else: # Nothing found
                  final_confidence = 0.0
 
-             print(f"🔍 Final Extracted Symptoms: {combined_symptoms} (confidence: {final_confidence:.4f})")
+             logger.info(f"🔍 Final Extracted Symptoms: {combined_symptoms} (confidence: {final_confidence:.4f})")
 
 
         result = (combined_symptoms, final_confidence)
@@ -1093,7 +1104,7 @@ class DocumentChatBot:
                            is_personal_symptoms_query or \
                            is_symptom_list_query
 
-        # print(f"Is disease identification query ('{query}')? {is_disease_query}")
+        # logger.debug(f"Is disease identification query ('{query}')? {is_disease_query}")
         return is_disease_query
 
 
@@ -1104,7 +1115,7 @@ class DocumentChatBot:
         This is a simpler check than identify_missing_info.
         Used *before* LLM synthesis to tell the LLM what to focus on.
         """
-        # print("🔍 Identifying high-level potential missing elements for LLM focus...")
+        logger.debug("🔍 Identifying high-level potential missing elements for LLM focus...")
         missing = set()
         query_lower = user_query.lower()
         answer_lower = generated_answer.lower()
@@ -1115,18 +1126,18 @@ class DocumentChatBot:
 
         if is_personal_symptom_query:
             # Look for common ways duration is mentioned in the answer
-            duration_keywords_in_answer = [" duration", "days", "weeks", "months", "how long", "since"] # Added 'since'
+            duration_keywords_in_answer = [" duration", "days", "weeks", "months", "how long", "since", "for X time"] # Added 'since'
             if not any(kw in answer_lower for kw in duration_keywords_in_answer):
                 missing.add("duration")
 
             # Look for common ways severity is mentioned in the answer
-            severity_keywords_in_answer = [" severity", "mild", "moderate", "severe", "how severe", "intense", "level of pain"] # Added more terms
+            severity_keywords_in_answer = [" severity", "mild", "moderate", "severe", "how severe", "intense", "level of pain", "scale of"] # Added more terms
             if not any(kw in answer_lower for kw in severity_keywords_in_answer):
                  missing.add("severity")
 
             # Add other checks as needed, e.g., "location", "frequency", "relieved by", "worsened by", "onset"
             # Location: "where", "location", "area", "left side", "right side", specific body parts mentioned in query?
-            location_keywords_in_answer = [" location", "where", "area", "on the left", "on the right", "in the chest", "in the abdomen"] # Example
+            location_keywords_in_answer = [" location", "where", "area", "on the left", "on the right", "in the chest", "in the abdomen", "radiating"] # Example
             # Only add location if the query mentioned a potentially localized symptom like pain, rash etc.
             if any(symptom in query_lower for symptom in ["pain", "ache", "rash", "swelling", "bruise", "tenderness"]):
                  if not any(kw in answer_lower for kw in location_keywords_in_answer):
@@ -1149,13 +1160,13 @@ class DocumentChatBot:
 
         # This is a heuristic, not a definitive check like identify_missing_info
         missing_list = list(missing)
-        # print(f"Identified potential missing elements (for LLM focus): {missing_list}")
+        # logger.debug(f"Identified potential missing elements (for LLM focus): {missing_list}")
         return missing_list
 
 
     def combine_initial_answer_draft(self, kg_diagnosis_component: Optional[str], kg_content_other: str, rag_content: str) -> str:
          """Combines the Path 1 KG diagnosis component (if any), other KG content, and RAG content."""
-         print("Merging KG (diagnosis & other) and RAG results into initial draft...")
+         logger.info("Merging KG (diagnosis & other) and RAG results into initial draft...")
          combined_parts: List[str] = []
 
          # Add KG diagnosis component if generated
@@ -1163,7 +1174,7 @@ class DocumentChatBot:
               combined_parts.append(kg_diagnosis_component.strip())
 
          # Add other KG content (treatments/remedies) if found and is not the default empty message
-         if kg_content_other and kg_content_other.strip() != "" and kg_content_other.strip() != "Knowledge Graph information on treatments or remedies is unavailable." and kg_content_other.strip() != "Knowledge Graph did not find specific relevant information on treatments or remedies.":
+         if kg_content_other and kg_content_other.strip() != "" and kg_content_other.strip() != "Medical Knowledge Graph information on treatments or remedies is unavailable." and kg_content_other.strip() != "Knowledge Graph did not find specific relevant information on treatments or remedies.":
               # Add other KG content (treatments/remedies), separate if diagnosis is present
               if combined_parts:
                    combined_parts.append("\n\n" + kg_content_other.strip())
@@ -1184,7 +1195,7 @@ class DocumentChatBot:
 
 
          initial_combined_answer = "\n".join(combined_parts).strip()
-         # print("Initial combined answer draft created.")
+         logger.debug("Initial combined answer draft created.")
          return initial_combined_answer
 
 
@@ -1213,11 +1224,11 @@ class DocumentChatBot:
             - action_flag (str): Indicates what the UI should do ("final_answer", "llm_followup_prompt", "symptom_ui_prompt", "none").
             - ui_data (Optional[Dict]): Additional data needed by the UI if action_flag requires it (e.g., symptom options).
         """
-        print(f"\n--- Generating Response for Input: '{user_input}' ---")
-        print(f"   Confirmed symptoms from UI: {confirmed_symptoms}")
-        print(f"   Original query if follow-up: '{original_query_if_followup}'")
-        print(f"   Current followup_context: {self.followup_context}")
-        print(f"   Current chat_history length: {len(self.chat_history)}")
+        logger.info(f"--- Generating Response for Input: '{user_input}' ---")
+        logger.info(f"   Confirmed symptoms from UI: {confirmed_symptoms}")
+        logger.info(f"   Original query if follow-up: '{original_query_if_followup}'")
+        logger.info(f"   Current followup_context: {self.followup_context}")
+        logger.info(f"   Current chat_history length: {len(self.chat_history)}")
 
 
         # Determine the core query being processed in this turn
@@ -1225,31 +1236,30 @@ class DocumentChatBot:
         # If original_query_if_followup is provided (and confirmed_symptoms is None), the "real" query is the one that triggered the LLM prompt.
         # Otherwise, the current user_input is the start of a new thread.
         core_query_for_processing = original_query_if_followup if original_query_if_followup else user_input
-        print(f"   Core query for processing logic: '{core_query_for_processing}'")
+        logger.info(f"   Core query for processing logic: '{core_query_for_processing}'")
 
         if not core_query_for_processing.strip() and confirmed_symptoms is None:
-             print("Empty core query and no confirmed symptoms. Skipping.")
+             logger.info("Empty core query and no confirmed symptoms. Skipping.")
              return "", [], "none", None # No action needed for empty input
 
 
         # --- Initialization Check ---
-        # Check if *critical* components are missing. LLM and VectorDB are needed for full RAG/Synthesis.
-        # KG might use a dummy driver, so it's less critical for init *failure* but impacts results.
-        # If LLM or VectorDB is None, we cannot proceed with Path 2 synthesis or RAG.
-        # Re-attempt initialization if needed
-        if self.llm is None or self.qa_chain is None: # Check if LLM or RAG chain failed
-            print("Chatbot is not fully initialized. Attempting initialization...")
+        # Check if *critical* components are missing. LLM is needed for basic function. RAG needs LLM + VDB + Chain. KG needs KG driver.
+        # Re-attempt initialization if LLM or RAG chain is None
+        if self.llm is None or self.qa_chain is None or not self.kg_connection_ok:
+            logger.info("Chatbot is not fully initialized. Attempting re-initialization...")
             success, message = self.initialize_qa_chain() # Re-attempt initialization
             if not success:
                 error_message = f"Error processing request: Assistant failed to initialize fully ({message}). Some features may be unavailable. Please check your configuration and try again later."
                 self.log_orchestration_decision(core_query_for_processing, f"SELECTED_STRATEGY: INIT_ERROR\nREASONING: Re-initialization failed: {message}", 0.0, 0.0)
-                # Check if at least LLM is available for basic response
                 if self.llm is None:
-                     return error_message, [], "final_answer", None # No LLM for any response
+                     # If LLM is still none after re-attempt, we cannot do anything useful
+                     logger.critical("LLM is still not initialized after re-attempt. Cannot generate any response.")
+                     return error_message, [], "final_answer", None
                 else:
-                    # If LLM is available, let the synthesis step handle the limited info scenario
-                    print("Initialization partially successful (LLM available). Proceeding with limited features.")
-                    # continue processing below
+                    # If LLM is available but RAG/KG failed, proceed with limited features
+                    logger.warning("Initialization partially successful (LLM available). Proceeding with limited features (No RAG or KG).")
+                    # Continue processing below, but RAG/KG calls will gracefully handle missing components
 
 
         # --- Step 0.1: Handle User Response to Prior LLM Follow-up ---
@@ -1257,7 +1267,7 @@ class DocumentChatBot:
         # This is indicated by `original_query_if_followup` being present AND `self.followup_context["round"] == 1`.
         is_response_to_llm_followup = original_query_if_followup is not None and self.followup_context["round"] == 1
         if is_response_to_llm_followup:
-             print(f"Detected response to LLM follow-up (round {self.followup_context['round']}). Processing '{user_input}' in context of '{original_query_if_followup}'.")
+             logger.info(f"Detected response to LLM follow-up (round {self.followup_context['round']}). Processing '{user_input}' in context of '{original_query_if_followup}'.")
              # The `core_query_for_processing` is already set to `original_query_if_followup` correctly.
              # The user_input (the response) will be implicitly included in the RAG history due to Langchain memory.
 
@@ -1270,14 +1280,14 @@ class DocumentChatBot:
         symptom_confidence = 0.0
 
         if is_response_to_llm_followup:
-            print(f"Extracting symptoms from LLM follow-up response: '{user_input}'")
+            logger.info(f"Extracting symptoms from LLM follow-up response: '{user_input}'")
             extracted_symptoms_from_response, response_conf = self.extract_symptoms(user_input)
             all_symptoms = list(set(extracted_symptoms_from_response + extracted_symptoms_from_core_query))
             symptom_confidence = max(response_conf, extracted_conf_core) # Simple confidence merge
-            print(f"Combined symptoms from response and original query: {all_symptoms}")
+            logger.info(f"Combined symptoms from response and original query: {all_symptoms}")
 
         elif confirmed_symptoms is not None:
-            print(f"Using symptoms from UI confirmation: {confirmed_symptoms}")
+            logger.info(f"Using symptoms from UI confirmation: {confirmed_symptoms}")
             # Extract symptoms from the current input text as well, just in case user added more
             extracted_symptoms_from_input, extracted_conf_input = self.extract_symptoms(user_input)
             all_symptoms = list(set(extracted_symptoms_from_input + confirmed_symptoms)) # Combine and deduplicate
@@ -1288,11 +1298,11 @@ class DocumentChatBot:
         else: # Standard initial input
             all_symptoms = extracted_symptoms_from_core_query
             symptom_confidence = extracted_conf_core
-            print(f"Extracted symptoms from input: {all_symptoms}")
+            logger.info(f"Extracted symptoms from input: {all_symptoms}")
 
         # --- Step 3: KG Processing ---
         # Run KG agent with all available symptoms
-        print("📚 Processing with Knowledge Graph...")
+        logger.info("📚 Processing with Knowledge Graph...")
         t_start_kg = datetime.now()
         # Pass the core query as context to KG agent if needed internally (optional)
         kg_data = self.knowledge_graph_agent(core_query_for_processing, all_symptoms)
@@ -1300,7 +1310,7 @@ class DocumentChatBot:
         kg_diagnosis_data_for_llm = kg_data.get("kg_content_diagnosis_data_for_llm") # Data for LLM Path 1 formatting
         kg_content_other = kg_data.get("kg_content_other", "") # Treatments/Remedies
 
-        print(f"📊 KG Top Disease Confidence: {top_disease_confidence:.4f} (took {(datetime.now() - t_start_kg).total_seconds():.2f}s)")
+        logger.info(f"📊 KG Top Disease Confidence: {top_disease_confidence:.4f} (took {(datetime.now() - t_start_kg).total_seconds():.2f}s)")
 
         # --- Step 4: Path 1 - Diagnosis Focus & Symptom Follow-up UI (Decision Point 1) ---
         is_disease_query = self.is_disease_identification_query(core_query_for_processing)
@@ -1314,15 +1324,17 @@ class DocumentChatBot:
         # 5. KG returned potential disease-symptom associations for the UI step (`identified_diseases_data` has 'AllDiseaseSymptomsKG' for top diseases).
         # 6. We haven't asked the single LLM follow-up yet (round == 0).
         # 7. LLM is initialized (needed to process the UI response effectively later).
+        # 8. KG connection is OK (otherwise we can't get relevant symptom options from KG).
         if is_disease_query and \
            kg_found_diseases and \
            top_disease_confidence < THRESHOLDS["disease_symptom_followup_threshold"] and \
            confirmed_symptoms is None and \
            any(d.get("AllDiseaseSymptomsKG") for d in kg_data.get("identified_diseases_data", [])[:5]) and \
            self.followup_context["round"] == 0 and \
-           self.llm is not None: # Symptom UI requires LLM is available for processing the response
+           self.llm is not None and \
+           self.kg_connection_ok: # Symptom UI requires KG is available
 
-            print(f"❓ Disease query ('{core_query_for_processing}') with low KG confidence ({top_disease_confidence:.4f}). Triggering Symptom Follow-up UI.")
+            logger.info(f"❓ Disease query ('{core_query_for_processing}') with low KG confidence ({top_disease_confidence:.4f}). Triggering Symptom Follow-up UI.")
             # Prepare data for the UI checklist
             symptom_options_for_ui: Dict[str, List[str]] = {}
             # Get symptoms associated with top N diseases (e.g., top 3-5) for the UI
@@ -1362,46 +1374,49 @@ class DocumentChatBot:
         is_high_conf_kg_diagnosis = is_disease_query and kg_found_diseases and top_disease_confidence >= THRESHOLDS["disease_symptom_followup_threshold"]
         is_post_symptom_confirmation = confirmed_symptoms is not None # Flag indicates user completed the UI step
 
-        if (is_high_conf_kg_diagnosis or is_post_symptom_confirmation) and kg_diagnosis_data_for_llm and self.llm is not None: # LLM needed for formatting
-             print(f"✅ Path 1: High confidence KG diagnosis ({top_disease_confidence:.4f}) OR received symptom confirmation. Formatting KG diagnosis answer.")
+        if (is_high_conf_kg_diagnosis or is_post_symptom_confirmation) and kg_diagnosis_data_for_llm:
+            if self.llm is not None: # LLM needed for formatting
+                 logger.info(f"✅ Path 1: High confidence KG diagnosis ({top_disease_confidence:.4f}) OR received symptom confirmation. Formatting KG diagnosis answer with LLM.")
 
-             # Use LLM to format the KG diagnosis into a user-friendly statement
-             # Pass all available symptoms (extracted + confirmed) to the formatter for phrasing
-             path1_kg_diagnosis_component = self.format_kg_diagnosis_with_llm(
-                  kg_diagnosis_data_for_llm["disease_name"],
-                  all_symptoms, # Use the combined list of symptoms for phrasing
-                  kg_diagnosis_data_for_llm["confidence"]
-              )
+                 # Use LLM to format the KG diagnosis into a user-friendly statement
+                 # Pass all available symptoms (extracted + confirmed) to the formatter for phrasing
+                 path1_kg_diagnosis_component = self.format_kg_diagnosis_with_llm(
+                      kg_diagnosis_data_for_llm["disease_name"],
+                      all_symptoms, # Use the combined list of symptoms for phrasing
+                      kg_diagnosis_data_for_llm["confidence"]
+                  )
 
-             # Log decision for the KG Diagnosis component (internal log)
-             print(f"   --- KG Diagnosis Component Generated ---")
-             # self.log_orchestration_decision(...) # Primary log is at the end
-        elif (is_high_conf_kg_diagnosis or is_post_symptom_confirmation) and kg_diagnosis_data_for_llm:
-             # Fallback to manual formatting if LLM is not available but KG found data
-             print("⚠️ LLM not available for formatting KG diagnosis. Using manual format.")
-             disease_name = kg_diagnosis_data_for_llm["disease_name"]
-             symptoms_str = ", ".join(all_symptoms) if all_symptoms else "your symptoms"
-             path1_kg_diagnosis_component = f"Based on {symptoms_str}, **{disease_name}** is a potential condition. This is not a definitive diagnosis and requires professional medical evaluation."
+                 # Log decision for the KG Diagnosis component (internal log)
+                 logger.info(f"   --- KG Diagnosis Component Generated ---")
+
+            else:
+                 # Fallback to manual formatting if LLM is not available but KG found data
+                 logger.warning("⚠️ LLM not available for formatting KG diagnosis. Using manual format.")
+                 disease_name = kg_diagnosis_data_for_llm["disease_name"]
+                 symptoms_str = ", ".join(all_symptoms) if all_symptoms else "your symptoms"
+                 path1_kg_diagnosis_component = f"Based on {symptoms_str}, **{disease_name}** is a potential condition. This is not a definitive diagnosis and requires professional medical evaluation."
+
         elif (is_high_conf_kg_diagnosis or is_post_symptom_confirmation):
              # KG found no diseases even after potential confirmation, provide a statement
-             print("⚠️ KG found no diseases even after symptom input. Proceeding to Path 2 without specific KG diagnosis component.")
+             logger.info("⚠️ KG found no diseases even after symptom input. Proceeding to Path 2 without specific KG diagnosis component.")
              path1_kg_diagnosis_component = "Based on the symptoms provided, I couldn't find a specific medical condition matching them in my knowledge base."
 
 
         # --- Step 6: Path 2 - RAG Processing ---
         # This step is reached if Path 1 Symptom UI was not triggered, or if Path 1 Diagnosis resulted in a component.
-        print("📚 Processing with RAG...")
+        logger.info("📚 Processing with RAG...")
         t_start_rag = datetime.now()
 
         rag_content = ""
         rag_source_docs = []
         rag_confidence = 0.0
 
-        if self.qa_chain is not None: # Only attempt RAG if the chain initialized
+        # Only attempt RAG if both the LLM and QA Chain (which includes VectorDB/Embeddings) are initialized
+        if self.llm is not None and self.qa_chain is not None:
             try:
                  # The qa_chain handles chat history internally via its memory
                  # Pass the core_query_for_processing to the RAG chain
-                 print(f"Invoking RAG chain with question: {core_query_for_processing}")
+                 logger.info(f"Invoking RAG chain with question: {core_query_for_processing}")
                  rag_response = self.qa_chain.invoke({"question": core_query_for_processing})
 
                  rag_content = rag_response.get("answer", "").strip()
@@ -1417,17 +1432,17 @@ class DocumentChatBot:
                       rag_confidence = 0.3 + min(len(rag_source_docs), 5) / 5.0 * 0.4
 
 
-                 print(f"📊 RAG Confidence: {rag_confidence:.4f} (took {(datetime.now() - t_start_rag).total_seconds():.2f}s)")
+                 logger.info(f"📊 RAG Confidence: {rag_confidence:.4f} (took {(datetime.now() - t_start_rag).total_seconds():.2f}s)")
 
             except Exception as e:
-                 print(f"⚠️ Error during RAG processing: {e}")
+                 logger.error(f"⚠️ Error during RAG processing: {e}", exc_info=True) # Log traceback
                  rag_content = "An error occurred while retrieving information from documents."
                  rag_source_docs = []
                  rag_confidence = 0.0
                  # Note: The RAG chain might fail if the LLM fails during the synthesis step *within* the chain.
                  # This is one reason why the LLM is critical.
         else:
-             print("Warning: RAG chain not initialized. Skipping RAG processing.")
+             logger.warning("Warning: RAG chain (or necessary components) not initialized. Skipping RAG processing.")
              rag_content = "Document search is currently unavailable." # Indicate RAG skipped
 
 
@@ -1444,7 +1459,7 @@ class DocumentChatBot:
 
 
         # --- Step 9: LLM Synthesis ---
-        print("➡️ Initiating LLM Synthesis Step...")
+        logger.info("➡️ Initiating LLM Synthesis Step...")
         llm_synthesized_answer = ""
         if self.llm is not None: # Only attempt synthesis if LLM is available
             # Provide the initial combined answer draft and the original query to the synthesis LLM
@@ -1454,14 +1469,14 @@ class DocumentChatBot:
                 missing_elements=missing_elements_for_llm # Tell LLM to focus on these
             ).strip()
         else:
-            print("Warning: LLM not initialized. Skipping synthesis. Using initial combined answer directly.")
+            logger.warning("LLM not initialized. Skipping synthesis. Using initial combined answer directly.")
             llm_synthesized_answer = initial_combined_answer.strip() # Use draft directly as fallback
 
         final_core_answer = llm_synthesized_answer # The LLM synthesis (or draft) is the core final answer
 
 
         # --- Step 10: Final Reflection Check for LLM Follow-up (Decision Point 2) ---
-        print("🧠 Initiating Final Reflection Check (for LLM Follow-up)...")
+        logger.info("🧠 Initiating Final Reflection Check (for LLM Follow-up)...")
         # Check completeness of the LLM-synthesized answer against the original query
         # Do NOT check if the LLM itself failed or if we are already processing a response to an LLM follow-up
         needs_final_followup_llm_opinion = False
@@ -1472,15 +1487,15 @@ class DocumentChatBot:
                  core_query_for_processing, final_core_answer, self.chat_history # Pass current chat history state
             )
         else:
-             print("Skipping final reflection check (LLM not available or currently processing follow-up response).")
+             logger.info("Skipping final reflection check (LLM not available or currently processing follow-up response).")
 
 
         # --- Step 11: Final LLM Follow-up Decision / Return Final Answer ---
         # Decide if the ONE allowed LLM follow-up should be asked now.
         # Trigger if LLM *thinks* a follow-up is needed AND we haven't asked it yet (round == 0).
-        # Also ensure there's actually a question to ask.
+        # Also ensure there's actually a question to ask AND LLM is available to phrase the prompt.
         if needs_final_followup_llm_opinion and self.followup_context["round"] == 0 and missing_questions_list and self.llm is not None:
-             print("❓ Final Reflection indicates missing critical info, asking the one allowed LLM follow-up.")
+             logger.info("❓ Final Reflection indicates missing critical info, asking the one allowed LLM follow-up.")
              # Construct the final LLM follow-up prompt (using the question from identify_missing_info)
              follow_up_question_text = missing_questions_list[0] # Use the first question recommended
 
@@ -1501,10 +1516,11 @@ class DocumentChatBot:
 
              # Return prompt text and action flag
              # We don't add this to chat history here. Let the UI manage adding the user's message and this prompt.
+             logger.info("Returning LLM Follow-up prompt.")
              return llm_follow_up_prompt_text.strip(), [], "llm_followup_prompt", None
 
         else:
-            print("✅ Final Reflection indicates answer is sufficient or single LLM follow-up already asked.")
+            logger.info("✅ Final Reflection indicates answer is sufficient or single LLM follow-up already asked.")
             # This is the end of the processing path, return the final answer.
 
             # Collect all sources (RAG docs + KG mentions)
@@ -1514,14 +1530,25 @@ class DocumentChatBot:
                     if hasattr(doc, "metadata") and "source" in doc.metadata:
                         source_name = doc.metadata["source"]
                         page_num = doc.metadata.get("page", "N/A")
-                        all_sources.append(f"[Source: {source_name}{f', Page {page_num}' if page_num != 'N/A' else ''}]")
+                        # Include a snippet if available, but prioritize clean source string
+                        source_snippet = doc.page_content[:100].replace('\n', ' ') + '...' if doc.page_content else ''
+                        all_sources.append(f"[Source: {source_name}{f', Page {page_num}' if page_num != 'N/A' else ''}] {source_snippet}".strip())
                     # Else: Unknown source, could add a generic "[Source: Document]" if desired
 
 
-            # Add KG source mentions if KG contributed specific sections
-            # Only include KG source if diseases were found *or* treatments/remedies were found AND KG connection was ok
+            # Add KG source mentions if KG contributed specific sections and KG connection was ok
             if self.kg_connection_ok and (kg_data.get("identified_diseases_data") or kg_data.get("kg_treatments") or kg_data.get("kg_home_remedies")):
-                 all_sources.append(f"[Source: Medical Knowledge Graph]")
+                 # Check which KG components actually had data to mention
+                 kg_parts_mentioned = []
+                 if kg_data.get("identified_diseases_data"): kg_parts_mentioned.append("Diagnosis Data")
+                 if kg_data.get("kg_treatments"): kg_parts_mentioned.append("Treatment Data")
+                 if kg_data.get("kg_home_remedies"): kg_parts_mentioned.append("Home Remedy Data")
+
+                 if kg_parts_mentioned:
+                    all_sources.append(f"[Source: Medical Knowledge Graph ({', '.join(kg_parts_mentioned)})]")
+                 else:
+                    # Fallback just mention KG if connection ok but no specific data extracted
+                     all_sources.append(f"[Source: Medical Knowledge Graph]")
 
 
             # Deduplicate and clean up source strings for final display
@@ -1573,7 +1600,7 @@ class DocumentChatBot:
             # Use the user_input (what the user *actually* typed this turn) and the final formatted response
             self.chat_history.append((user_input, final_response_text.strip()))
 
-
+            logger.info("Returning Final Answer.")
             # Return response text, sources list, and action flag
             source_strings_for_display = all_sources_unique # Use the cleaned unique list
             return final_response_text.strip(), source_strings_for_display, "final_answer", None
@@ -1606,7 +1633,7 @@ class DocumentChatBot:
                 writer.writerow(metrics)
 
         except Exception as e:
-            print(f"⚠️ Error logging response metrics: {e}")
+            logger.error(f"⚠️ Error logging response metrics: {e}")
 
     def log_orchestration_decision(self, query, orchestration_result, kg_confidence, rag_confidence):
         """
@@ -1645,12 +1672,12 @@ class DocumentChatBot:
             }
 
             # Print logging information
-            print(f"📊 Orchestration Decision:")
-            print(f"   Query: {log_entry['query']}")
-            print(f"   Strategy: {strategy}")
-            print(f"   KG Confidence: {kg_confidence:.4f}")
-            print(f"   RAG Confidence: {rag_confidence:.4f}")
-            print(f"   Reasoning: {reasoning}")
+            logger.info(f"📊 Orchestration Decision:")
+            logger.info(f"   Query: {log_entry['query']}")
+            logger.info(f"   Strategy: {strategy}")
+            logger.info(f"   KG Confidence: {kg_confidence:.4f}")
+            logger.info(f"   RAG Confidence: {rag_confidence:.4f}")
+            logger.info(f"   Reasoning: {reasoning}")
 
             # Save to CSV file for analysis
             log_file = "orchestration_log.csv"
@@ -1668,13 +1695,13 @@ class DocumentChatBot:
             return strategy
 
         except Exception as e:
-            print(f"⚠️ Error logging orchestration decision: {e}")
+            logger.error(f"⚠️ Error logging orchestration decision: {e}")
             return "ERROR"
 
 
     def reset_conversation(self):
       """Reset the conversation history and follow-up context"""
-      print("🔄 Resetting conversation.")
+      logger.info("🔄 Resetting conversation.")
       self.chat_history = []
       self.followup_context = {"round": 0} # Reset round counter
       # Reset Streamlit session state variables from the UI if they are managed externally
@@ -1690,18 +1717,21 @@ def display_symptom_checklist(symptom_options: Dict[str, List[str]], original_qu
     st.subheader("Confirm Your Symptoms")
     st.info(f"Based on your query: '{original_query}' and initial analysis, please confirm the symptoms you are experiencing from the list below to help narrow down possibilities.")
 
-    # Use a unique key for the form based on the original query and potentially a timestamp
+    # Use a unique key for the form based on the original query and a timestamp
     # This ensures a new form is rendered if the query changes or if the process is retried
-    # Use a more robust key combining hash and timestamp
     form_key = f"symptom_confirmation_form_{abs(hash(original_query))}_{st.session_state.get('form_timestamp', datetime.now().timestamp())}"
 
     # Initialize a local set to store confirmed symptoms during the current form interaction
     # This set will be updated by the checkboxes
-    if f'{form_key}_confirmed_symptoms_local' not in st.session_state:
-        # Initialize with any symptoms already extracted from the original query for convenience
-        # This requires re-extracting or passing them from the bot
-        # For simplicity here, we initialize empty and user checks them
-        st.session_state[f'{form_key}_confirmed_symptoms_local'] = set()
+    # Use the specific form key for the local state variable
+    local_confirmed_symptoms_key = f'{form_key}_confirmed_symptoms_local'
+    if local_confirmed_symptoms_key not in st.session_state:
+        # Initialize empty for a new form
+        st.session_state[local_confirmed_symptoms_key] = set()
+        logger.debug(f"Initialized local symptom set for form {form_key}")
+    else:
+         logger.debug(f"Using existing local symptom set for form {form_key} with {len(st.session_state[local_confirmed_symptoms_key])} items.")
+
 
     with st.form(form_key):
         st.markdown("Please check all symptoms that apply to you:")
@@ -1721,13 +1751,13 @@ def display_symptom_checklist(symptom_options: Dict[str, List[str]], original_qu
                 checkbox_key = f"{form_key}_checkbox_{disease_label}_{symptom}"
                 # Check if this symptom was previously selected in this form render cycle
                 # This helps preserve selections if the app reruns while the form is displayed
-                initial_state = symptom.strip().lower() in st.session_state[f'{form_key}_confirmed_symptoms_local']
+                initial_state = symptom.strip().lower() in st.session_state[local_confirmed_symptoms_key]
                 if col.checkbox(symptom, key=checkbox_key, value=initial_state):
                      # Add to the local set on click
-                     st.session_state[f'{form_key}_confirmed_symptoms_local'].add(symptom.strip().lower())
+                     st.session_state[local_confirmed_symptoms_key].add(symptom.strip().lower())
                 else:
                      # Remove from the local set if unchecked
-                     st.session_state[f'{form_key}_confirmed_symptoms_local'].discard(symptom.strip().lower())
+                     st.session_state[local_confirmed_symptoms_key].discard(symptom.strip().lower())
 
 
         # Add an "Other" symptom input field
@@ -1735,7 +1765,7 @@ def display_symptom_checklist(symptom_options: Dict[str, List[str]], original_qu
         other_symptoms_text = st.text_input("Enter additional symptoms here (comma-separated)", key=f"{form_key}_other_symptoms_input")
         if other_symptoms_text:
              other_symptoms_list = [s.strip().lower() for s in other_symptoms_text.split(',') if s.strip()]
-             st.session_state[f'{form_key}_confirmed_symptoms_local'].update(other_symptoms_list)
+             st.session_state[local_confirmed_symptoms_key].update(other_symptoms_list)
 
 
         # When the form is submitted, save the *final* state of the local set
@@ -1744,9 +1774,9 @@ def display_symptom_checklist(symptom_options: Dict[str, List[str]], original_qu
         submit_button = st.form_submit_button("Confirm and Continue")
 
         if submit_button:
-            print(f"Symptom confirmation form submitted. Final confirmed symptoms: {st.session_state[f'{form_key}_confirmed_symptoms_local']}")
+            logger.info(f"Symptom confirmation form submitted. Final confirmed symptoms: {st.session_state[local_confirmed_symptoms_key]}")
             # Store the confirmed symptoms from the local set into the *main* session state variable
-            st.session_state.confirmed_symptoms_from_ui = list(st.session_state[f'{form_key}_confirmed_symptoms_local'])
+            st.session_state.confirmed_symptoms_from_ui = list(st.session_state[local_confirmed_symptoms_key])
 
             # Clear the UI state flags *after* submitting the form, but before the rerun.
             st.session_state.awaiting_symptom_confirmation = False
@@ -1778,7 +1808,7 @@ def main():
             layout="wide"
         )
     except Exception as e:
-        print(f"Error setting page config: {e}") # Handle potential errors
+        logger.error(f"Error setting page config: {e}") # Log potential errors
         st.set_page_config(page_title="DxAI-Agent", layout="wide") # Fallback config
 
     # Title and description
@@ -1792,7 +1822,7 @@ def main():
     except FileNotFoundError:
          st.markdown("# DxAI-Agent") # Fallback title if logo not found
     except Exception as e:
-         print(f"Error displaying logo: {e}")
+         logger.error(f"Error displaying logo: {e}")
          st.markdown("# DxAI-Agent")
 
 
@@ -1908,13 +1938,15 @@ def main():
                     is_prompt_or_ui = (
                         st.session_state.awaiting_symptom_confirmation or # If we are awaiting symptom UI, the *last* assistant message was the prompt
                         # Check if this message IS the follow-up prompt message based on the original query flag and round count
+                        # This check uses the *previous* user message (st.session_state.messages[i-1]) and the *current* bot message (msg_content)
                         (i > 0 and st.session_state.messages[i-1][0] == st.session_state.original_query_for_followup and st.session_state.chatbot.followup_context["round"] == 1) or
                         ("could you please" in msg_content.lower()) or
                         ("please tell me" in msg_content.lower()) or
                         ("please confirm" in msg_content.lower()) or
                         ("enter additional symptoms" in msg_content.lower()) or
                         ("additional details" in msg_content.lower()) or
-                        ("to help me answer better" in msg_content.lower())
+                        ("to help me answer better" in msg_content.lower()) or
+                        ("this will help me provide the most accurate information" in msg_content.lower()) # Add phrase from prompt
                     )
                     # Add feedback buttons if it doesn't look like a prompt/UI trigger
                     if not is_prompt_or_ui:
@@ -1922,8 +1954,8 @@ def main():
                         col = st.container()
                         with col:
                             # Add hash of content and index for unique keys per message
-                            feedback_key_up = f"thumbs_up_{i}_{hash(msg_content)}"
-                            feedback_key_down = f"thumbs_down_{i}_{hash(msg_content)}"
+                            feedback_key_up = f"thumbs_up_{i}_{abs(hash(msg_content))}"
+                            feedback_key_down = f"thumbs_down_{i}_{abs(hash(msg_content))}"
 
                             b1, b2 = st.columns([0.05, 0.95]) # Adjust column width
                             with b1:
