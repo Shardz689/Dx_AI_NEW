@@ -1518,7 +1518,7 @@ class DocumentChatBot:
             gap_filling_prompt_parts.append("---\n" + rag_raw_content + "\n---")
             
             reliable_sources_prompt_section_local = "\n\n**Additional Medically Reliable External Sources (Use for relevant information and link directly):**\n"
-            if RELIABLE_MEDICAL_SOURCES: # Use the global constant RELIABLE_MEDICAL_SOURCES
+            if globals().get('RELIABLE_MEDICAL_SOURCES'): # Use the global constant RELIABLE_MEDICAL_SOURCES
                 for src in RELIABLE_MEDICAL_SOURCES:
                     reliable_sources_prompt_section_local += f"- [{src['description']}]({src['url']}) (Relevant to: {', '.join(src['diseases'])})\n"
                 reliable_sources_prompt_section_local += "When using information related to the diseases listed with these links, include the corresponding clickable Markdown link directly in your answer where appropriate, e.g., `[Description](URL)`.\n"
@@ -1631,7 +1631,7 @@ class DocumentChatBot:
 
             # Add the reliable external sources to the list (always include if LLM synthesis happened?)
             # Let's include them if LLM was used for synthesis, as it had access to them.
-            if self.llm is not None:
+            if self.llm is not None and globals().get('RELIABLE_MEDICAL_SOURCES'):
                  for src in RELIABLE_MEDICAL_SOURCES:
                       # Add the source as a clickable link for the final reference list
                       all_sources.append(f"[{src['description']}]({src['url']})")
