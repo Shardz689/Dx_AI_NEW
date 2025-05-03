@@ -599,16 +599,21 @@ class DocumentChatBot:
 
         # Construct a more sophisticated Cypher query with confidence scoring
         cypher_query = f"""
-        MATCH (s:symptom)-[r:INDICATES]->(d:disease)
-        WHERE LOWER(s.Name) IN {str(symptoms)}
-        WITH d, COUNT(DISTINCT s) AS matching_symptoms,
-             COLLECT(DISTINCT LOWER(s.Name)) AS matched_symptoms
-        WITH d, matching_symptoms, matched_symptoms,
-             matching_symptoms * 1.0 / {max(1, len(symptoms))} AS confidence_score
-        WHERE confidence_score >= {THRESHOLDS["disease_matching"]}
-        RETURN d.Name AS Disease, confidence_score AS Confidence, matched_symptoms AS MatchedSymptoms
-        ORDER BY confidence_score DESC
-        LIMIT 3
+        WITH $symptoms AS input_symptoms
+MATCH (s:symptom)-[:INDICATES]->(d:disease)
+WHERE toLower(s.Name) IN input_symptoms
+WITH d, COLLECT(DISTINCT s) AS matched_symptom_nodes, COLLECT(DISTINCT toLower(s.Name)) AS matched_symptoms
+WITH d, matched_symptom_nodes, matched_symptoms, size(matched_symptom_nodes) AS matching_symptoms
+
+MATCH (d)<-[:INDICATES]-(all_s:symptom)
+WITH d, matched_symptoms, matching_symptoms, size(COLLECT(DISTINCT all_s)) AS total_disease_symptoms
+
+WITH d.Name AS Disease, matched_symptoms,
+     matching_symptoms * 1.0 / total_disease_symptoms AS confidence_score
+WHERE confidence_score >= $confidence_threshold
+RETURN Disease, confidence_score AS Confidence, matched_symptoms AS MatchedSymptoms
+ORDER BY confidence_score DESC
+LIMIT 3
         """
 
         try:
