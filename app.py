@@ -1319,6 +1319,7 @@ class DocumentChatBot:
         Generate response using orchestration based on Path 1 / Path 2 logic,
         prioritizing internal gap filling before user follow-up.
         """
+        global RELIABLE_MEDICAL_SOURCES # Declare intent to use the global variable
         logger.info(f"--- Generating Response for Input: '{user_input}' ---")
         logger.info(f"   Confirmed symptoms from UI: {confirmed_symptoms}")
         logger.info(f"   Original query if follow-up: '{original_query_if_followup}'")
