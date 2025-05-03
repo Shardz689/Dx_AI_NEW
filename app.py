@@ -459,8 +459,7 @@ class DocumentChatBot:
         # If already initialized
         logger.info("QA Chain is already initialized.")
         return True, "Chat assistant is already initialized."
-
-
+    
     def local_generate(self, prompt: str, max_tokens: int = 500) -> str:
         """Generate text using Gemini Flash 1.5 (direct call, not part of QA chain), with fallback."""
         if self.llm is None:
@@ -468,9 +467,15 @@ class DocumentChatBot:
             logger.warning("Real LLM not initialized, using simple string fallback for local_generate.")
             # Provide a very basic, safe fallback
             return "I'm unable to generate a specific response right now due to a technical issue. Please try again later."
-
         try:
-            response = self.llm.invoke(prompt, max_tokens=max_tokens, temperature=0.3, top_p=0.95, top_k=40) 
+            # For Gemini, use 'max_output_tokens' instead of 'max_tokens'
+            response = self.llm.invoke(
+                prompt, 
+                max_output_tokens=max_tokens,  # Changed from max_tokens
+                temperature=0.3, 
+                top_p=0.95, 
+                top_k=40
+            ) 
             # Access the content attribute for the generated text
             logger.debug(f"LLM local_generate successful. Response length: {len(response.content)}")
             return response.content
