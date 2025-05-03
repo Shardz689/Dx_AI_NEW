@@ -1515,7 +1515,14 @@ class DocumentChatBot:
             rag_raw_content = "\n---\n".join([doc.page_content for doc in rag_source_docs]) if rag_source_docs else "No relevant document content found."
             gap_filling_prompt_parts.append("\n**Available Raw Document Content (from search):**")
             gap_filling_prompt_parts.append("---\n" + rag_raw_content + "\n---")
-
+            
+            reliable_sources_prompt_section_local = "\n\n**Additional Medically Reliable External Sources (Use for relevant information and link directly):**\n"
+            if RELIABLE_MEDICAL_SOURCES: # Use the global constant RELIABLE_MEDICAL_SOURCES
+                for src in RELIABLE_MEDICAL_SOURCES:
+                    reliable_sources_prompt_section_local += f"- [{src['description']}]({src['url']}) (Relevant to: {', '.join(src['diseases'])})\n"
+                reliable_sources_prompt_section_local += "When using information related to the diseases listed with these links, include the corresponding clickable Markdown link directly in your answer where appropriate, e.g., `[Description](URL)`.\n"
+            else:
+                reliable_sources_prompt_section_local += "No specific external reliable sources are available in the current context.\n"
             # Add the external reliable sources
             gap_filling_prompt_parts.append("\n" + reliable_sources_prompt_section) # Use the same section content
 
