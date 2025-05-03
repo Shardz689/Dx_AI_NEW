@@ -2840,7 +2840,11 @@ def main():
 
                  # Store the original query context returned by generate_response (or use the core query processed)
                  # This context is crucial for the *next* call to generate_response.
-                 st.session_state.original_query_for_followup = ui_data.get("original_query", core_query_for_processing) if ui_data else core_query_for_processing
+                 if ui_data and "original_query" in ui_data:
+                    st.session_state.original_query_for_followup = ui_data["original_query"]
+                 else:
+                    logger.warning("LLM followup action flag set, but ui_data did not contain 'original_query'. Using current prompt as fallback context.")
+                    st.session_state.original_query_for_followup = prompt
                  logger.info(f"Stored original_query_for_followup: '{st.session_state.original_query_for_followup[:50]}...'")
                  st.rerun() # Rerun to display the prompt message
 
