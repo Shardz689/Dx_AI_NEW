@@ -485,18 +485,28 @@ class DocumentChatBot:
         Generates an LLM answer, synthesizing information from KG and RAG,
         and potentially focusing on missing elements identified.
         This is the core synthesis step in Path 2.
+        Instructs the LLM to include source mentions/links if available.
         """
-        logger.info("➡️ LLM Synthesis Step")
+        logger.info("➡️ LLM Synthesis Step (with source/link emphasis)")
 
         if self.llm is None:
             logger.warning("LLM not initialized. Skipping synthesis.")
-            # Fallback response if LLM isn't available
             return "I'm currently unable to synthesize a complete answer. Please consult a healthcare professional."
+
+        # Format reliable medical URLs for the prompt
+        reliable_sources_prompt_text = "Reliable Medical Information Sources:\n"
+        for topic, urls in RELIABLE_MEDICAL_URLS.items():
+            reliable_sources_prompt_text += f"- {topic}:\n"
+            for url in urls:
+                reliable_sources_prompt_text += f"  - {url}\n"
+        reliable_sources_prompt_text += "---\n"
 
 
         prompt_parts = [
             "You are a helpful medical AI assistant providing a comprehensive answer based on the provided information.",
-            f"USER QUESTION: {query}"
+            f"USER QUESTION: {query}",
+            "When providing information, **prioritize using the sources provided below** (Knowledge Graph, Document Search Draft, Raw KG/RAG content).",
+            reliable_sources_prompt_text, # Add the list of reliable URLs to the prompt
         ]
 
         # Provide the initial combined answer draft to the LLM
@@ -509,17 +519,15 @@ class DocumentChatBot:
             if rag_content and rag_content.strip() != "" and rag_content.strip() != "An error occurred while retrieving information from documents." and rag_content.strip() != "Document search is currently unavailable." and rag_content.strip() != "I searched my documents but couldn't find specific information for that.":
                  prompt_parts.append(f"Available Retrieved Information (Document Search):\n---\n{rag_content}\n---")
             else:
-                 # If raw sources were also unhelpful, explicitly state limited info
-                 prompt_parts.append("No specific relevant information was found from knowledge sources.")
+                 prompt_parts.append("No specific relevant information was found from the provided knowledge sources.")
         else:
-             # If no context or draft, rely on LLM's general knowledge but with caution
-             prompt_parts.append("No specific information was found from knowledge sources. Please provide a general, safe response based on your medical knowledge.")
+             # If no context or draft, rely on LLM's general knowledge but explicitly state sources are missing
+             prompt_parts.append("No specific information was found from the provided knowledge sources. Providing a general, safe response based on general medical knowledge.")
 
 
         prompt_parts.append("Please synthesize the available information (if any) to provide a helpful, accurate, and comprehensive answer to the USER QUESTION.")
 
         if missing_elements:
-            # Refine missing elements list to be more descriptive for the LLM prompt
             missing_desc = []
             if "duration" in missing_elements: missing_desc.append("how long the symptoms have lasted")
             if "severity" in missing_elements: missing_desc.append("how severe the symptoms are")
@@ -529,8 +537,21 @@ class DocumentChatBot:
             # Add other specific element descriptions
 
             if missing_desc:
-                focus_text = "Ensure your answer addresses the user's question and attempts to incorporate details related to: " + ", ".join(missing_desc)
+                focus_text = f"""
+                **IMMEDIATE PRIORITY:** Based on the *provided sources*, ensure your answer directly addresses and incorporates details related to the following crucial aspects that were potentially missing from the initial draft: {", ".join(missing_desc)}.
+                If the information needed to cover these aspects is present in the provided sources, prioritize including it in your synthesized answer and **mention the source you used for that specific piece of information** (e.g., [Source: Document X Page Y] or [Source: Knowledge Graph]). If the information is NOT present in the sources, state that the information is not available but still synthesize the rest of the answer based on what *is* available from the sources.
+                """
                 prompt_parts.append(focus_text)
+
+        # Add instructions about using the *provided list* of reliable sources and linking
+        prompt_parts.append("""
+        When discussing information related to diseases like Hypertension, Cardiovascular Disease, Obesity, Respiratory Infections, or Type 2 Diabetes Mellitus, or general health information:
+        1.  Prioritize using information from the "Available Medical Knowledge Graph Information" or "Available Retrieved Information (Document Search)". Use the [Source: ...] format for these.
+        2.  If you discuss general information about the diseases or health topics mentioned in the "Reliable Medical Information Sources" list provided in this prompt, **you may include one or more of the URLs from that provided list**.
+        3.  Format these URLs as clickable links in markdown: `[Link Text Here, e.g., CDC Website](URL_from_the_provided_list)`. Use descriptive link text.
+        4.  **IMPORTANT:** ONLY use the URLs explicitly listed in the "Reliable Medical Information Sources" section of *this prompt*. Do NOT invent URLs or source names.
+        5.  **Disclaimer:** Include a statement in the final answer that these external links are for general information and are not a substitute for professional medical advice, and may not directly correspond to every specific detail in the answer.
+        """)
 
         prompt_parts.append("Include appropriate medical disclaimers about consulting healthcare professionals for diagnosis and treatment.")
         prompt_parts.append("Format your answer clearly and concisely using markdown.")
@@ -539,14 +560,11 @@ class DocumentChatBot:
         prompt = "\n\n".join(prompt_parts)
 
         try:
-            # Use the local_generate method for this specific LLM call
-            # Increase max_tokens for synthesis, but avoid excessively large responses
-            response = self.local_generate(prompt, max_tokens=1200) # Adjusted max_tokens
+            response = self.local_generate(prompt, max_tokens=1500) # Increased max_tokens slightly
             return response.strip()
         except Exception as e:
             logger.error(f"Error generating LLM synthesis answer: {e}")
             return "I'm sorry, but I couldn't synthesize a complete answer to your question at this moment. Please consult a healthcare professional for personalized advice."
-
 
     def format_kg_diagnosis_with_llm(self, disease_name: str, symptoms_list: List[str], confidence: float) -> str:
         """
@@ -1298,22 +1316,8 @@ class DocumentChatBot:
     
     def generate_response(self, user_input: str, user_type: str = "User / Family", confirmed_symptoms: Optional[List[str]] = None, original_query_if_followup: Optional[str] = None) -> Tuple[str, List[str], str, Optional[Dict]]:
         """
-        Generate response using orchestration based on Path 1 / Path 2 logic.
-
-        Args:
-            user_input: The current input from the user (could be original query or response to prompt/UI).
-            user_type: The type of user ("User / Family" or "Physician").
-            confirmed_symptoms: List of symptoms selected by the user from the UI, if this turn is
-                                a response to a symptom confirmation prompt. None otherwise.
-            original_query_if_followup: The original query that triggered a symptom UI or LLM prompt,
-                                        passed back when the user responds to the prompt/UI. None otherwise.
-
-        Returns:
-            A tuple containing:
-            - response_text (str): The message to display to the user (answer or prompt).
-            - sources_list (List[str]): List of source references (only for final answers).
-            - action_flag (str): Indicates what the UI should do ("final_answer", "llm_followup_prompt", "symptom_ui_prompt", "none").
-            - ui_data (Optional[Dict]): Additional data needed by the UI if action_flag requires it (e.g., symptom options).
+        Generate response using orchestration based on Path 1 / Path 2 logic,
+        prioritizing internal gap filling before user follow-up.
         """
         logger.info(f"--- Generating Response for Input: '{user_input}' ---")
         logger.info(f"   Confirmed symptoms from UI: {confirmed_symptoms}")
@@ -1321,101 +1325,68 @@ class DocumentChatBot:
         logger.info(f"   Current followup_context: {self.followup_context}")
         logger.info(f"   Current chat_history length: {len(self.chat_history)}")
 
-
-        # Determine the core query being processed in this turn
-        # If confirmed_symptoms is provided, the "real" query is the one that triggered the UI (`original_query_if_followup`).
-        # If original_query_if_followup is provided (and confirmed_symptoms is None), the "real" query is the one that triggered the LLM prompt.
-        # Otherwise, the current user_input is the start of a new thread.
         core_query_for_processing = original_query_if_followup if original_query_if_followup is not None else user_input
         logger.info(f"   Core query for processing logic: '{core_query_for_processing}'")
 
         if not core_query_for_processing.strip() and confirmed_symptoms is None:
              logger.info("Empty core query and no confirmed symptoms. Skipping.")
-             return "", [], "none", None # No action needed for empty input
-
+             return "", [], "none", None
 
         # --- Initialization Check ---
-        # Check if *critical* components are missing. LLM is needed for basic function. RAG needs LLM + VDB + Chain. KG needs KG driver.
-        # Re-attempt initialization if LLM or RAG chain is None
         if self.llm is None or self.qa_chain is None or not self.kg_connection_ok:
             logger.info("Chatbot is not fully initialized. Attempting re-initialization...")
-            success, message = self.initialize_qa_chain() # Re-attempt initialization
+            success, message = self.initialize_qa_chain()
             if not success:
                 error_message = f"Error processing request: Assistant failed to initialize fully ({message}). Some features may be unavailable. Please check your configuration and try again later."
                 self.log_orchestration_decision(core_query_for_processing, f"SELECTED_STRATEGY: INIT_ERROR\nREASONING: Re-initialization failed: {message}", 0.0, 0.0)
                 if self.llm is None:
-                     # If LLM is still none after re-attempt, we cannot do anything useful
                      logger.critical("LLM is still not initialized after re-attempt. Cannot generate any response.")
                      return error_message, [], "final_answer", None
                 else:
-                    # If LLM is available but RAG/KG failed, proceed with limited features
                     logger.warning("Initialization partially successful (LLM available). Proceeding with limited features (No RAG or KG).")
-                    # Continue processing below, but RAG/KG calls will gracefully handle missing components
 
 
-        # --- Step 0.1: Handle User Response to Prior LLM Follow-up ---
-        # Check if this input is a response to the single allowed LLM follow-up prompt.
-        # This is indicated by `original_query_if_followup` being present AND `self.followup_context["round"] == 1`.
         is_response_to_llm_followup = original_query_if_followup is not None and self.followup_context["round"] == 1
         if is_response_to_llm_followup:
              logger.info(f"Detected response to LLM follow-up (round {self.followup_context['round']}). Processing '{user_input}' in context of '{original_query_if_followup}'.")
-             # The `core_query_for_processing` is already set to `original_query_if_followup` correctly.
-             # The user_input (the response) will be implicitly included in the RAG history due to Langchain memory.
 
 
         # --- Step 2: Extract Symptoms ---
-        # Combine symptoms extracted from the *core query* with any *confirmed symptoms* from UI.
-        # If processing a response to an LLM follow-up, extract symptoms from the *response* text AND combine with symptoms from the *original query*.
         extracted_symptoms_from_core_query, extracted_conf_core = self.extract_symptoms(core_query_for_processing)
         all_symptoms: List[str] = []
         symptom_confidence = 0.0
 
         if is_response_to_llm_followup:
-            logger.info(f"Extracting symptoms from LLM follow-up response: '{user_input}'")
             extracted_symptoms_from_response, response_conf = self.extract_symptoms(user_input)
             all_symptoms = list(set(extracted_symptoms_from_response + extracted_symptoms_from_core_query))
-            symptom_confidence = max(response_conf, extracted_conf_core) # Simple confidence merge
+            symptom_confidence = max(response_conf, extracted_conf_core)
             logger.info(f"Combined symptoms from response and original query: {all_symptoms}")
-
         elif confirmed_symptoms is not None:
-            logger.info(f"Using symptoms from UI confirmation: {confirmed_symptoms}")
-            # Extract symptoms from the current input text as well, just in case user added more
             extracted_symptoms_from_input, extracted_conf_input = self.extract_symptoms(user_input)
-            all_symptoms = list(set(extracted_symptoms_from_input + confirmed_symptoms)) # Combine and deduplicate
-            # Boost confidence significantly if user confirmed via UI
-            symptom_confidence = max(extracted_conf_input, 0.9) # Assume high confidence if user confirmed
-
-
-        else: # Standard initial input
+            all_symptoms = list(set(extracted_symptoms_from_input + confirmed_symptoms))
+            symptom_confidence = max(extracted_conf_input, 0.9)
+            logger.info(f"Using symptoms from UI confirmation: {confirmed_symptoms}. Combined with input: {all_symptoms}")
+        else:
             all_symptoms = extracted_symptoms_from_core_query
             symptom_confidence = extracted_conf_core
             logger.info(f"Extracted symptoms from input: {all_symptoms}")
 
+
         # --- Step 3: KG Processing ---
-        # Run KG agent with all available symptoms
         logger.info("📚 Processing with Knowledge Graph...")
         t_start_kg = datetime.now()
-        # Pass the core query as context to KG agent if needed internally (optional)
         kg_data = self.knowledge_graph_agent(core_query_for_processing, all_symptoms)
         top_disease_confidence = kg_data.get("top_disease_confidence", 0.0)
-        kg_diagnosis_data_for_llm = kg_data.get("kg_content_diagnosis_data_for_llm") # Data for LLM Path 1 formatting
-        kg_content_other = kg_data.get("kg_content_other", "") # Treatments/Remedies
-
+        kg_diagnosis_data_for_llm = kg_data.get("kg_content_diagnosis_data_for_llm")
+        kg_content_other = kg_data.get("kg_content_other", "")
         logger.info(f"📊 KG Top Disease Confidence: {top_disease_confidence:.4f} (took {(datetime.now() - t_start_kg).total_seconds():.2f}s)")
+
 
         # --- Step 4: Path 1 - Diagnosis Focus & Symptom Follow-up UI (Decision Point 1) ---
         is_disease_query = self.is_disease_identification_query(core_query_for_processing)
         kg_found_diseases = len(kg_data.get("identified_diseases_data", [])) > 0
 
         # Condition to trigger Symptom Follow-up UI:
-        # 1. It's a disease identification query.
-        # 2. KG found *at least one* disease.
-        # 3. Top disease confidence is below the threshold for direct Path 1 conclusion.
-        # 4. We are *not* currently processing a response *from* the symptom confirmation UI (confirmed_symptoms is None).
-        # 5. KG returned potential disease-symptom associations for the UI step (`identified_diseases_data` has 'AllDiseaseSymptomsKG' for top diseases).
-        # 6. We haven't asked the single LLM follow-up yet (round == 0).
-        # 7. LLM is initialized (needed to process the UI response effectively later).
-        # 8. KG connection is OK (otherwise we can't get relevant symptom options from KG).
         if is_disease_query and \
            kg_found_diseases and \
            top_disease_confidence < THRESHOLDS["disease_symptom_followup_threshold"] and \
@@ -1423,17 +1394,13 @@ class DocumentChatBot:
            any(d.get("AllDiseaseSymptomsKG") for d in kg_data.get("identified_diseases_data", [])[:5]) and \
            self.followup_context["round"] == 0 and \
            self.llm is not None and \
-           self.kg_connection_ok: # Symptom UI requires KG is available
+           self.kg_connection_ok:
 
             logger.info(f"❓ Disease query ('{core_query_for_processing}') with low KG confidence ({top_disease_confidence:.4f}). Triggering Symptom Follow-up UI.")
-            # Prepare data for the UI checklist
             symptom_options_for_ui: Dict[str, List[str]] = {}
-            # Get symptoms associated with top N diseases (e.g., top 3-5) for the UI
-            # Ensure we only include diseases that actually have associated symptoms in KG
             relevant_diseases_for_ui = [d for d in kg_data["identified_diseases_data"][:5] if d.get("AllDiseaseSymptomsKG")]
             for disease_data in relevant_diseases_for_ui:
                  disease_label = f"{disease_data['Disease']} (Confidence: {disease_data['Confidence']:.2f})"
-                 # Ensure symptom names are strings and unique within the disease list
                  symptoms_list = sorted(list(set(str(s) for s in disease_data.get("AllDiseaseSymptomsKG", []) if isinstance(s, str))))
                  if symptoms_list:
                     symptom_options_for_ui[disease_label] = symptoms_list
@@ -1442,159 +1409,65 @@ class DocumentChatBot:
             Thank you for sharing your symptoms. Based on what you've told me, I found some potential conditions.
             To help narrow it down and provide a more relevant response, please confirm which of the associated symptoms from my knowledge base you are also experiencing.
             """
-            # The Streamlit UI will display the checkboxes below this message based on symptom_options_for_ui
-
-            # Log decision
             self.log_orchestration_decision(
                 core_query_for_processing,
                 f"SELECTED_STRATEGY: SYMPTOM_UI_FOLLOWUP\nREASONING: Disease query with low KG confidence ({top_disease_confidence:.2f}). Presenting symptom checklist for confirmation.",
-                top_disease_confidence, # Use specific KG conf here
-                0.0 # RAG skipped in this path
+                top_disease_confidence, 0.0
             )
-
-            # Return data indicating UI action is needed
-            # Pass the core_query_for_processing back so Streamlit can resubmit it with confirmed symptoms
             logger.info("Returning Symptom UI prompt.")
             return follow_up_prompt_text.strip(), [], "symptom_ui_prompt", {"symptom_options": symptom_options_for_ui, "original_query": core_query_for_processing}
 
 
         # --- Step 5: Path 1 - Direct KG Diagnosis Component (if high confidence or after symptom confirmation) ---
-        # This step is reached IF confirmed_symptoms is NOT None (user responded to UI)
-        # OR IF confirmed_symptoms IS None BUT top_disease_confidence was already >= threshold on first check
-        # AND it is a disease identification query.
         path1_kg_diagnosis_component = None
         is_high_conf_kg_diagnosis = is_disease_query and kg_found_diseases and top_disease_confidence >= THRESHOLDS["disease_symptom_followup_threshold"]
-        is_post_symptom_confirmation = confirmed_symptoms is not None # Flag indicates user completed the UI step
+        is_post_symptom_confirmation = confirmed_symptoms is not None
 
         if (is_high_conf_kg_diagnosis or is_post_symptom_confirmation) and kg_diagnosis_data_for_llm:
-            if self.llm is not None: # LLM needed for formatting
+            if self.llm is not None:
                  logger.info(f"✅ Path 1: High confidence KG diagnosis ({top_disease_confidence:.4f}) OR received symptom confirmation. Formatting KG diagnosis answer with LLM.")
-
-                 # Use LLM to format the KG diagnosis into a user-friendly statement
-                 # Pass all available symptoms (extracted + confirmed) to the formatter for phrasing
                  path1_kg_diagnosis_component = self.format_kg_diagnosis_with_llm(
                       kg_diagnosis_data_for_llm["disease_name"],
-                      all_symptoms, # Use the combined list of symptoms for phrasing
+                      all_symptoms,
                       kg_diagnosis_data_for_llm["confidence"]
                   )
-
-                 # Log decision for the KG Diagnosis component (internal log)
                  logger.info(f"   --- KG Diagnosis Component Generated ---")
-
             else:
-                 # Fallback to manual formatting if LLM is not available but KG found data
                  logger.warning("⚠️ LLM not available for formatting KG diagnosis. Using manual format.")
                  disease_name = kg_diagnosis_data_for_llm["disease_name"]
                  symptoms_str = ", ".join(all_symptoms) if all_symptoms else "your symptoms"
                  path1_kg_diagnosis_component = f"Based on {symptoms_str}, **{disease_name}** is a potential condition. This is not a definitive diagnosis and requires professional medical evaluation."
-
         elif (is_high_conf_kg_diagnosis or is_post_symptom_confirmation):
-             # KG found no diseases even after potential confirmation, provide a statement
-             logger.info("⚠️ KG found no diseases even after symptom input. Proceeding to Path 2 without specific KG diagnosis component.")
+             logger.info("⚠️ KG found no diseases even after symptom input. Proceeding without specific KG diagnosis component.")
              path1_kg_diagnosis_component = "Based on the symptoms provided, I couldn't find a specific medical condition matching them in my knowledge base."
 
 
-        # --- NEW: Decision Point 2 - Conclude with KG-only answer for high-confidence diagnosis query ---
-        # Only do this if LLM is available to ensure the formatted answer is good
-        if (is_high_conf_kg_diagnosis or is_post_symptom_confirmation) and path1_kg_diagnosis_component is not None and self.llm is not None:
-             # Check if the original query *primarily* asked for a diagnosis and not other things explicitly.
-             # This check is heuristic, refine as needed.
-             query_lower = core_query_for_processing.lower()
-             asks_for_treatment = any(kw in query_lower for kw in ["treat", "medication", "cure", "what to do", "how to manage", "resolve"])
-             asks_for_remedy = any(kw in query_lower for kw in ["remedy", "home", "natural", "relief"])
-
-
-             # Conclude with KG-only if it's a diagnosis query AND (high conf OR post-confirmation)
-             # AND it doesn't seem to explicitly ask for treatments/remedies in the *original* phrasing.
-             # Note: The "what could i do?" query in your log *does* imply asking for action/treatment,
-             # so this logic *shouldn't* trigger for that specific example, and it should proceed to RAG/Path 2.
-             # If you want "what could i do?" to ALSO trigger KG-only when diagnosis is high confidence,
-             # you might adjust the `asks_for_treatment` condition or add a specific check.
-             # Let's keep the check strict for now based on explicit keywords.
-             # Adding a condition: If the initial query has *no* symptom keywords, it's likely a general info query,
-             # so we shouldn't conclude with KG-only diagnosis unless symptoms were added via UI.
-             # Check if the core query contained symptom keywords initially
-             extracted_symptoms_initial, _ = self.extract_symptoms(user_input if original_query_if_followup is None else original_query_if_followup)
-             core_query_had_symptoms_initially = len(extracted_symptoms_initial) > 0
-
-
-             if (is_high_conf_kg_diagnosis or is_post_symptom_confirmation) and not (asks_for_treatment or asks_for_remedy or not core_query_had_symptoms_initially): # Don't KG-only if original query had no symptoms unless it's post-confirmation
-                 logger.info(f"✅ Decision Point 2: Concluding with KG-only answer for high-confidence diagnosis ({top_disease_confidence:.4f}). Query did not explicitly ask for treatment/remedy AND it had symptoms initially.")
-
-                 # The formatted diagnosis component includes the disclaimer
-                 final_response_text = path1_kg_diagnosis_component
-
-                 # Collect KG sources for this diagnosis component
-                 all_sources: List[str] = []
-                 if self.kg_connection_ok:
-                      all_sources.append(f"[Source: Medical Knowledge Graph (Diagnosis Data)]")
-
-                 # Log the orchestration decision
-                 self.log_orchestration_decision(
-                     core_query_for_processing,
-                     f"SELECTED_STRATEGY: KG_DIAGNOSIS_ONLY\nREASONING: Disease query with high KG confidence ({top_disease_confidence:.2f}) or post-symptom confirmation, and query did not explicitly ask for treatment/remedy.",
-                     top_disease_confidence,
-                     0.0 # RAG was skipped
-                 )
-
-                 # Add to chat history *before* returning
-                 # Use the user_input (what the user actually typed this turn) and the final formatted response
-                 self.chat_history.append((user_input, final_response_text.strip()))
-
-
-                 logger.info("Returning KG-only Final Answer.")
-                 # Return the formatted KG diagnosis answer as the final answer
-                 return final_response_text.strip(), all_sources, "final_answer", None
-
-             # Else: It's a high-confidence diagnosis query, BUT it also asked for treatment/remedy,
-             # OR it was the result of symptom confirmation which should always proceed to Path 2
-             # to combine with RAG, OR the original query had no symptoms. Proceed to Path 2.
-             logger.info("✅ Proceeding to Path 2 with KG Diagnosis Component (if generated), as query asked for treatments/remedies or it's post-symptom confirmation/general query.")
-
-
         # --- Step 6: Path 2 - RAG Processing ---
-        # This step is reached if Path 1 Symptom UI was not triggered,
-        # or if Path 1 Diagnosis resulted in a component but didn't conclude the answer.
         logger.info("📚 Processing with RAG...")
         t_start_rag = datetime.now()
-
         rag_content = ""
         rag_source_docs = []
         rag_confidence = 0.0
 
-        # Only attempt RAG if both the LLM and QA Chain (which includes VectorDB/Embeddings) are initialized
         if self.llm is not None and self.qa_chain is not None:
             try:
-                 # The qa_chain handles chat history internally via its memory
-                 # Pass the core_query_for_processing to the RAG chain
                  logger.info(f"Invoking RAG chain with question: {core_query_for_processing}")
                  rag_response = self.qa_chain.invoke({"question": core_query_for_processing})
-
                  rag_content = rag_response.get("answer", "").strip()
-                 # Clean up potential prefixes or unwanted phrases from RAG LLM step
                  if "Helpful Answer:" in rag_content:
                       rag_content = rag_content.split("Helpful Answer:", 1)[-1].strip()
-
-                 # Extract RAG sources
                  rag_source_docs = rag_response.get("source_documents", [])
                  if rag_source_docs:
-                      # Calculate RAG confidence (simplified - could use retrieval scores if available)
-                      # Base score 0.3, adds up to 0.7 based on up to 5 docs
                       rag_confidence = 0.3 + min(len(rag_source_docs), 5) / 5.0 * 0.4
-
-
                  logger.info(f"📊 RAG Confidence: {rag_confidence:.4f} (took {(datetime.now() - t_start_rag).total_seconds():.2f}s)")
-
             except Exception as e:
-                 logger.error(f"⚠️ Error during RAG processing: {e}", exc_info=True) # Log traceback
+                 logger.error(f"⚠️ Error during RAG processing: {e}", exc_info=True)
                  rag_content = "An error occurred while retrieving information from documents."
                  rag_source_docs = []
                  rag_confidence = 0.0
-                 # Note: The RAG chain might fail if the LLM fails during the synthesis step *within* the chain.
-                 # This is one reason why the LLM is critical.
         else:
              logger.warning("Warning: RAG chain (or necessary components) not initialized. Skipping RAG processing.")
-             rag_content = "Document search is currently unavailable." # Indicate RAG skipped
+             rag_content = "Document search is currently unavailable."
 
 
         # --- Step 7: Initial Combination of Path 1 Component and RAG ---
@@ -1604,55 +1477,101 @@ class DocumentChatBot:
              rag_content
         )
 
-        # --- Step 8: Identify Missing Elements for LLM Focus ---
-        # Evaluate the *initial combined answer* to guide the LLM synthesis
-        missing_elements_for_llm = self.identify_missing_elements(core_query_for_processing, initial_combined_answer)
-
-
-        # --- Step 9: LLM Synthesis ---
-        logger.info("➡️ Initiating LLM Synthesis Step...")
-        llm_synthesized_answer = ""
-        if self.llm is not None: # Only attempt synthesis if LLM is available
-            # Provide the initial combined answer draft and the original query to the synthesis LLM
-            llm_synthesized_answer = self.generate_llm_answer(
-                core_query_for_processing, # Original user query context
-                initial_combined_answer=initial_combined_answer, # The combined draft
-                missing_elements=missing_elements_for_llm # Tell LLM to focus on these
-            ).strip()
+        # --- Step 8: Reflection Agent (Main Check - Initial Draft) ---
+        logger.info("🧠 Initiating Reflection Agent (Main Check - Initial Draft)...")
+        needs_followup_initial, missing_info_questions_initial = (False, [])
+        if self.llm is not None:
+             # Use identify_missing_info to check the INITIAL combined draft
+             needs_followup_initial, missing_info_questions_initial = self.identify_missing_info(
+                  core_query_for_processing, initial_combined_answer, self.chat_history
+             )
         else:
-            logger.warning("LLM not initialized. Skipping synthesis. Using initial combined answer directly.")
-            llm_synthesized_answer = initial_combined_answer.strip() # Use draft directly as fallback
-
-        final_core_answer = llm_synthesized_answer # The LLM synthesis (or draft) is the core final answer
+             logger.warning("LLM not available for initial reflection check.")
 
 
-        # --- Step 10: Final Reflection Check for LLM Follow-up (Decision Point 2) ---
-        logger.info("🧠 Initiating Final Reflection Check (for LLM Follow-up)...")
-        # Check completeness of the LLM-synthesized answer against the original query
-        # Do NOT check if the LLM itself failed or if we are already processing a response to an LLM follow-up
-        needs_final_followup_llm_opinion = False
-        missing_questions_list = []
-        # Only check if LLM is available AND we are NOT processing a response to an LLM follow-up
-        if self.llm is not None and not is_response_to_llm_followup:
-            needs_final_followup_llm_opinion, missing_questions_list = self.identify_missing_info(
-                 core_query_for_processing, final_core_answer, self.chat_history # Pass current chat history state
-            )
+        final_core_answer = initial_combined_answer # Start with the initial draft
+        final_reflection_needed = True # Assume we need a final reflection after potential gap filling
+
+        # --- NEW: Conditional Internal Gap Filling / Synthesis ---
+        # If the initial draft is insufficient according to reflection AND LLM is available
+        if needs_followup_initial and missing_info_questions_initial and self.llm is not None:
+            logger.info("➡️ Initial draft insufficient. Initiating Internal Gap Filling / Synthesis.")
+
+            # Formulate a prompt for the LLM to specifically address the missing areas
+            gap_filling_prompt_parts = [
+                "You are a medical AI assistant tasked with providing missing information based on provided sources.",
+                f"USER'S ORIGINAL QUESTION: {core_query_for_processing}",
+                "Based on the available sources below, please provide information that directly addresses the following specific areas:"
+            ]
+            # List the questions derived from the missing info areas
+            for i, question_data in enumerate(missing_info_questions_initial, 1):
+                 gap_filling_prompt_parts.append(f"{i}. {question_data}")
+
+            # Include all available source contexts
+            gap_filling_prompt_parts.append("\n**Available Medical Knowledge Graph Information:**")
+            gap_filling_prompt_parts.append("---\n" + (kg_content_other.strip() if kg_content_other.strip() != "Knowledge Graph information on treatments or remedies is unavailable." else "No relevant KG info found.") + "\n---") # Use other KG content
+
+            # Pass raw RAG source content, not the RAG answer summary, for detailed info
+            rag_raw_content = "\n---\n".join([doc.page_content for doc in rag_source_docs]) if rag_source_docs else "No relevant document content found."
+            gap_filling_prompt_parts.append("\n**Available Raw Document Content (from search):**")
+            gap_filling_prompt_parts.append("---\n" + rag_raw_content + "\n---")
+
+            # Add the external reliable sources
+            gap_filling_prompt_parts.append("\n" + reliable_sources_prompt_section) # Use the same section content
+
+            gap_filling_prompt_parts.append("\nProvide concise answers to the requested areas using ONLY the provided sources. If information for an area is not in the sources, state that. Attribute information using the specified source formats ([Source:...], clickable link for external sources). Do NOT invent information or sources.")
+            gap_filling_prompt_parts.append("Format your answers clearly.")
+
+            gap_filling_prompt = "\n\n".join(gap_filling_prompt_parts)
+
+            # Call the LLM to generate text specifically for the gaps
+            gap_filling_text = ""
+            try:
+                 # Use local_generate for the gap filling call
+                 gap_filling_text = self.local_generate(gap_filling_prompt, max_tokens=800).strip() # Limit tokens for this part
+                 logger.info("✔️ Internal Gap Filling Synthesis completed.")
+            except Exception as e:
+                 logger.error(f"Error during Internal Gap Filling LLM call: {e}", exc_info=True)
+                 gap_filling_text = "An error occurred while trying to find more information from sources."
+
+            # Combine the Initial Draft with the Gap Filling text
+            # This is a crucial combination step - need to avoid redundancy
+            # A simple concatenation might work, but a smarter merge is better
+            # For simplicity, let's just append the gap filling text if it's substantial
+            combined_with_gap_filling = initial_combined_answer.strip()
+            if gap_filling_text and gap_filling_text.strip() != "An error occurred while trying to find more information from sources.":
+                 combined_with_gap_filling += "\n\n" + gap_filling_text.strip()
+
+            final_core_answer = combined_with_gap_filling # This is the new candidate answer
+            logger.info("Combined initial draft with gap-filling text.")
+            # No need for a second reflection check *here*; the next step is the final reflection on *this* answer.
+            # final_reflection_needed = True # Already true by default
+
+
+        # --- Step 9: Final Reflection Agent (Final Check) ---
+        # This reflection happens whether gap filling occurred or not, or if the initial draft was deemed sufficient.
+        logger.info("🧠 Initiating Final Reflection Agent (Final Check)...")
+        # Use identify_missing_info to check the FINAL core answer candidate
+        needs_final_followup, missing_questions_list = (False, [])
+        if self.llm is not None: # Only check if LLM is available
+             needs_final_followup, missing_questions_list = self.identify_missing_info(
+                  core_query_for_processing, final_core_answer, self.chat_history # Pass FINAL candidate answer
+             )
         else:
-             logger.info("Skipping final reflection check (LLM not available or currently processing follow-up response).")
+             logger.warning("LLM not available for final reflection check.")
+             # If LLM is not available, we cannot ask a follow-up. The answer is effectively final.
+             needs_final_followup = False
+             missing_questions_list = [] # Ensure list is empty
 
-        logger.debug(f"Checking conditions for LLM Final Follow-up:")
-        logger.debug(f"  needs_final_followup_llm_opinion: {needs_final_followup_llm_opinion}")
-        logger.debug(f"  self.followup_context['round']: {self.followup_context['round']}")
-        logger.debug(f"  missing_questions_list: {missing_questions_list}")
-        logger.debug(f"  self.llm is not None: {self.llm is not None}")
-        # --- Step 11: Final LLM Follow-up Decision / Return Final Answer ---
+
+        # --- Step 10: Final LLM Follow-up Decision / Return Final Answer ---
         # Decide if the ONE allowed LLM follow-up should be asked now.
-        # Trigger if LLM *thinks* a follow-up is needed AND we haven't asked it yet (round == 0).
-        # Also ensure there's actually a question to ask AND LLM is available to phrase the prompt.
-            
-        if needs_final_followup_llm_opinion and self.followup_context["round"] == 0 and missing_questions_list and self.llm is not None:
+        # Trigger if LLM *thinks* a follow-up is needed (from the FINAL check)
+        # AND we haven't asked it yet (round == 0)
+        # AND there's actually a question to ask
+        # AND LLM is available to phrase the prompt.
+        if needs_final_followup and self.followup_context["round"] == 0 and missing_questions_list and self.llm is not None:
              logger.info("❓ Final Reflection indicates missing critical info, asking the one allowed LLM follow-up.")
-             # Construct the final LLM follow-up prompt (using the question from identify_missing_info)
              follow_up_question_text = missing_questions_list[0] # Use the first question recommended
 
              llm_follow_up_prompt_text = f"""
@@ -1662,39 +1581,35 @@ class DocumentChatBot:
              """
              self.followup_context["round"] = 1 # Mark that the one LLM follow-up has been asked for this thread
 
-             # Log decision
              self.log_orchestration_decision(
                  core_query_for_processing,
-                 f"SELECTED_STRATEGY: LLM_FINAL_FOLLOWUP\nREASONING: Final answer completeness check failed (LLM opinion). Asking for critical missing info (round 1).",
-                 kg_data.get("top_disease_confidence", 0.0), # Use specific KG conf if available
-                 rag_confidence
+                 f"SELECTED_STRATEGY: LLM_FINAL_FOLLOWUP\nREASONING: Final answer completeness check failed (LLM opinion) after internal synthesis. Asking for critical missing info (round 1).",
+                 kg_data.get("top_disease_confidence", 0.0), rag_confidence
              )
 
              # Return prompt text and action flag
-             # We don't add this to chat history here. Let the UI manage adding the user's message and this prompt.
              logger.info("Returning LLM Follow-up prompt.")
+             # We don't add this to chat history here. Let the UI manage adding the user's message and this prompt.
              return llm_follow_up_prompt_text.strip(), [], "llm_followup_prompt", None
 
         else:
             logger.info("✅ Final Reflection indicates answer is sufficient or single LLM follow-up already asked.")
             # This is the end of the processing path, return the final answer.
 
-            # Collect all sources (RAG docs + KG mentions)
+            # Collect all sources (RAG docs + KG mentions + Reliable External)
             all_sources: List[str] = []
             if rag_source_docs: # Add RAG sources
                 for doc in rag_source_docs:
                     if hasattr(doc, "metadata") and "source" in doc.metadata:
                         source_name = doc.metadata["source"]
                         page_num = doc.metadata.get("page", "N/A")
-                        # Include a snippet if available, but prioritize clean source string
                         source_snippet = doc.page_content[:100].replace('\n', ' ') + '...' if doc.page_content else ''
                         all_sources.append(f"[Source: {source_name}{f', Page {page_num}' if page_num != 'N/A' else ''}] {source_snippet}".strip())
-                    # Else: Unknown source, could add a generic "[Source: Document]" if desired
+                    else:
+                         all_sources.append(f"[Source: Document]")
 
 
-            # Add KG source mentions if KG contributed specific sections and KG connection was ok
             if self.kg_connection_ok and (kg_data.get("identified_diseases_data") or kg_data.get("kg_treatments") or kg_data.get("kg_home_remedies")):
-                 # Check which KG components actually had data to mention
                  kg_parts_mentioned = []
                  if kg_data.get("identified_diseases_data"): kg_parts_mentioned.append("Diagnosis Data")
                  if kg_data.get("kg_treatments"): kg_parts_mentioned.append("Treatment Data")
@@ -1703,12 +1618,18 @@ class DocumentChatBot:
                  if kg_parts_mentioned:
                     all_sources.append(f"[Source: Medical Knowledge Graph ({', '.join(kg_parts_mentioned)})]")
                  else:
-                    # Fallback just mention KG if connection ok but no specific data extracted
                      all_sources.append(f"[Source: Medical Knowledge Graph]")
 
 
+            # Add the reliable external sources to the list (always include if LLM synthesis happened?)
+            # Let's include them if LLM was used for synthesis, as it had access to them.
+            if self.llm is not None:
+                 for src in RELIABLE_MEDICAL_SOURCES:
+                      # Add the source as a clickable link for the final reference list
+                      all_sources.append(f"[{src['description']}]({src['url']})")
+
+
             # Deduplicate and clean up source strings for final display
-            # Sort for consistent ordering
             all_sources_unique = sorted(list(set(s.strip() for s in all_sources if s.strip())))
 
 
@@ -1732,11 +1653,9 @@ class DocumentChatBot:
 
             if not has_disclaimer:
                 disclaimer = "\n\n---\nIMPORTANT MEDICAL DISCLAIMER:\nThis information is for educational purposes only and is not a substitute for professional medical advice, diagnosis, or treatment. "
-                # Add specific warning for chest pain/shortness of breath if relevant
                 query_lower = core_query_for_processing.lower()
-                # Check if the original query or the identified diseases mentioned these serious symptoms
                 mentions_serious_symptoms = any(symptom in query_lower for symptom in ["chest pain", "shortness of breath", "difficulty breathing"]) or \
-                                           any(any(symptom.lower() in d['Disease'].lower() for symptom in ["heart attack", "angina", "pulmonary embolism", "pneumonia"]) for d in kg_data.get("identified_diseases_data", [])) # Check KG diseases known to cause this
+                                           any(any(symptom.lower() in d['Disease'].lower() for symptom in ["heart attack", "angina", "pulmonary embolism", "pneumonia"]) for d in kg_data.get("identified_diseases_data", []))
 
                 if mentions_serious_symptoms:
                      disclaimer += "Chest pain and shortness of breath can be symptoms of serious conditions requiring immediate medical attention. Please seek emergency medical care if you experience severe symptoms, or if symptoms are sudden or worsening. "
@@ -1744,22 +1663,15 @@ class DocumentChatBot:
                 disclaimer += "Always consult with a qualified healthcare provider for any questions you may have regarding a medical condition. Never disregard professional medical advice or delay seeking it because of something you have read here."
                 final_response_text += disclaimer
 
-            # Log the final orchestration decision
             self.log_orchestration_decision(
                 core_query_for_processing,
                 f"SELECTED_STRATEGY: FINAL_ANSWER\nREASONING: Answer deemed sufficient after synthesis and final check or single LLM follow-up already asked.",
-                kg_data.get("top_disease_confidence", 0.0),
-                rag_confidence
+                kg_data.get("top_disease_confidence", 0.0), rag_confidence
             )
 
-            # Add the conversation turn to the chat history *before* returning
-            # Use the user_input (what the user *actually* typed this turn) and the final formatted response
             self.chat_history.append((user_input, final_response_text.strip()))
-
             logger.info("Returning Final Answer.")
-            # Return response text, sources list, and action flag
-            source_strings_for_display = all_sources_unique # Use the cleaned unique list
-            return final_response_text.strip(), source_strings_for_display, "final_answer", None
+            return final_response_text.strip(), all_sources_unique, "final_answer", None
 
         # The exception handler at the very bottom of generate_response catches any uncaught errors
 
