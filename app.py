@@ -454,11 +454,9 @@ class DocumentChatBot:
             return "I'm unable to generate a specific response right now due to a technical issue. Please try again later."
 
         try:
-            # Use the LLM instance initialized in initialize_qa_chain
-            # Configure max output tokens for the generation call
-            generation_config = genai.GenerationConfig(max_output_tokens=max_tokens)
+        
             # Use .invoke as it's standard in ChatModels
-            response = self.llm.invoke(prompt, config=generation_config)
+            response = self.llm.invoke(prompt, max_tokens=max_tokens)
             # Access the content attribute for the generated text
             logger.debug(f"LLM local_generate successful. Response length: {len(response.content)}")
             return response.content
@@ -665,39 +663,39 @@ class DocumentChatBot:
                 response = self.local_generate(MISSING_INFO_PROMPT, max_tokens=500).strip()
                 # logger.debug(f"\nRaw Missing Info Evaluation (Final Check):\n{response}")
 
-                # Parse JSON format response
+                # Attempt to parse JSON
                 json_match = re.search(r'\{[\s\S]*\}', response)
                 if json_match:
                     json_str = json_match.group(0)
                     try:
                         data = json.loads(json_str)
                         needs_followup_llm = data.get("needs_followup", False) # LLM's opinion
-
-                        if not needs_followup_llm:
-                            logger.info("✅ Final Answer appears sufficient (LLM opinion).")
-                            result = (False, [])
-                            # No caching here due to dependence on conversation state and generated answer
-                            return result
-
-                        missing_info_questions = [item["question"] for item in data.get("missing_info_questions", [])]
+                        missing_info_questions = [item["question"] for item in data.get("missing_info_questions", []) if isinstance(item, dict) and "question" in item] # Safely get questions
                         reasoning = data.get("reasoning", "Answer is missing critical information.")
 
-                        if missing_info_questions:
-                            logger.info(f"❓ Critical Information Missing from Final Answer (LLM opinion): {missing_info_questions}. Reasoning: {reasoning}")
-                            result = (True, missing_info_questions)
-                            return result
+                        if needs_followup_llm and missing_info_questions:
+                             logger.info(f"❓ Critical Information Missing from Final Answer (LLM opinion): {missing_info_questions}. Reasoning: {reasoning}")
+                             return (True, missing_info_questions) # Return True and questions
+
                         else:
-                             # needs_followup was true from LLM, but no question provided.
-                             logger.warning("⚠️ LLM indicated missing info but provided no question. Treating as sufficient.")
-                             result = (False, []) # We cannot ask a follow-up if no question is provided
-                             return result
+                             logger.info("✅ Final Answer appears sufficient (LLM opinion) or no questions provided.")
+                             return (False, []) # Return False and no questions
 
                     except json.JSONDecodeError:
                         logger.warning("Could not parse final missing info JSON from LLM response.")
-                        # Fallback: Assume no critical info is missing if LLM JSON fails
+                        # Fallback: Assume no critical info is missing if JSON parsing fails
                         return (False, [])
+                    except Exception as e:
+                         logger.error(f"Error processing LLM response structure in identify_missing_info: {e}", exc_info=True)
+                         return (False, []) # Fallback on structure error
+
+                else:
+                    logger.warning("LLM response did not contain expected JSON format.")
+                    # Fallback: Assume no critical info is missing if no JSON is found
+                    return (False, [])
+
             except Exception as e:
-                logger.error(f"Error identifying final missing information: {e}")
+                logger.error(f"⚠️ Error during LLM call in identify_missing_info: {e}", exc_info=True)
                 # Fallback: Assume no critical info is missing if LLM call fails
                 return (False, [])
 
@@ -851,9 +849,9 @@ class DocumentChatBot:
          // Calculate confidence based on input symptoms matching KG symptoms for the disease
          WITH d.Name AS Disease, matched_symptoms_from_input, all_disease_symptoms_in_kg,
               CASE WHEN total_disease_symptoms_count = 0 THEN 0
-                   ELSE matching_symptoms_count * 1.0 / total_disease_symptom_count
-              END AS confidence_score
-         WHERE matching_symptoms_count > 0 // Only return diseases with at least one matching symptom from input
+                     ELSE matching_symptoms_count * 1.0 / total_disease_symptoms_count
+                END AS confidence_score
+                WHERE matching_symptoms_count > 0 // Only return diseases with at least one matching symptom from input
          RETURN Disease, confidence_score AS Confidence, matched_symptoms_from_input AS MatchedSymptoms, all_disease_symptoms_in_kg AS AllDiseaseSymptomsKG
          ORDER BY confidence_score DESC
          LIMIT 5 // Limit potential diseases shown for performance/relevance
