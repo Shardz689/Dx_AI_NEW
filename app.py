@@ -1584,16 +1584,16 @@ class DocumentChatBot:
         else:
              logger.info("Skipping final reflection check (LLM not available or currently processing follow-up response).")
 
-
+        logger.debug(f"Checking conditions for LLM Final Follow-up:")
+        logger.debug(f"  needs_final_followup_llm_opinion: {needs_final_followup_llm_opinion}")
+        logger.debug(f"  self.followup_context['round']: {self.followup_context['round']}")
+        logger.debug(f"  missing_questions_list: {missing_questions_list}")
+        logger.debug(f"  self.llm is not None: {self.llm is not None}")
         # --- Step 11: Final LLM Follow-up Decision / Return Final Answer ---
         # Decide if the ONE allowed LLM follow-up should be asked now.
         # Trigger if LLM *thinks* a follow-up is needed AND we haven't asked it yet (round == 0).
         # Also ensure there's actually a question to ask AND LLM is available to phrase the prompt.
-        logger.debug(f"Checking conditions for LLM Final Follow-up:")
-            logger.debug(f"  needs_final_followup_llm_opinion: {needs_final_followup_llm_opinion}")
-            logger.debug(f"  self.followup_context['round']: {self.followup_context['round']}")
-            logger.debug(f"  missing_questions_list: {missing_questions_list}")
-            logger.debug(f"  self.llm is not None: {self.llm is not None}")
+            
         if needs_final_followup_llm_opinion and self.followup_context["round"] == 0 and missing_questions_list and self.llm is not None:
              logger.info("❓ Final Reflection indicates missing critical info, asking the one allowed LLM follow-up.")
              # Construct the final LLM follow-up prompt (using the question from identify_missing_info)
