@@ -2177,7 +2177,7 @@ def main():
 
         # --- Reset Conversation Button ---
         st.divider() # Add a visual separator
-        if st.button("Reset Conversation"):
+        if st.button("Reset Conversation", key="reset_conversation_button"):
             st.session_state.chatbot.reset_conversation() # Resets internal history and followup_context
             st.session_state.messages = [] # Clear UI messages
             # Also reset UI state variables
