@@ -1812,75 +1812,88 @@ class DocumentChatBot:
 
 # Helper function to display symptom checklist in Streamlit
 def display_symptom_checklist(symptom_options: Dict[str, List[str]], original_query: str):
-    """Streamlit UI component to display symptom checkboxes per disease."""
+    """
+    Streamlit UI component to display symptom checkboxes from a combined list.
+
+    Args:
+        symptom_options: A dictionary where keys are disease labels (string) and
+                         values are lists of associated symptoms (List[str]).
+                         The function will combine symptoms from all lists.
+        original_query: The user's original query that triggered the UI.
+    """
     st.subheader("Confirm Your Symptoms")
     st.info(f"Based on your query: '{original_query}' and initial analysis, please confirm the symptoms you are experiencing from the list below to help narrow down possibilities.")
 
     # Use a unique key for the form based on the original query and a timestamp
-    # This ensures a new form is rendered if the query changes or if the process is retried
     form_key = f"symptom_confirmation_form_{abs(hash(original_query))}_{st.session_state.get('form_timestamp', datetime.now().timestamp())}"
 
     # Initialize a local set to store confirmed symptoms during the current form interaction
-    # This set will be updated by the checkboxes
-    # Use the specific form key for the local state variable
     local_confirmed_symptoms_key = f'{form_key}_confirmed_symptoms_local'
     if local_confirmed_symptoms_key not in st.session_state:
-        # Initialize empty for a new form
         st.session_state[local_confirmed_symptoms_key] = set()
         logger.debug(f"Initialized local symptom set for form {form_key}")
     else:
          logger.debug(f"Using existing local symptom set for form {form_key} with {len(st.session_state[local_confirmed_symptoms_key])} items.")
 
 
+    # --- New Logic: Combine all symptoms into a single list ---
+    all_unique_symptoms = set()
+    for disease_label, symptoms_list in symptom_options.items():
+        # Ensure symptoms_list is iterable and contains strings before adding to the set
+        if isinstance(symptoms_list, list):
+            for symptom in symptoms_list:
+                 if isinstance(symptom, str):
+                      all_unique_symptoms.add(symptom.strip()) # Add stripped symptom, keep original case for display
+
+    # Sort the unique symptoms alphabetically for consistent display order
+    sorted_all_symptoms = sorted(list(all_unique_symptoms))
+    # --- End New Logic ---
+
+
     with st.form(form_key):
-        st.markdown("Please check all symptoms that apply to you:")
-        # Sort diseases alphabetically for consistent display
-        sorted_diseases = sorted(symptom_options.keys())
-        for disease_label in sorted_diseases:
-            symptoms = symptom_options[disease_label]
-            st.markdown(f"**Possible Symptoms Associated with {disease_label.split(' (Confidence:')[0].strip()}:**") # Show clean disease name
+        st.markdown("Please check all symptoms that apply to you from the list below:")
 
-            # Sort symptoms alphabetically within each disease list
-            sorted_symptoms = sorted(symptoms)
-
+        if not sorted_all_symptoms:
+            st.info("No specific symptoms were found in the knowledge graph for the potential conditions. You can use the box below to add any symptoms you are experiencing.")
+        else:
+            # --- Modified Display Logic: Iterate through the combined list ---
             cols = st.columns(4) # Arrange checkboxes in columns (adjust number of columns as needed)
-            for i, symptom in enumerate(sorted_symptoms):
+            for i, symptom in enumerate(sorted_all_symptoms):
                 col = cols[i % 4]
                 # Use a unique key for each checkbox
-                checkbox_key = f"{form_key}_checkbox_{disease_label}_{symptom}"
-                # Check if this symptom was previously selected in this form render cycle
-                # This helps preserve selections if the app reruns while the form is displayed
+                checkbox_key = f"{form_key}_checkbox_{symptom}" # Key based on form and symptom name
+                # Check if this symptom was previously selected in this form render cycle (using lower case for comparison)
                 initial_state = symptom.strip().lower() in st.session_state[local_confirmed_symptoms_key]
+
                 if col.checkbox(symptom, key=checkbox_key, value=initial_state):
-                     # Add to the local set on click
+                     # Add the lower case stripped symptom to the local set on click
                      st.session_state[local_confirmed_symptoms_key].add(symptom.strip().lower())
                 else:
-                     # Remove from the local set if unchecked
+                     # Remove from the local set if unchecked (using lower case for comparison)
                      st.session_state[local_confirmed_symptoms_key].discard(symptom.strip().lower())
+            # --- End Modified Display Logic ---
 
 
-        # Add an "Other" symptom input field
+        # Add an "Other" symptom input field (remains the same)
         st.markdown("**Other Symptoms (if any):**")
         other_symptoms_text = st.text_input("Enter additional symptoms here (comma-separated)", key=f"{form_key}_other_symptoms_input")
         if other_symptoms_text:
              other_symptoms_list = [s.strip().lower() for s in other_symptoms_text.split(',') if s.strip()]
-             st.session_state[local_confirmed_symptoms_key].update(other_symptoms_list)
+             st.session_state[local_confirmed_symptoms_key].update(other_symptoms_list) # Add lower case stripped symptoms
 
 
         # When the form is submitted, save the *final* state of the local set
-        # This is done implicitly by Streamlit when the form is submitted and a rerun happens.
-        # The submit button triggers the rerun.
         submit_button = st.form_submit_button("Confirm and Continue")
 
         if submit_button:
             logger.info(f"Symptom confirmation form submitted. Final confirmed symptoms: {st.session_state[local_confirmed_symptoms_key]}")
             # Store the confirmed symptoms from the local set into the *main* session state variable
-            st.session_state.confirmed_symptoms_from_ui = list(st.session_state[local_confirmed_symptoms_key])
+            # Store as a list of lowercase strings for consistent processing later
+            st.session_state.confirmed_symptoms_from_ui = sorted(list(st.session_state[local_confirmed_symptoms_key]))
 
             # Clear the UI state flags *after* submitting the form, but before the rerun.
             st.session_state.awaiting_symptom_confirmation = False
             # Keep original_query_for_followup; generate_response needs it to know which query to process.
-            # Do NOT clear confirmed_symptoms_from_ui here; generate_response needs it in the next rerun.
 
             # Set a new form timestamp for the next potential checklist interaction
             st.session_state.form_timestamp = datetime.now().timestamp()
