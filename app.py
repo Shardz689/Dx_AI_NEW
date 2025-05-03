@@ -3,7 +3,6 @@ from pathlib import Path
 import csv
 import os
 import re
-import torch
 import json
 import numpy as np
 from datetime import datetime
@@ -14,50 +13,85 @@ from PIL import Image
 import io
 
 # Import Gemini API
-import google.generativeai as genai
-from langchain_google_genai import ChatGoogleGenerativeAI
+try:
+    import google.generativeai as genai
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    GOOGLE_GENAI_AVAILABLE = True
+except ImportError:
+    GOOGLE_GENAI_AVAILABLE = False
+    ChatGoogleGenerativeAI = None # Placeholder if import fails
+    genai = None
+    st.error("Google Generative AI libraries not found. Please install them: pip install google-generativeai langchain-google-genai")
+
 
 # Import embedding and vectorstore components
-from sentence_transformers import SentenceTransformer
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain_community.document_loaders import PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+try:
+    import torch # Import torch first to check availability
+    from sentence_transformers import SentenceTransformer
+    from langchain_community.embeddings import HuggingFaceEmbeddings
+    from langchain_community.vectorstores import FAISS
+    from langchain_community.document_loaders import PyPDFLoader
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
+    LANGCHAIN_COMMUNITY_AVAILABLE = True
+    # Hint to Streamlit's watcher to ignore torch internals that might cause issues
+    # This is a known issue with Streamlit watching large libraries like torch.
+    # Using a file watcher ignore pattern in Streamlit config is the preferred way,
+    # but this code tries a programmatic approach (less reliable).
+    if hasattr(torch, '_C') and hasattr(torch._C, '_get_custom_class_python_wrapper'):
+        pass # Avoid risky deletion attempts, config file is better
+except ImportError:
+    LANGCHAIN_COMMUNITY_AVAILABLE = False
+    # Define placeholders if imports fail
+    HuggingFaceEmbeddings = None
+    FAISS = None
+    PyPDFLoader = None
+    RecursiveCharacterTextSplitter = None
+    st.error("Langchain community components (Embeddings, Vectorstores, Loaders) or Sentence Transformers not found. Please install them: pip install langchain-community sentence-transformers faiss-cpu pypdf torch")
+
 
 # Import chain and memory components
-from langchain.chains import ConversationalRetrievalChain
-from langchain.memory import ConversationBufferMemory
+try:
+    from langchain.chains import ConversationalRetrievalChain
+    from langchain.memory import ConversationBufferMemory
+    LANGCHAIN_CORE_AVAILABLE = True
+except ImportError:
+    LANGCHAIN_CORE_AVAILABLE = False
+    ConversationalRetrievalChain = None
+    ConversationBufferMemory = None
+    st.error("Core Langchain components (Chains, Memory) not found. Please install them: pip install langchain")
+
 
 # Import Neo4j components
-from neo4j import GraphDatabase
 try:
-    import torch
-    # Hint to Streamlit's watcher to ignore torch internals that cause issues
-    # This might prevent the __path__._path error
-    if hasattr(torch, '_C') and hasattr(torch._C, '_get_custom_class_python_wrapper'):
-         # Try to disable watching on this specific part if it exists
-         # This is a heuristic and might not work on all torch versions
-         try:
-              del torch._C._get_custom_class_python_wrapper # Remove the attribute temporarily during watcher scan? (Risky)
-              # A safer approach might be to configure Streamlit's watcher if possible, but this requires app config files.
-              # Let's stick to the config file approach if needed.
-              pass # Do nothing risky here.
-         except AttributeError:
-              pass # Attribute doesn't exist, no need to delete
-
+    from neo4j import GraphDatabase
+    NEO4J_AVAILABLE = True
 except ImportError:
-     pass
-# Configuration
-# Load environment variables from .env file
-from dotenv import load_dotenv
-load_dotenv()
+    NEO4J_AVAILABLE = False
+    GraphDatabase = None
+    st.error("Neo4j driver not found. Please install it: pip install neo4j")
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    st.warning("python-dotenv not found. Cannot load .env file. Ensure environment variables are set.")
+
+
+# --- Configuration ---
 # Get environment variables with fallback to placeholder values
-# IMPORTANT: Replace 'YOUR_GEMINI_API_KEY' with your actual key or ensure .env is set
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBv-I8Ld-k09Lxu9Yi7HPffZHKXIqGSdHU")
-NEO4J_URI = os.getenv("NEO4J_URI", "neo4j+s://1b47920f.databases.neo4j.io")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "eCqDfyhDcuGMLzbYfiqL6jsvjH3LIXr86xQGAEKmY8Y")
+# IMPORTANT: Replace placeholders with your actual keys/credentials or ensure .env is set
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBv-I8Ld-k09Lxu9Yi7HPffZHKXIqGSdHU") # Placeholder
+NEO4J_URI = os.getenv("NEO4J_URI", "neo4j+s://1b47920f.databases.neo4j.io") # Placeholder
+NEO4J_USER = os.getenv("NEO4J_USER", "neo4j") # Placeholder
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "eCqDfyhDcuGMLzbYfiqL6jsvjH3LIXr86xQGAEKmY8Y") # Placeholder
+
+# Validate required environment variables if libraries are available
+if GOOGLE_GENAI_AVAILABLE and (GEMINI_API_KEY == "YOUR_GEMINI_API_KEY" or not GEMINI_API_KEY):
+    st.error("❗ Gemini API Key is missing. Please set the GEMINI_API_KEY environment variable or update the placeholder in the code.")
+if NEO4J_AVAILABLE and (NEO4J_URI == "neo4j+s://YOUR_NEO4J_URI" or NEO4J_PASSWORD == "YOUR_NEO4J_PASSWORD" or not NEO4J_URI or not NEO4J_PASSWORD or not NEO4J_USER):
+    st.error("❗ Neo4j connection details (URI, User, Password) are missing or incomplete. Please set NEO4J_URI, NEO4J_USER, and NEO4J_PASSWORD environment variables or update placeholders.")
+
 
 # Update the NEO4J_AUTH variable to use environment variables
 NEO4J_AUTH = (NEO4J_USER, NEO4J_PASSWORD)
@@ -71,39 +105,48 @@ THRESHOLDS = {
     "medical_relevance": 0.6 # Threshold for medical relevance check
 }
 
+# Hardcoded PDF files to use (relative to the script location)
+# Ensure these files exist in the same directory as your script or provide full paths.
+PDF_DIRECTORY = Path(__file__).parent # Directory where the script is located
+HARDCODED_PDF_FILES = [
+    PDF_DIRECTORY / "rawdata.pdf",
+    # Add more PDF paths here if needed, e.g., PDF_DIRECTORY / "another_doc.pdf"
+]
+
 # Configure logging
 # Log messages to the console where streamlit is run
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# --- Helper Functions ---
 
-# Load and convert the image to base64
 def get_image_as_base64(file_path):
     """Converts an image file to a base64 string."""
     if not os.path.exists(file_path):
         logger.warning(f"Image file not found at {file_path}")
-        # Return a tiny valid base64 image as a fallback
-        return "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
-
+        # Return a tiny valid base64 image as a fallback (1x1 transparent pixel)
+        return "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
     try:
         with open(file_path, "rb") as image_file:
-            return base64.b64encode(image_file.read()).decode()
+            encoded_string = base64.b64encode(image_file.read()).decode()
+            # Determine image type for correct data URI
+            extension = Path(file_path).suffix.lower()
+            mime_type = f"image/{extension[1:]}" if extension else "image/png" # Default to png if no extension
+            return f"data:{mime_type};base64,{encoded_string}"
     except Exception as e:
         logger.error(f"Error encoding image {file_path} to base64: {e}")
-        # Return a tiny valid base64 image as a fallback
-        return "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+        return "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
 
-
-# Option 1: If your image is stored locally
-image_path = "Zoom My Life.jpg"  # Update with your actual path
-icon = get_image_as_base64(image_path)
+# Load and encode the image
+image_path = Path(__file__).parent / "Zoom My Life.jpg" # Assuming image is in the same directory
+icon_base64 = get_image_as_base64(image_path)
 
 # Cache for expensive operations
 CACHE = {}
 
 def get_cached(key):
     """Get cached result if it exists"""
-    key_str = json.dumps(key, sort_keys=True) # Use JSON dump for complex keys
+    key_str = json.dumps(key, sort_keys=True)
     if key_str in CACHE:
         logger.debug(f"Cache hit for key: {key_str[:50]}...")
         return CACHE[key_str]
@@ -115,2217 +158,2044 @@ def set_cached(key, value):
     key_str = json.dumps(key, sort_keys=True)
     logger.debug(f"Setting cache for key: {key_str[:50]}...")
     CACHE[key_str] = value
+    # Limit cache size (simple approach: clear if too large)
+    if len(CACHE) > 100: # Adjust cache size limit as needed
+        logger.warning("Cache size limit reached, clearing cache.")
+        CACHE.clear()
     return value
 
-
-# Hardcoded PDF files to use
-# Update with your actual local PDF paths
-HARDCODED_PDF_FILES = [
-    "rawdata.pdf",
-    # Add more PDF paths here if needed
-]
-
-# For testing purposes - add more relevant known diseases if possible
-# These aren't strictly used in the new logic, but useful for context/dummy data
-known_diseases = ["hypertension", "type 2 diabetes mellitus", "respiratory infections", "obesity", "cardiovascular disease", "common cold", "influenza", "strep throat", "anxiety", "acid reflux", "costochondritis", "angina"]
-
-
-# DocumentChatBot class
+# --- DocumentChatBot Class ---
 class DocumentChatBot:
     def __init__(self):
         logger.info("DocumentChatBot initializing...")
-        self.qa_chain: Optional[ConversationalRetrievalChain] = None # Langchain QA chain
-        self.vectordb: Optional[FAISS] = None # Langchain Vectorstore
-        self.chat_history: List[Tuple[str, str]] = [] # Stores (user_msg, bot_msg) tuples for display and history
-        # Tracks if the single allowed LLM follow-up has been asked (0 or 1) for the current thread
-        self.followup_context = {"round": 0}
+        self.qa_chain: Optional[ConversationalRetrievalChain] = None
+        self.vectordb: Optional[FAISS] = None
+        self.chat_history: List[Tuple[str, str]] = []
+        self.followup_context = {"round": 0} # Tracks LLM follow-up round (0 or 1)
 
-        # Initialize embedding model here, handling potential errors
         self.embedding_model: Optional[HuggingFaceEmbeddings] = None
-        try:
-            # Check for CUDA availability and set device
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
-            logger.info(f"Initializing SentenceTransformer embeddings on device: {device}")
-            # Use HuggingFaceEmbeddings which wraps SentenceTransformer
-            self.embedding_model = HuggingFaceEmbeddings(
-                model_name='sentence-transformers/all-MiniLM-L6-v2',
-                cache_folder='./cache',
-                model_kwargs={'device': device}, # Pass device via model_kwargs for HuggingFaceEmbeddings
-                encode_kwargs={'normalize_embeddings': True}
-            )
-            # Test the embedding model (important check)
-            try:
-                test_embedding = self.embedding_model.embed_query("test query")
-                if test_embedding and len(test_embedding) > 0:
-                     logger.info("Embedding model initialized and tested successfully.")
-                else:
-                    raise ValueError("Test embedding was empty.")
-            except Exception as test_e:
-                 logger.warning(f"Embedding model test failed: {test_e}. Setting embedding_model to None.")
-                 self.embedding_model = None # Set to None if test fails
-
-        except Exception as e:
-            logger.critical(f"CRITICAL ERROR: Could not initialize embedding model: {e}")
-            self.embedding_model = None # Ensure it's None on failure
-
-
-        self.llm: Optional[ChatGoogleGenerativeAI] = None # LLM for general generation and specific prompts
-
-        # Initialize KG driver connection status
+        self.llm: Optional[ChatGoogleGenerativeAI] = None
         self.kg_driver = None
         self.kg_connection_ok = False
-        self._init_kg_connection()
+
+        # Initialize components only if libraries are available
+        if LANGCHAIN_COMMUNITY_AVAILABLE and 'torch' in globals():
+            try:
+                device = 'cuda' if torch.cuda.is_available() else 'cpu'
+                logger.info(f"Initializing SentenceTransformer embeddings on device: {device}")
+                # Ensure cache directory exists
+                cache_dir = Path("./cache")
+                cache_dir.mkdir(parents=True, exist_ok=True)
+
+                self.embedding_model = HuggingFaceEmbeddings(
+                    model_name='sentence-transformers/all-MiniLM-L6-v2',
+                    cache_folder=str(cache_dir), # Pass cache folder path
+                    model_kwargs={'device': device},
+                    encode_kwargs={'normalize_embeddings': True}
+                )
+                # Test embedding model
+                test_embedding = self.embedding_model.embed_query("test query")
+                if not test_embedding or len(test_embedding) == 0:
+                    raise ValueError("Test embedding failed (empty result).")
+                logger.info("Embedding model initialized and tested successfully.")
+            except Exception as e:
+                logger.error(f"CRITICAL ERROR: Could not initialize embedding model: {e}", exc_info=True)
+                self.embedding_model = None
+                st.warning("⚠️ Embedding model initialization failed. RAG features will be unavailable. Check logs.")
+        else:
+            logger.warning("Langchain community components or torch not available. Skipping embedding model initialization.")
+
+        if NEO4J_AVAILABLE:
+            self._init_kg_connection()
+        else:
+            logger.warning("Neo4j library not available. Skipping KG connection.")
+            st.warning("⚠️ Neo4j library not found. Knowledge Graph features will be unavailable.")
+
         logger.info("DocumentChatBot initialization finished.")
 
 
     def _init_kg_connection(self):
         """Attempts to connect to the Neo4j database."""
+        if not NEO4J_AVAILABLE:
+            logger.error("Neo4j library not available, cannot connect.")
+            self.kg_connection_ok = False
+            return
+
+        # Check if connection details are placeholders
+        if NEO4J_URI == "neo4j+s://YOUR_NEO4J_URI" or NEO4J_PASSWORD == "YOUR_NEO4J_PASSWORD":
+            logger.error("Neo4j connection details are placeholders. Cannot connect.")
+            st.warning("⚠️ Neo4j connection details are placeholders. Knowledge Graph features unavailable.")
+            self.kg_connection_ok = False
+            return
+
         logger.info("Attempting to connect to Neo4j...")
         try:
-            # Use a small timeout for the connection test
-            self.kg_driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH, connection_timeout=5.0)
-            self.kg_driver.verify_connectivity()
-            logger.info("Successfully connected to Neo4j.")
+            self.kg_driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH, connection_timeout=10.0) # Increased timeout
+            # Perform a simple query to truly verify connectivity and authentication
+            with self.kg_driver.session(database="neo4j") as session: # Ensure default 'neo4j' db if needed
+                 session.run("MATCH (n) RETURN count(n) LIMIT 1")
+            logger.info("Successfully connected and verified connection to Neo4j.")
             self.kg_connection_ok = True
         except Exception as e:
-            logger.error(f"Failed to connect to Neo4j at {NEO4J_URI}: {e}. KG features will be unavailable.")
+            logger.error(f"Failed to connect to Neo4j at {NEO4J_URI}: {e}. KG features will be unavailable.", exc_info=True)
             self.kg_driver = None
             self.kg_connection_ok = False
+            st.warning(f"⚠️ Failed to connect to Neo4j: {e}. Knowledge Graph features unavailable.")
 
 
-    def create_vectordb(self):
-            """Create vector database from hardcoded PDF documents."""
-            logger.info("Creating vector database...")
-            pdf_files = [Path(pdf_file) for pdf_file in HARDCODED_PDF_FILES if Path(pdf_file).exists()]
+    def create_vectordb(self) -> Tuple[Optional[FAISS], str]:
+        """Create vector database from hardcoded PDF documents."""
+        if not LANGCHAIN_COMMUNITY_AVAILABLE or self.embedding_model is None:
+             msg = "Vector DB creation skipped: Required libraries (Langchain, Embeddings) not available or embeddings failed."
+             logger.warning(msg)
+             return None, msg
 
-            if not pdf_files:
-                logger.warning("No PDF files found. Cannot create vector database.")
-                return None, "No PDF files found at the specified paths. Cannot create vector database."
+        logger.info("Creating vector database...")
+        pdf_files_found = []
+        for pdf_path in HARDCODED_PDF_FILES:
+            if pdf_path.exists() and pdf_path.is_file():
+                pdf_files_found.append(pdf_path)
+            else:
+                logger.warning(f"PDF file not found or is not a file: {pdf_path}")
 
-            loaders = []
-            for pdf_file in pdf_files:
-                try:
-                    loaders.append(PyPDFLoader(str(pdf_file)))
-                    # logger.debug(f"Loaded PDF loader for: {pdf_file}")
-                except Exception as e:
-                    logger.error(f"Error creating loader for {pdf_file}: {e}")
-                    # Continue with other files
+        if not pdf_files_found:
+            msg = "No valid PDF files found at specified paths. Cannot create vector database."
+            logger.warning(msg)
+            st.warning(f"⚠️ {msg}")
+            return None, msg
 
-            if not loaders:
-                 logger.warning("No valid PDF loaders could be created.")
-                 return None, "No valid PDF loaders could be created."
+        loaders = []
+        for pdf_file in pdf_files_found:
+            try:
+                loaders.append(PyPDFLoader(str(pdf_file)))
+                logger.debug(f"Created PDF loader for: {pdf_file}")
+            except Exception as e:
+                logger.error(f"Error creating loader for {pdf_file}: {e}")
 
-            pages = []
-            for loader in loaders:
-                try:
-                    loaded_pages = loader.load()
-                    pages.extend(loaded_pages)
-                    logger.info(f"Loaded {len(loaded_pages)} pages from {loader.file_path}.")
-                except Exception as e:
-                    logger.error(f"Error loading pages from PDF {loader.file_path}: {e}")
-                    # Continue loading other files
+        if not loaders:
+             msg = "No valid PDF loaders could be created. Check PDF files."
+             logger.warning(msg)
+             st.warning(f"⚠️ {msg}")
+             return None, msg
 
+        pages = []
+        for loader in loaders:
+            try:
+                loaded_pages = loader.load()
+                pages.extend(loaded_pages)
+                logger.info(f"Loaded {len(loaded_pages)} pages from {loader.file_path}.")
+            except Exception as e:
+                logger.error(f"Error loading pages from PDF {loader.file_path}: {e}")
 
-            if not pages:
-                 logger.warning("No pages were loaded from the PDFs.")
-                 return None, "No pages were loaded from the PDFs."
+        if not pages:
+             msg = "No pages were loaded from the PDF files."
+             logger.warning(msg)
+             st.warning(f"⚠️ {msg}")
+             return None, msg
 
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=1000, # Adjust chunk size if needed
-                chunk_overlap=100 # Adjust overlap if needed
-            )
+        try:
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150) # Slightly increased overlap
             splits = text_splitter.split_documents(pages)
             logger.info(f"Split {len(pages)} pages into {len(splits)} chunks.")
+        except Exception as e:
+            msg = f"Error splitting documents: {e}"
+            logger.error(msg, exc_info=True)
+            st.warning(f"⚠️ {msg}")
+            return None, msg
 
-            if not splits:
-                logger.warning("No text chunks were created from the PDF pages.")
-                return None, "No text chunks were created from the PDF pages."
 
-            # Use the initialized embedding model
-            if self.embedding_model is None:
-                 logger.warning("Embedding model is not initialized. Cannot create vector database.")
-                 return None, "Embedding model is not initialized. Cannot create vector database."
+        if not splits:
+            msg = "No text chunks were created from the PDF pages."
+            logger.warning(msg)
+            return None, msg
 
-            try:
-                logger.info("Creating FAISS vectorstore from documents using the embedding model...")
-                # Use the real FAISS
-                vectordb = FAISS.from_documents(splits, self.embedding_model)
-                logger.info("FAISS vectorstore created.")
-                return vectordb, "Vector database created successfully."
-            except Exception as e:
-                logger.error(f"Error creating FAISS vector database: {e}")
-                return None, f"Failed to create vector database: {str(e)}"
+        try:
+            logger.info("Creating FAISS vectorstore from documents...")
+            vectordb = FAISS.from_documents(splits, self.embedding_model)
+            # Test the vectorstore
+            _ = vectordb.similarity_search("test", k=1)
+            logger.info("FAISS vectorstore created and tested successfully.")
+            return vectordb, "Vector database created successfully."
+        except Exception as e:
+            msg = f"Error creating FAISS vector database: {e}"
+            logger.error(msg, exc_info=True)
+            st.warning(f"⚠️ {msg}")
+            return None, msg
 
 
     def is_medical_query(self, query: str) -> Tuple[bool, str]:
-        """
-        Check if the query is relevant to the medical domain using LLM.
-        Returns a tuple of (is_relevant, reason)
-        """
+        """ Check if the query is relevant to the medical domain using LLM (if available) or keywords."""
         cache_key = {"type": "medical_relevance", "query": query}
         cached = get_cached(cache_key)
         if cached:
             return cached
 
-        if self.llm is None:
-             logger.warning("LLM not initialized. Cannot perform medical relevance check reliably.")
-             # Fallback if LLM is not available - simple keyword check
-             medical_keywords = ["symptom", "disease", "health", "medical", "pain", "cough", "fever", "treatment", "diagnose", "sick", "doctor"]
-             if any(keyword in query.lower() for keyword in medical_keywords):
-                  return (True, "Fallback heuristic match")
-             return (False, "Fallback: LLM not available and no keywords found")
+        medical_keywords = ["symptom", "disease", "health", "medical", "pain", "cough", "fever", "treatment", "diagnose", "sick", "doctor", "condition", "illness", "remedy", "medicine", "medication", "therapy"]
+        query_lower = query.lower()
 
+        # Keyword check first (quick fallback)
+        if any(keyword in query_lower for keyword in medical_keywords):
+            # If LLM is not available, rely solely on keywords
+            if self.llm is None:
+                 logger.info("Medical relevance check (LLM unavailable): Keyword match.")
+                 result = (True, "Keyword match")
+                 set_cached(cache_key, result)
+                 return result
+        # If no keywords found and LLM unavailable, assume not medical
+        elif self.llm is None:
+             logger.info("Medical relevance check (LLM unavailable): No keyword match.")
+             result = (False, "LLM unavailable, no keywords found")
+             set_cached(cache_key, result)
+             return result
 
-        # Use local_generate which wraps self.llm
-        medical_relevance_prompt = '''
+        # --- LLM Check (if LLM is available) ---
+        medical_relevance_prompt = f'''
         Analyze the user query. Is it related to health, medical conditions, symptoms, treatments, medication, diagnostics, or any other medical or health science topic?
         Consider both explicit medical terms and implicit health concerns. Answer concisely.
-        
-        Query: "{}"
-        
+
+        Query: "{query}"
+
         Return ONLY a JSON object with this format:
         {{
-            "is_medical": true,
-            "confidence": 0.0,
+            "is_medical": true_or_false,
+            "confidence": float_between_0.0_and_1.0,
             "reasoning": "brief explanation"
         }}
-        '''.format(query)
+        '''
 
         try:
-            response = self.local_generate(medical_relevance_prompt, max_tokens=150) # Reduced max_tokens for speed
+            response = self.local_generate(medical_relevance_prompt, max_tokens=150)
+            # Use regex to find JSON object robustly
             json_match = re.search(r'\{[\s\S]*\}', response)
-
             if json_match:
+                json_str = json_match.group(0)
                 try:
-                    data = json.loads(json_match.group(0))
+                    data = json.loads(json_str)
                     is_medical = data.get("is_medical", False)
                     confidence = data.get("confidence", 0.0)
                     reasoning = data.get("reasoning", "")
 
-                    # Use a confidence threshold
                     if is_medical and confidence >= THRESHOLDS.get("medical_relevance", 0.6):
-                        result = (True, "")
+                        logger.info(f"Medical relevance check (LLM): YES (Conf: {confidence:.2f})")
+                        result = (True, reasoning)
                     else:
-                        result = (False, reasoning)
+                        # If LLM is not confident or says no, double-check with keywords as a safety net
+                        if any(keyword in query_lower for keyword in medical_keywords):
+                             logger.info(f"Medical relevance check (LLM): NO/Low Conf ({confidence:.2f}), but keyword match found. Treating as medical.")
+                             result = (True, f"LLM low confidence ({confidence:.2f}), but keyword match.")
+                        else:
+                             logger.info(f"Medical relevance check (LLM): NO (Conf: {confidence:.2f})")
+                             result = (False, reasoning)
 
                     set_cached(cache_key, result)
                     return result
                 except json.JSONDecodeError:
-                    logger.warning("Could not parse medical relevance JSON from LLM response.")
-                    # Fallback if JSON parsing fails
-                    medical_keywords = ["symptom", "disease", "health", "medical", "pain", "cough", "fever", "treatment", "diagnose"]
-                    if any(keyword in query.lower() for keyword in medical_keywords):
-                         return (True, "Fallback heuristic match")
-                    return (False, "Fallback: JSON parsing failed and no keywords found")
+                    logger.warning(f"Could not parse medical relevance JSON from LLM: {response}. Falling back to keyword check.")
+            else:
+                 logger.warning(f"LLM response did not contain JSON for medical relevance: {response}. Falling back to keyword check.")
 
         except Exception as e:
-            logger.error(f"Error checking medical relevance: {e}")
-            # Fallback if LLM call fails
-            medical_keywords = ["symptom", "disease", "health", "medical", "pain", "cough", "fever", "treatment", "diagnose"]
-            if any(keyword in query.lower() for keyword in medical_keywords):
-                 return (True, "Fallback heuristic match")
+            logger.error(f"Error checking medical relevance with LLM: {e}. Falling back to keyword check.")
 
-        # Default fallback - treat as non-medical if everything else fails
-        return (False, "Default: Check failed")
+        # Fallback to keyword check if LLM fails or doesn't return valid JSON
+        if any(keyword in query_lower for keyword in medical_keywords):
+            logger.info("Medical relevance check (Fallback): Keyword match.")
+            result = (True, "Keyword match after LLM failure")
+        else:
+            logger.info("Medical relevance check (Fallback): No keyword match.")
+            result = (False, "LLM failed and no keywords found")
+
+        set_cached(cache_key, result)
+        return result
+
+    def initialize_qa_chain(self) -> Tuple[bool, str]:
+        """Initialize the QA chain with LLM, Embeddings, Vector DB, and KG."""
+        logger.info("Attempting to initialize/verify QA chain components...")
+
+        # Check if already initialized and components are healthy
+        if (self.llm is not None and self.embedding_model is not None and
+            self.vectordb is not None and self.qa_chain is not None and
+            (self.kg_driver is not None or not NEO4J_AVAILABLE)): # KG optional if lib not installed
+             # Quick health check (optional, can add simple tests here if needed)
+             try:
+                 if self.llm: _ = self.llm.invoke("hello") # Test LLM
+                 if self.vectordb: _ = self.vectordb.similarity_search("test", k=1) # Test VDB
+                 if self.kg_driver and self.kg_connection_ok: # Test KG if available and connected
+                     with self.kg_driver.session(database="neo4j") as s: s.run("RETURN 1")
+                 logger.info("QA Chain components appear already initialized and healthy.")
+                 success, msg = self._get_init_status_message()
+                 return success, msg
+             except Exception as health_e:
+                  logger.warning(f"Health check failed for existing components: {health_e}. Re-initializing.")
+                  # Force re-initialization by clearing components
+                  self.llm = None
+                  self.vectordb = None
+                  self.qa_chain = None
+                  # Don't clear embedding model as it's expensive, assume it's ok if initialized once
 
 
-    def initialize_qa_chain(self):
-        """Initialize the QA chain with Gemini Flash 1.5 and vector database."""
-        logger.info("Initializing QA chain...")
-        # This method sets up self.llm, self.embedding_model, self.vectordb, and self.qa_chain
-        # self.embedding_model is already initialized in __init__
-        # self.kg_driver is initialized in __init__
+        llm_init_success = False
+        vdb_init_success = False
+        chain_init_success = False
 
-        if self.qa_chain is None or self.llm is None: # Only initialize if not already done
-
-            # --- 1. Initialize LLM ---
-            llm_init_success = False
-            llm_init_message = "LLM initialization skipped." # Default message
+        # --- 1. Initialize LLM ---
+        if GOOGLE_GENAI_AVAILABLE and self.llm is None:
             if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY":
                 logger.warning("Gemini API key not set or invalid. LLM will not be initialized.")
-                self.llm = None # Explicitly set LLM to None
-                llm_init_message = "Gemini API key not found or invalid."
+                self.llm = None
             else:
                 try:
                     logger.info("Initializing Gemini Flash 1.5...")
                     self.llm = ChatGoogleGenerativeAI(
                         model="gemini-1.5-flash",
                         google_api_key=GEMINI_API_KEY,
-                        temperature=0.3, # Adjust temperature
+                        temperature=0.3,
                         top_p=0.95,
                         top_k=40,
                         convert_system_message_to_human=True
                     )
-                    # Test the model (important check)
-                    try:
-                         test_response = self.llm.invoke("Hello, are you ready?")
-                         if test_response.content:
-                             logger.info(f"Gemini says: {test_response.content[:50]}...") # Print start of response
-                             logger.info("Successfully connected to Gemini Flash 1.5")
-                             llm_init_success = True
-                             llm_init_message = "Gemini Flash 1.5 initialized."
-                         else:
-                            raise ValueError("LLM test response was empty.")
-                    except Exception as test_e:
-                         logger.warning(f"Initial Gemini test failed: {test_e}. LLM may not be functional.")
-                         self.llm = None # Set back to None if test fails
-                         llm_init_success = False
-                         llm_init_message = f"Gemini LLM test failed: {test_e}"
-
-
+                    # Test LLM
+                    test_response = self.llm.invoke("Hello!")
+                    if test_response and hasattr(test_response, 'content') and test_response.content:
+                        logger.info("Successfully connected to Gemini Flash 1.5.")
+                        llm_init_success = True
+                    else:
+                        raise ValueError("LLM test invocation failed or returned empty response.")
                 except Exception as e:
-                    logger.error(f"Failed to initialize Gemini Flash 1.5: {e}")
-                    self.llm = None # Ensure LLM is None on failure
-                    llm_init_success = False
-                    llm_init_message = f"Failed to initialize Gemini Flash 1.5: {str(e)}"
+                    logger.error(f"Failed to initialize or test Gemini Flash 1.5: {e}", exc_info=True)
+                    self.llm = None
+                    st.warning(f"⚠️ Failed to initialize LLM (Gemini): {e}. Core functionality limited.")
+        elif self.llm is not None:
+             llm_init_success = True # Already initialized
+        else:
+             logger.warning("Google GenAI library not available. Skipping LLM initialization.")
+             st.warning("⚠️ Google GenAI library not found. LLM features unavailable.")
 
 
-            # --- 2. Create Vector Database (Requires Embedding Model) ---
-            # This uses the embedding model initialized in __init__
-            vdb_message = "Vector database initialization skipped." # Default message
-            if self.embedding_model is None:
-                 logger.warning("Embedding model not initialized. Cannot create vector database.")
-                 self.vectordb = None
-                 vdb_message = "Embedding model not initialized."
-            else:
-                 # Create the vector database
-                 self.vectordb, vdb_message = self.create_vectordb()
-                 if self.vectordb is None:
-                      logger.warning(f"Vector DB creation failed: {vdb_message}")
-                 else:
-                      logger.info("Vector database initialized.")
+        # --- 2. Create Vector Database ---
+        # Only create if needed and embeddings are available
+        if LANGCHAIN_COMMUNITY_AVAILABLE and self.embedding_model is not None and self.vectordb is None:
+             self.vectordb, vdb_message = self.create_vectordb()
+             if self.vectordb is not None:
+                 vdb_init_success = True
+                 logger.info(f"Vector DB Initialization: {vdb_message}")
+             else:
+                 logger.warning(f"Vector DB creation failed: {vdb_message}")
+                 # Don't block everything if VDB fails, RAG will just be skipped
+        elif self.vectordb is not None:
+            vdb_init_success = True # Already initialized
+        else:
+             logger.warning("Vector DB creation skipped: Libraries or embedding model unavailable, or already failed.")
 
 
-            # --- 3. Create Retrieval QA Chain ---
-            chain_message = "Retrieval chain initialization skipped." # Default message
+        # --- 3. Create Retrieval QA Chain ---
+        # Requires LLM, VDB, Embeddings, and core Langchain libs
+        if (LANGCHAIN_CORE_AVAILABLE and LANGCHAIN_COMMUNITY_AVAILABLE and
+            self.llm is not None and self.vectordb is not None and self.qa_chain is None):
             try:
-                 # The real ConversationalRetrievalChain requires a functional LLM and a retriever from a vectorstore
-                 if self.llm is not None and self.vectordb is not None:
-                      logger.info("Creating Real Conversational Retrieval Chain.")
-                      memory = ConversationBufferMemory(
-                         memory_key="chat_history", # This key must match the chain's memory key
-                         output_key='answer', # Output key from the chain
-                         return_messages=True # Keep messages in list format
-                      )
-
-                      self.qa_chain = ConversationalRetrievalChain.from_llm(
-                          self.llm, # Pass the real LLM
-                          retriever=self.vectordb.as_retriever(search_kwargs={"k": 5}), # Pass real retriever
-                          chain_type="stuff", # Use the 'stuff' chain type
-                          memory=memory, # Pass memory
-                          return_source_documents=True, # Ensure source documents are returned
-                          verbose=False, # Set to True for detailed logs from Langchain
-                      )
-                      chain_message = "Real Conversational Retrieval Chain initialized."
-                 else:
-                      logger.warning("Cannot create real Retrieval Chain: LLM or Vector DB not initialized.")
-                      self.qa_chain = None # Ensure qa_chain is None if creation fails
-                      chain_message = "Retrieval chain requires both LLM and Vector DB."
-
-
+                 logger.info("Creating Conversational Retrieval Chain.")
+                 memory = ConversationBufferMemory(
+                    memory_key="chat_history",
+                    output_key='answer',
+                    return_messages=True
+                 )
+                 self.qa_chain = ConversationalRetrievalChain.from_llm(
+                     self.llm,
+                     retriever=self.vectordb.as_retriever(search_kwargs={"k": 5}), # Increase k slightly
+                     memory=memory,
+                     return_source_documents=True,
+                     verbose=False, # Set True for debugging langchain steps
+                     # Combine docs prompt can be customized if needed
+                     # combine_docs_chain_kwargs={"prompt": your_custom_prompt}
+                 )
+                 # Test the chain lightly
+                 # _ = self.qa_chain.invoke({"question": "hello"}) # Can be slow, skip for faster init
+                 logger.info("Conversational Retrieval Chain initialized.")
+                 chain_init_success = True
             except Exception as e:
-                logger.error(f"Failed to create Retrieval Chain: {e}")
-                # Set qa_chain to None to indicate failure
+                logger.error(f"Failed to create Retrieval Chain: {e}", exc_info=True)
                 self.qa_chain = None
-                chain_message = f"Failed to create Retrieval Chain: {str(e)}"
+                st.warning(f"⚠️ Failed to create RAG chain: {e}. RAG features unavailable.")
+        elif self.qa_chain is not None:
+             chain_init_success = True # Already initialized
+        else:
+             logger.warning("Cannot create Retrieval Chain: Required components (LLM, VDB, Langchain libs) not available or not initialized.")
 
-            # Determine overall success message
-            status_parts = []
-            if self.llm is not None: status_parts.append("LLM OK")
-            else: status_parts.append("LLM Failed")
+        # --- 4. Verify KG Connection ---
+        # Re-check KG connection status if driver exists but status is false
+        if NEO4J_AVAILABLE and self.kg_driver and not self.kg_connection_ok:
+             logger.warning("Re-checking Neo4j connection...")
+             self._init_kg_connection() # Attempt reconnection/verification
 
-            if self.embedding_model is not None: status_parts.append("Embeddings OK")
-            else: status_parts.append("Embeddings Failed")
+        # Determine overall success and message
+        overall_success, overall_message = self._get_init_status_message()
 
-            if self.vectordb is not None: status_parts.append("Vector DB OK")
-            else: status_parts.append("Vector DB Failed")
+        logger.info(f"Initialization Result: Success={overall_success}, Message='{overall_message}'")
+        return overall_success, overall_message
 
-            if self.qa_chain is not None: status_parts.append("RAG Chain OK")
-            else: status_parts.append("RAG Chain Failed")
+    def _get_init_status_message(self) -> Tuple[bool, str]:
+        """Helper to generate the status message based on component availability."""
+        status_parts = []
+        llm_ok = self.llm is not None
+        embed_ok = self.embedding_model is not None
+        vdb_ok = self.vectordb is not None
+        chain_ok = self.qa_chain is not None
+        kg_ok = self.kg_connection_ok or not NEO4J_AVAILABLE # KG is ok if connected or library not installed
 
-            if self.kg_connection_ok: status_parts.append("KG OK")
-            else: status_parts.append("KG Failed")
+        status_parts.append(f"LLM: {'OK' if llm_ok else 'Failed'}")
+        status_parts.append(f"Embeddings: {'OK' if embed_ok else 'Failed'}")
+        status_parts.append(f"Vector DB: {'OK' if vdb_ok else 'Failed'}")
+        status_parts.append(f"RAG Chain: {'OK' if chain_ok else 'Failed'}")
+        status_parts.append(f"KG: {'OK' if kg_ok else 'Failed'}")
 
-            overall_message = f"Initialization Status: {', '.join(status_parts)}." # Combine init messages
+        # Basic function requires LLM. RAG requires LLM+Embed+VDB+Chain. KG requires KG driver.
+        # Consider initialization successful if at least the LLM is available for basic chat.
+        overall_success = llm_ok
 
-            # Return success status based on whether critical components are available for basic function
-            # Basic function requires LLM. RAG requires LLM+VDB+Chain. KG requires KG driver.
-            overall_success = self.llm is not None # Assume LLM is the minimal requirement for any useful response
+        # Add warning if optional components failed
+        warnings = []
+        if not chain_ok and (llm_ok and embed_ok and vdb_ok): warnings.append("RAG unavailable (chain init failed)")
+        elif not vdb_ok and (llm_ok and embed_ok): warnings.append("RAG unavailable (VDB init failed)")
+        elif not embed_ok: warnings.append("RAG unavailable (Embedding init failed)")
+        if not kg_ok and NEO4J_AVAILABLE: warnings.append("KG unavailable (Connection failed)")
 
+        status_string = f"Status: {', '.join(status_parts)}"
+        if warnings:
+            status_string += f" | Warnings: {'; '.join(warnings)}"
 
-            logger.info(f"QA Chain Initialization Result: Success={overall_success}, Message='{overall_message}'")
-            return overall_success, overall_message
+        return overall_success, status_string
 
-        # If already initialized
-        logger.info("QA Chain is already initialized.")
-        return True, "Chat assistant is already initialized."
-    
-    def local_generate(self, prompt, max_tokens=500):
-        """Generate text using Gemini Flash 1.5"""
+    def local_generate(self, prompt: str, max_tokens: int = 500) -> str:
+        """Generate text using the initialized LLM, with fallback."""
         if self.llm is None:
-            raise ValueError("LLM is not initialized")
+            logger.error("LLM not initialized, cannot generate.")
+            return "Error: LLM is not available."
 
         try:
-            response = self.llm.invoke(prompt)
-            return response.content
+            logger.debug(f"Generating LLM response (max_tokens={max_tokens}). Prompt starts: {prompt[:100]}...")
+            response = self.llm.invoke(prompt, config={"max_output_tokens": max_tokens})
+            # Ensure response.content is a string
+            content = getattr(response, 'content', '')
+            if not isinstance(content, str):
+                 content = str(content) # Convert if not string
+            logger.debug(f"LLM response received. Length: {len(content)}")
+            return content.strip()
         except Exception as e:
-            print(f"Error generating with Gemini: {e}")
-            # Fallback direct generation using genai
-            try:
-                model = genai.GenerativeModel('gemini-1.5-flash')
-                result = model.generate_content(prompt)
-                return result.text
-            except Exception as inner_e:
-                print(f"Error in fallback generation: {inner_e}")
-                return f"Error generating response. Please try again."
+            logger.error(f"Error generating with Langchain LLM wrapper: {e}", exc_info=True)
+            # Fallback direct generation using genai library if available
+            if GOOGLE_GENAI_AVAILABLE and genai:
+                try:
+                    logger.warning("Falling back to direct genai generation...")
+                    # Ensure API key is configured for direct use
+                    if GEMINI_API_KEY and GEMINI_API_KEY != "YOUR_GEMINI_API_KEY":
+                        genai.configure(api_key=GEMINI_API_KEY)
+                        model = genai.GenerativeModel('gemini-1.5-flash')
+                        # Set generation config for direct API call
+                        generation_config = genai.types.GenerationConfig(
+                             max_output_tokens=max_tokens,
+                             temperature=0.3, # Match temperature if possible
+                             top_p=0.95,
+                             top_k=40
+                        )
+                        result = model.generate_content(prompt, generation_config=generation_config)
+                        # Check response structure for safety
+                        response_text = getattr(result, 'text', '')
+                        if not response_text:
+                            # Log the full response if text is missing
+                            logger.error(f"Direct genai fallback failed: No text in response. Full response: {result}")
+                            return "Error: Fallback generation failed (empty response)."
+                        logger.info("Direct genai fallback generation successful.")
+                        return response_text.strip()
+                    else:
+                        logger.error("Cannot use direct genai fallback: API key missing.")
+                        return "Error: LLM generation failed (API key missing)."
+                except Exception as inner_e:
+                    logger.error(f"Error in direct genai fallback generation: {inner_e}", exc_info=True)
+                    return f"Error: LLM generation failed ({inner_e})."
+            else:
+                return "Error: LLM generation failed and fallback unavailable."
 
 
     def generate_llm_answer(self, query: str, kg_content: Optional[str] = None, rag_content: Optional[str] = None, initial_combined_answer: Optional[str] = None, missing_elements: Optional[List[str]] = None) -> str:
-        """
-        Generates an LLM answer, synthesizing information from KG and RAG,
-        and potentially focusing on missing elements identified.
-        This is the core synthesis step in Path 2.
-        """
+        """ Generates an LLM answer, synthesizing information from KG and RAG (Path 2). """
         logger.info("➡️ LLM Synthesis Step")
-
         if self.llm is None:
             logger.warning("LLM not initialized. Skipping synthesis.")
-            # Fallback response if LLM isn't available
-            return "I'm currently unable to synthesize a complete answer. Please consult a healthcare professional."
+            fallback = "I can provide some information based on the search, but cannot synthesize a full answer currently.\n\n"
+            if initial_combined_answer: fallback += initial_combined_answer
+            elif kg_content: fallback += kg_content + "\n\n"
+            elif rag_content: fallback += rag_content
+            else: fallback = "I couldn't find information or synthesize an answer due to initialization issues."
+            return fallback + "\n\nPlease consult a healthcare professional for definitive advice."
 
 
         prompt_parts = [
-            "You are a helpful medical AI assistant providing a comprehensive answer based on the provided information.",
+            "You are DxAI-Agent, a helpful medical AI assistant. Your goal is to provide a comprehensive and safe answer based *only* on the provided information below.",
             f"USER QUESTION: {query}"
         ]
 
-        # Provide the initial combined answer draft to the LLM
-        if initial_combined_answer and initial_combined_answer.strip() != "" and initial_combined_answer.strip() != "I found limited specific information regarding your query from my knowledge sources.":
-             prompt_parts.append(f"Available Information Draft (from Knowledge Graph and Document Search):\n---\n{initial_combined_answer}\n---")
-        # If no draft (e.g., error in combination), provide raw content if available and meaningful
-        elif kg_content or rag_content:
-            if kg_content and kg_content.strip() != "" and kg_content.strip() != "Knowledge Graph information on treatments or remedies is unavailable." and kg_content.strip() != "Knowledge Graph did not find specific relevant information on treatments or remedies.":
-                 prompt_parts.append(f"Available Medical Knowledge Graph Information:\n---\n{kg_content}\n---")
-            if rag_content and rag_content.strip() != "" and rag_content.strip() != "An error occurred while retrieving information from documents." and rag_content.strip() != "Document search is currently unavailable." and rag_content.strip() != "I searched my documents but couldn't find specific information for that.":
-                 prompt_parts.append(f"Available Retrieved Information (Document Search):\n---\n{rag_content}\n---")
-            else:
-                 # If raw sources were also unhelpful, explicitly state limited info
-                 prompt_parts.append("No specific relevant information was found from knowledge sources.")
+        # Provide context based on what's available
+        context_provided = False
+        if initial_combined_answer and initial_combined_answer.strip() and "limited specific information" not in initial_combined_answer:
+             prompt_parts.append(f"AVAILABLE INFORMATION DRAFT (from Knowledge Graph and Document Search):\n---\n{initial_combined_answer}\n---")
+             context_provided = True
+        # If no draft, provide raw content if meaningful
         else:
-             # If no context or draft, rely on LLM's general knowledge but with caution
-             prompt_parts.append("No specific information was found from knowledge sources. Please provide a general, safe response based on your medical knowledge.")
+             kg_meaningful = kg_content and kg_content.strip() and "unavailable" not in kg_content and "did not find" not in kg_content
+             rag_meaningful = rag_content and rag_content.strip() and "error occurred" not in rag_content and "unavailable" not in rag_content and "couldn't find specific" not in rag_content
 
+             if kg_meaningful:
+                  prompt_parts.append(f"AVAILABLE MEDICAL KNOWLEDGE GRAPH INFORMATION:\n---\n{kg_content}\n---")
+                  context_provided = True
+             if rag_meaningful:
+                  prompt_parts.append(f"AVAILABLE RETRIEVED INFORMATION (Document Search):\n---\n{rag_content}\n---")
+                  context_provided = True
 
-        prompt_parts.append("Please synthesize the available information (if any) to provide a helpful, accurate, and comprehensive answer to the USER QUESTION.")
+        if not context_provided:
+             prompt_parts.append("No specific relevant information was found from internal knowledge sources. Provide a general, safe response based on common medical knowledge, emphasizing the need for professional consultation.")
 
+        # Instructions for synthesis
+        prompt_parts.append("INSTRUCTIONS:")
+        prompt_parts.append("1. Synthesize the AVAILABLE INFORMATION (if any) into a helpful, accurate, and comprehensive answer to the USER QUESTION.")
+        prompt_parts.append("2. **Do NOT include information beyond what is provided in the AVAILABLE INFORMATION sections.** If no information is provided, state that and recommend professional consultation.")
+        prompt_parts.append("3. Structure the answer clearly using markdown (headings, lists).")
+
+        # Focus on missing elements if identified
         if missing_elements:
-            # Refine missing elements list to be more descriptive for the LLM prompt
             missing_desc = []
-            if "duration" in missing_elements: missing_desc.append("how long the symptoms have lasted")
-            if "severity" in missing_elements: missing_desc.append("how severe the symptoms are")
-            if "location" in missing_elements: missing_desc.append("the location of symptoms (e.g., pain location)")
-            if "frequency" in missing_elements: missing_desc.append("how often symptoms occur")
-            if "onset" in missing_elements: missing_desc.append("when the symptoms started")
-            # Add other specific element descriptions
-
+            if "duration" in missing_elements: missing_desc.append("symptom duration")
+            if "severity" in missing_elements: missing_desc.append("symptom severity")
+            if "location" in missing_elements: missing_desc.append("symptom location")
+            if "frequency" in missing_elements: missing_desc.append("symptom frequency")
+            if "onset" in missing_elements: missing_desc.append("symptom onset")
             if missing_desc:
-                focus_text = "Ensure your answer addresses the user's question and attempts to incorporate details related to: " + ", ".join(missing_desc)
-                prompt_parts.append(focus_text)
+                prompt_parts.append(f"4. If possible using the available information, try to address aspects related to: {', '.join(missing_desc)}.")
 
-        prompt_parts.append("Include appropriate medical disclaimers about consulting healthcare professionals for diagnosis and treatment.")
-        prompt_parts.append("Format your answer clearly and concisely using markdown.")
+        prompt_parts.append("5. **Crucially, include a prominent medical disclaimer** stating this is not a substitute for professional advice and recommending consultation with a healthcare provider.")
+        prompt_parts.append("6. If potentially serious symptoms like chest pain or shortness of breath were mentioned or implied, add an explicit warning to seek immediate medical attention.")
 
 
         prompt = "\n\n".join(prompt_parts)
 
         try:
-            # Use the local_generate method for this specific LLM call
-            # Increase max_tokens for synthesis, but avoid excessively large responses
-            response = self.local_generate(prompt, max_tokens=1200) # Adjusted max_tokens
-            return response.strip()
+            # Use local_generate with appropriate token limit for synthesis
+            response = self.local_generate(prompt, max_tokens=1200)
+            # Basic check for disclaimer presence
+            if "disclaimer" not in response.lower() and "professional medical advice" not in response.lower():
+                 logger.warning("LLM Synthesis missing disclaimer! Appending default.")
+                 response += "\n\n**IMPORTANT MEDICAL DISCLAIMER:** This information is for educational purposes only and not a substitute for professional medical advice, diagnosis, or treatment. Always consult a qualified healthcare provider."
+            return response
         except Exception as e:
             logger.error(f"Error generating LLM synthesis answer: {e}")
-            return "I'm sorry, but I couldn't synthesize a complete answer to your question at this moment. Please consult a healthcare professional for personalized advice."
+            return "I encountered an error while synthesizing the final answer. Please consult a healthcare professional for reliable advice."
 
 
     def format_kg_diagnosis_with_llm(self, disease_name: str, symptoms_list: List[str], confidence: float) -> str:
-        """
-        Uses LLM to format the KG-identified disease and symptoms into a user-friendly statement for Path 1.
-        """
+        """ Uses LLM to format the KG-identified disease and symptoms for Path 1. """
         logger.info("➡️ LLM Formatting KG Diagnosis Step")
         if self.llm is None:
             logger.warning("LLM not initialized. Skipping KG diagnosis formatting.")
-            fallback_symptoms_str = ", ".join(symptoms_list) if symptoms_list else "your symptoms"
-            return f"Based on {fallback_symptoms_str}, **{disease_name}** is a potential condition. This is not a definitive diagnosis and requires professional medical evaluation."
+            symptoms_str = ", ".join(symptoms_list) if symptoms_list else "your symptoms"
+            return f"Based on {symptoms_str}, **{disease_name}** is a potential condition according to the knowledge graph. Confidence: {confidence:.2f}. This is not a diagnosis; consult a professional."
 
-
-        # Use the symptoms list that was *used to query KG* for this diagnosis
-        symptoms_str = ", ".join(symptoms_list) if symptoms_list else "the symptoms you've reported"
+        symptoms_str = ", ".join(symptoms_list) if symptoms_list else "the symptoms reported"
 
         prompt = f"""
-        You are a medical assistant tasked with explaining a potential medical condition based on symptoms.
-        Given a highly probable disease based on the reported symptoms from a knowledge graph, write a concise, single-paragraph statement for a user.
-        The statement should mention the symptoms and state that they are most likely associated with the identified disease.
-        Crucially, include a clear disclaimer that this is NOT a definitive diagnosis and professional medical advice is necessary.
-        Do NOT add references, bullet points for treatments/remedies, or other detailed information here. Keep it focused on the diagnosis possibility.
+        You are DxAI-Agent, a medical assistant.
+        Task: Concisely explain a potential medical condition based on symptoms found in a knowledge graph.
+        Input:
+        - Identified Disease: {disease_name}
+        - Symptoms Considered: {symptoms_str}
+        - Confidence Score (internal): {confidence:.2f}
 
-        Identified disease: {disease_name}
-        Symptoms considered: {symptoms_str}
-        Confidence score (for internal context, do not explicitly state in answer): {confidence:.2f}
+        Output Requirements:
+        1. Write a concise, single-paragraph statement for the user.
+        2. Mention the key symptoms considered ({symptoms_str}).
+        3. State that these symptoms *might be associated* with the {disease_name} based on the knowledge graph analysis.
+        4. **Crucially, include a clear disclaimer:** This is NOT a definitive diagnosis and professional medical evaluation is essential.
+        5. **Do NOT** add treatments, remedies, or ask follow-up questions here. Focus only on the potential condition and the disclaimer.
 
-        Example format: "Based on the symptoms you've reported, like [symptoms], these are most likely associated with [disease name]. However, this is not a definitive diagnosis and requires professional medical evaluation."
+        Example: "Based on symptoms like {symptoms_str}, the knowledge graph suggests a possible association with **{disease_name}**. However, this is not a definitive diagnosis and requires evaluation by a qualified healthcare professional."
 
-        Write the statement now:
+        Generate the statement now:
         """
         try:
-            response = self.local_generate(prompt, max_tokens=300) # Keep it concise
+            response = self.local_generate(prompt, max_tokens=200) # Keep it concise
+            # Ensure disclaimer is present
+            if "diagnosis" not in response.lower() or "professional" not in response.lower():
+                 logger.warning("LLM KG formatter missing disclaimer! Appending default.")
+                 response += " This is not a definitive diagnosis and requires professional medical evaluation."
             return response.strip()
         except Exception as e:
             logger.error(f"Error formatting KG diagnosis with LLM: {e}")
-            # Fallback manual format if LLM call fails
-            fallback_symptoms_str = ", ".join(symptoms_list) if symptoms_list else "your symptoms"
-            return f"Based on {fallback_symptoms_str}, **{disease_name}** is a potential condition. This is not a definitive diagnosis and requires professional medical evaluation."
+            symptoms_fallback = ", ".join(symptoms_list) if symptoms_list else "your symptoms"
+            return f"Based on {symptoms_fallback}, the knowledge graph suggests **{disease_name}** as a possibility (Confidence: {confidence:.2f}). This is not a diagnosis. Please consult a healthcare professional."
 
 
     def identify_missing_info(self, user_query: str, generated_answer: str, conversation_history: List[Tuple[str, str]]) -> Tuple[bool, List[str]]:
-            """
-            Identifies what CRITICAL medical information is still missing from the GENERATED ANSWER
-            relative to the USER QUERY, using conversation context.
-            This is used for the FINAL completeness check in Path 2.
-            """
+            """ Final check: Identifies if CRITICAL info is missing from the generated answer for safety/completeness, considering history. """
             logger.info("🕵️ Identifying missing info from generated answer (Final Check)...")
 
             if self.llm is None:
                  logger.warning("LLM not initialized. Cannot perform final completeness check.")
-                 return (False, []) # Cannot check completeness without LLM
+                 return (False, [])
 
-
-            # Convert conversation history to a string for context
-            # Include a few recent exchanges for better understanding
-            context = ""
-            history_limit = 6 # Include last 3 exchanges (user+bot)
+            # Limit history context to avoid exceeding token limits
+            history_limit = 6 # Last 3 user/bot pairs
             recent_history = conversation_history[-history_limit:]
-            for i, entry in enumerate(recent_history):
-                # Ensure the entry is a tuple of length 2
+            context = "Conversation History (most recent first):\n---\n"
+            for i, entry in enumerate(reversed(recent_history)): # Show recent first
                 if isinstance(entry, tuple) and len(entry) == 2:
                     user_msg, bot_msg = entry
-
-                    # Safely get string representation of user_msg
-                    user_msg_str = str(user_msg) if user_msg is not None else ""
-                    context += f"User: {user_msg_str}\n"
-
-                    # Safely get string representation of bot_msg before formatting
-                    if isinstance(bot_msg, str):
-                        truncated_bot_msg = bot_msg[:300] + "..." if len(bot_msg) > 300 else bot_msg
-                        context += f"Assistant: {truncated_bot_msg}\n"
-                    elif bot_msg is not None:
-                        # Log if it's not a string but not None (unexpected type)
-                        logger.warning(f"Unexpected type in chat_history bot message at index {i}. Type: {type(bot_msg)}. Value: {bot_msg}. Appending placeholder.")
-                        context += f"Assistant: [Non-string response of type {type(bot_msg)}]\n"
-                    # else: bot_msg is None, do not add Assistant line
+                    user_msg_str = str(user_msg)[:300] + '...' if user_msg and len(str(user_msg)) > 300 else str(user_msg or '')
+                    bot_msg_str = str(bot_msg)[:300] + '...' if bot_msg and len(str(bot_msg)) > 300 else str(bot_msg or '')
+                    context += f"User: {user_msg_str}\nAssistant: {bot_msg_str}\n"
                 else:
-                    # Log if an entry in history is not a tuple of length 2 or not a tuple at all
-                    logger.warning(f"Unexpected format in chat_history entry at index {i}. Entry: {entry}. Skipping entry or adding placeholder.")
-                    context += f"[Invalid history entry at index {i}]\n"
+                    context += "[Invalid history entry]\n"
+            context += "---\n"
 
+            # Prompt focused on safety and critical gaps, avoiding redundant questions
+            MISSING_INFO_PROMPT = f'''
+            You are DxAI-Agent's safety supervisor. Your task is to review the LATEST generated answer to the user's query, considering the recent conversation history, and determine if a *single, critical* follow-up question is *absolutely necessary* for safety or basic understanding before concluding.
 
-            # The `generate_response` function will check `self.followup_context["round"]`
-            # This function just needs to determine *if* a follow-up is logically required based on completeness.
-
-            MISSING_INFO_PROMPT = '''
-            You are a medical AI assistant analyzing a patient's conversation history and the latest generated answer.
-            Your primary goal is to help provide a safe and comprehensive answer to the user's initial medical question.
-            After reviewing the entire conversation history and the most recent generated answer, determine if there is any *absolutely critical* piece of medical information still missing from the *latest generated answer itself* that is essential for providing a safe and minimally helpful response.
-
-            Conversation history (for context, includes previous turns and the latest generated answer):
-            ---
+            Conversation History (Recent):
             {context}
-            ---
 
-            USER'S INITIAL QUESTION: "{user_query}" # Refer to the initial question for the core intent
-            LATEST GENERATED ANSWER: "{generated_answer}" # Evaluate the completeness of this specific answer
+            User's Initial Query in this thread: "{user_query}"
+            Latest Generated Answer (Evaluate this): "{generated_answer}"
 
             **CRITICAL EVALUATION:**
-            Based on the ENTIRE CONVERSATION HISTORY and the LATEST GENERATED ANSWER:
-            1.  Does the latest answer directly address the core medical question posed by the user, using all available information in the history?
-            2.  Does the answer include necessary safety disclaimers for personal medical queries?
-            3.  Are there any obvious gaps regarding *critical safety information* (e.g., symptoms requiring urgent care) that are missing from the latest answer, given what the user has described throughout the conversation?
-            4.  **Review the Conversation History Carefully:** Has a similar or the same type of critical follow-up question *already been clearly asked* by the Assistant in a previous turn that the user responded to or did not provide the requested information for?
-            5.  **Considering all information in the history and the latest answer:** Is there *one single most critical piece* of information still needed from the user to proceed safely or provide a meaningfully better answer?
+            1. Does the LATEST answer directly address the core intent of the user's query using available info?
+            2. Does the LATEST answer contain adequate safety disclaimers?
+            3. **Crucially:** Given the symptoms/topic discussed, is there *one single piece* of information (like onset, severity of a key symptom, specific relevant history) that is *critically missing* from the LATEST answer, which prevents giving even a minimally safe/helpful response?
+            4. **Check History:** Has a similar critical question *already been asked* by the Assistant in the recent history? If yes, DO NOT ask again.
 
-            If information is missing *from the latest generated answer* based on your critical evaluation (especially point 5), and it is *absolutely necessary* to ask the user for input to fill this *single most critical gap*, formulate ONE clear, specific follow-up question. If a similar question was already asked in history (point 4), do NOT ask it again; assume you have already attempted to get that information. If you determine no single critical question is needed, or if the history shows you've already tried to get crucial missing info, indicate no follow-up needed.
+            **Decision:**
+            - If the LATEST answer is reasonably complete for a first pass (includes disclaimers) AND no single *critical* piece of info is missing (or was already asked), then NO follow-up is needed.
+            - If ONE critical piece of info IS missing AND hasn't been asked yet, formulate ONE concise follow-up question to ask the user. Focus on the *most* critical gap.
 
-            Return your answer in this exact JSON format:
+            Return ONLY a JSON object in this exact format:
             {{
-                "needs_followup": true/false,
-                "reasoning": "brief explanation of why more information is needed from the answer or why the answer is sufficient, referencing the history review and critical gaps",
-                "missing_info_questions": [
-                    {{"question": "specific follow-up question 1"}}
-                ]
+                "needs_followup": true_or_false,
+                "reasoning": "Brief justification for the decision, citing the evaluation points.",
+                "followup_question": "The single, concise follow-up question if needs_followup is true, otherwise null or empty string."
             }}
-
-            Only include the "missing_info_questions" array if "needs_followup" is true, and limit it to exactly 1 question. If "needs_followup" is true but you cannot formulate the *single most critical* specific question based on your evaluation, still return "needs_followup": true but with an empty "missing_info_questions" array (though try hard to formulate one if needed).
-            '''.format(
-                context=context,
-                user_query=user_query,
-                generated_answer=generated_answer
-            )
+            '''
 
             try:
-                # Use local_generate for this LLM call
-                response = self.local_generate(MISSING_INFO_PROMPT, max_tokens=500).strip()
-                # logger.debug(f"\nRaw Missing Info Evaluation (Final Check):\n{response}")
+                response = self.local_generate(MISSING_INFO_PROMPT, max_tokens=400).strip()
+                logger.debug(f"\nRaw Missing Info Evaluation (Final Check):\n{response}")
 
-                # Attempt to parse JSON
                 json_match = re.search(r'\{[\s\S]*\}', response)
                 if json_match:
                     json_str = json_match.group(0)
                     try:
                         data = json.loads(json_str)
-                        needs_followup_llm = data.get("needs_followup", False) # LLM's opinion
-                        missing_info_questions = [item["question"] for item in data.get("missing_info_questions", []) if isinstance(item, dict) and "question" in item] # Safely get questions
-                        reasoning = data.get("reasoning", "Answer is missing critical information.")
+                        needs_followup_llm = data.get("needs_followup", False)
+                        question = data.get("followup_question", "")
+                        reasoning = data.get("reasoning", "No reasoning provided.")
 
-                        if needs_followup_llm and missing_info_questions:
-                             logger.info(f"❓ Critical Information Missing from Final Answer (LLM opinion): {missing_info_questions}. Reasoning: {reasoning}")
-                             return (True, missing_info_questions) # Return True and questions
-
+                        # Ensure question is a string and not null/empty if followup is needed
+                        if needs_followup_llm and isinstance(question, str) and question.strip():
+                            logger.info(f"❓ Critical Information Missing (LLM opinion): Needs follow-up. Question: '{question}'. Reasoning: {reasoning}")
+                            return (True, [question.strip()]) # Return True and the question in a list
+                        elif needs_followup_llm:
+                             logger.warning(f"LLM indicated followup needed but provided no valid question. Treating as no followup. Reasoning: {reasoning}")
+                             return (False, [])
                         else:
-                             logger.info("✅ Final Answer appears sufficient (LLM opinion) or no questions provided.")
-                             return (False, []) # Return False and no questions
+                             logger.info(f"✅ Final Answer appears sufficient (LLM opinion). Reasoning: {reasoning}")
+                             return (False, [])
 
                     except json.JSONDecodeError:
-                        logger.warning("Could not parse final missing info JSON from LLM response.")
-                        # Fallback: Assume no critical info is missing if JSON parsing fails
-                        return (False, [])
+                        logger.warning(f"Could not parse final missing info JSON from LLM: {response}")
+                        return (False, []) # Assume sufficient if JSON parsing fails
                     except Exception as e:
                          logger.error(f"Error processing LLM response structure in identify_missing_info: {e}", exc_info=True)
-                         return (False, []) # Fallback on structure error
+                         return (False, [])
 
                 else:
-                    logger.warning("LLM response did not contain expected JSON format.")
-                    # Fallback: Assume no critical info is missing if no JSON is found
+                    logger.warning(f"LLM response did not contain expected JSON for missing info: {response}")
                     return (False, [])
 
             except Exception as e:
                 logger.error(f"⚠️ Error during LLM call in identify_missing_info: {e}", exc_info=True)
-                # Fallback: Assume no critical info is missing if LLM call fails
                 return (False, [])
 
 
     def knowledge_graph_agent(self, user_query: str, all_symptoms: List[str]) -> Dict[str, Any]:
-        """
-        Knowledge Graph Agent - Extracts symptoms (done before calling),
-        identifies diseases, and finds treatments/remedies.
-        Returns a dictionary of KG results.
-        Updated to return symptom associations for the UI step.
-        """
-        logger.info("📚 Knowledge Graph Agent Initiated")
+        """ Knowledge Graph Agent: Identifies diseases, treatments, remedies based on symptoms. """
+        logger.info(f"📚 KG Agent: Processing symptoms: {all_symptoms}")
 
+        # Default structure for results
         kg_results: Dict[str, Any] = {
-            "extracted_symptoms": all_symptoms, # Symptoms used for KG query
-            "identified_diseases_data": [], # List of {disease, conf, matched_symp, all_kg_symp} - used internally & for UI step
-            "top_disease_confidence": 0.0, # Confidence of the highest match
-            "kg_matched_symptoms": [], # Symptoms from input that matched for the top disease
+            "extracted_symptoms": all_symptoms,
+            "identified_diseases_data": [], # List[Dict{disease, conf, matched_symp, all_kg_symp}]
+            "top_disease_confidence": 0.0,
+            "kg_matched_symptoms": [], # For top disease
             "kg_treatments": [],
             "kg_treatment_confidence": 0.0,
             "kg_home_remedies": [],
             "kg_remedy_confidence": 0.0,
-            "kg_content_diagnosis_data_for_llm": { # Always provide data for LLM formatting fallback
-                 "disease_name": "an unidentifiable condition",
-                 "symptoms_list": all_symptoms,
-                 "confidence": 0.0
+            "kg_content_diagnosis_data_for_llm": { # Data for LLM formatting (Path 1)
+                 "disease_name": "an unidentifiable condition", "symptoms_list": all_symptoms, "confidence": 0.0
             },
-            "kg_content_other": "Medical Knowledge Graph information on treatments or remedies is unavailable.", # Default message
+            "kg_content_other": "Knowledge Graph information on treatments or remedies is unavailable.", # For synthesis (Path 2)
         }
 
-        if not self.kg_connection_ok or self.kg_driver is None:
-             logger.warning("📚 KG Agent: Connection not OK. Skipping KG queries.")
+        if not NEO4J_AVAILABLE or not self.kg_connection_ok or self.kg_driver is None:
+             logger.warning("📚 KG Agent: Connection not available. Skipping KG queries.")
              kg_results["kg_content_other"] = "Medical Knowledge Graph is currently unavailable."
-             # KG results remain empty/default
              return kg_results
 
         try:
+            # Use the default database specified in the connection URI usually
             with self.kg_driver.session() as session:
-                # Task 1: Identify Diseases from Symptoms
+                # 1. Identify Diseases from Symptoms
                 if all_symptoms:
-                    logger.info(f"📚 KG Task: Identify Diseases from symptoms: {all_symptoms}")
-                    # query_disease_from_symptoms now uses the session to run queries
-                    # It returns the list of dicts
-                    disease_data_from_kg: List[Dict[str, Any]] = self._query_disease_from_symptoms_with_session(session, all_symptoms)
-
+                    disease_data_from_kg = self._query_disease_from_symptoms_with_session(session, all_symptoms)
                     if disease_data_from_kg:
-                        # Store the raw data for internal use and potential UI
                         kg_results["identified_diseases_data"] = disease_data_from_kg
-
-                        # Get data for the top disease
                         top_disease_record = disease_data_from_kg[0]
                         top_disease_name = top_disease_record["Disease"]
                         top_disease_conf = top_disease_record["Confidence"]
                         kg_results["top_disease_confidence"] = top_disease_conf
-                        # Use matched symptoms from KG result (should be in KG's case)
                         kg_results["kg_matched_symptoms"] = top_disease_record.get("MatchedSymptoms", [])
+                        logger.info(f"✔️ KG Diseases Identified: Top='{top_disease_name}' (Conf: {top_disease_conf:.3f}), Total found: {len(disease_data_from_kg)}")
 
-                        logger.info(f"✔️ Diseases Identified: {[(d['Disease'], d['Confidence']) for d in disease_data_from_kg]} (Top Confidence: {top_disease_conf:.4f})")
+                        # Prepare data for LLM formatting (Path 1) - Use top disease
+                        kg_results["kg_content_diagnosis_data_for_llm"] = {
+                            "disease_name": top_disease_name,
+                            "symptoms_list": all_symptoms, # Use all input symptoms for context
+                            "confidence": top_disease_conf
+                        }
 
-                        # Task 2 & 3: Find Treatments/Remedies (if a primary disease was identified with decent confidence)
-                        # Query treatments/remedies for the TOP identified disease
-                        if top_disease_conf >= THRESHOLDS.get("knowledge_graph_general", 0.6): # Use a general threshold for finding related info
-                            logger.info(f"📚 KG Tasks: Find Treatments & Remedies for {top_disease_name}")
+                        # 2. Find Treatments/Remedies for the TOP disease if confidence is sufficient
+                        if top_disease_conf >= THRESHOLDS.get("knowledge_graph_general", 0.6):
+                            logger.info(f"📚 KG Tasks: Finding Treatments & Remedies for '{top_disease_name}'")
+                            treatments, treat_conf = self._query_treatments_with_session(session, top_disease_name)
+                            if treatments:
+                                kg_results["kg_treatments"] = treatments
+                                kg_results["kg_treatment_confidence"] = treat_conf
+                                logger.info(f"✔️ KG Treatments found: {len(treatments)} (Avg Conf: {treat_conf:.3f})")
 
-                            kg_treatments, kg_treatment_confidence = self._query_treatments_with_session(session, top_disease_name)
-                            kg_results["kg_treatments"] = kg_treatments
-                            kg_results["kg_treatment_confidence"] = kg_treatment_confidence
-                            logger.info(f"✔️ Treatments found: {kg_treatments} (Confidence: {kg_treatment_confidence:.4f})")
-
-                            kg_remedies, kg_remedy_confidence = self._query_home_remedies_with_session(session, top_disease_name)
-                            kg_results["kg_home_remedies"] = kg_remedies
-                            kg_results["kg_remedy_confidence"] = kg_remedy_confidence
-                            logger.info(f"✔️ Home Remedies found: {kg_remedies} (Confidence: {kg_remedy_confidence:.4f})")
+                            remedies, rem_conf = self._query_home_remedies_with_session(session, top_disease_name)
+                            if remedies:
+                                kg_results["kg_home_remedies"] = remedies
+                                kg_results["kg_remedy_confidence"] = rem_conf
+                                logger.info(f"✔️ KG Home Remedies found: {len(remedies)} (Avg Conf: {rem_conf:.3f})")
                         else:
-                            logger.info("📚 KG Tasks: Treatments/Remedies skipped - Top disease confidence below threshold.")
+                            logger.info(f"📚 KG Tasks: Treatments/Remedies skipped for '{top_disease_name}' (Confidence {top_disease_conf:.3f} below threshold {THRESHOLDS.get('knowledge_graph_general', 0.6)})")
+                    else:
+                         logger.info("📚 KG Task: No diseases found matching the provided symptoms.")
+                         # Keep default kg_content_diagnosis_data_for_llm
                 else:
                      logger.info("📚 KG Task: Identify Diseases skipped - No symptoms provided.")
 
 
-                # Prepare data needed for the LLM formatting step if Path 1 is chosen
-                # This data should be prepared even if no diseases were found, for the fallback phrasing
-                kg_results["kg_content_diagnosis_data_for_llm"] = {
-                      "disease_name": kg_results["identified_diseases_data"][0]["Disease"] if kg_results["identified_diseases_data"] else "an unidentifiable condition", # Use top disease or fallback
-                      "symptoms_list": all_symptoms, # Use all input/confirmed symptoms for phrasing
-                      "confidence": kg_results["top_disease_confidence"] # Use top confidence or 0.0
-                }
-
-
-                # Other KG content part (treatments/remedies) for Path 2 combination
+                # Prepare combined Treatments/Remedies content for Path 2 synthesis
                 other_parts: List[str] = []
                 if kg_results["kg_treatments"]:
-                     other_parts.append("## Recommended Treatments (from KG)")
-                     for treatment in kg_results["kg_treatments"]:
-                          other_parts.append(f"- {treatment}")
-                     other_parts.append("") # Add empty line for separation
-
+                     other_parts.append("## Potential Treatments (from Knowledge Graph)")
+                     other_parts.extend([f"- {t}" for t in kg_results["kg_treatments"]])
+                     other_parts.append("")
                 if kg_results["kg_home_remedies"]:
-                     other_parts.append("## Home Remedies (from KG)")
-                     for remedy in kg_results["kg_home_remedies"]:
-                          remedy_text = remedy # Assume it's already a string
-                          # Add source if available? KG typically doesn't have per-remedy sources unless modeled
-                          other_parts.append(f"- {remedy_text}")
-                     other_parts.append("") # Add empty line for separation
+                     other_parts.append("## Potential Home Remedies (from Knowledge Graph)")
+                     other_parts.extend([f"- {r}" for r in kg_results["kg_home_remedies"]])
+                     other_parts.append("")
 
-                kg_results["kg_content_other"] = "\n".join(other_parts).strip()
-                # Only set default message if no treatments *or* remedies were actually found
-                if not kg_results["kg_content_other"] and not kg_results["kg_treatments"] and not kg_results["kg_home_remedies"]:
-                    kg_results["kg_content_other"] = "Medical Knowledge Graph did not find specific relevant information on treatments or remedies."
+                combined_other_content = "\n".join(other_parts).strip()
+                if combined_other_content:
+                     kg_results["kg_content_other"] = combined_other_content
+                elif kg_results["top_disease_confidence"] > 0: # If disease was found but no treatments/remedies
+                     kg_results["kg_content_other"] = f"Knowledge Graph did not find specific treatments or home remedies listed for {kg_results['kg_content_diagnosis_data_for_llm']['disease_name']}."
+                else: # No disease found, so no treatments/remedies either
+                    kg_results["kg_content_other"] = "Knowledge Graph did not find relevant diseases, treatments, or remedies for the provided symptoms."
 
 
-                logger.info("📚 Knowledge Graph Agent Finished successfully.")
+                logger.info("📚 Knowledge Graph Agent Finished.")
                 return kg_results
 
         except Exception as e:
-            logger.error(f"⚠️ Error within KG Agent: {e}", exc_info=True) # Log traceback
-            # Populate with error/empty info on failure
-            kg_results["kg_content_diagnosis_data_for_llm"] = {
-                 "disease_name": "an unidentifiable condition",
-                 "symptoms_list": all_symptoms,
-                 "confidence": 0.0
-            } # Still provide data for LLM formatting fallback
-            kg_results["kg_content_other"] = f"An error occurred while querying the Medical Knowledge Graph: {str(e)}"
+            logger.error(f"⚠️ Error within KG Agent: {e}", exc_info=True)
+            kg_results["kg_content_other"] = f"An error occurred querying the Knowledge Graph: {e}"
+            # Reset potentially partially filled data on error
+            kg_results["identified_diseases_data"] = []
             kg_results["top_disease_confidence"] = 0.0
+            kg_results["kg_treatments"] = []
+            kg_results["kg_home_remedies"] = []
+            kg_results["kg_content_diagnosis_data_for_llm"] = {
+                 "disease_name": "an error condition", "symptoms_list": all_symptoms, "confidence": 0.0
+            }
             return kg_results
 
 
-    # Helper methods to query KG with a session (reduces repetitive session handling)
-    # These methods are called *by* the kg_agent
-    def _query_disease_from_symptoms_with_session(self, session, symptoms: List[str]) -> List[Dict[str, Any]]:
-         """Queries KG for diseases based on symptoms using an existing session."""
-         if not symptoms:
-              return []
+    # --- KG Helper Query Methods ---
+    # These use the provided session from the agent
 
-         # Use a cache key based on the sorted list of symptoms
-         cache_key = {"type": "disease_matching_v2", "symptoms": tuple(sorted([s.lower() for s in symptoms]))} # Cache lowercase sorted symptoms
+    def _query_disease_from_symptoms_with_session(self, session, symptoms: List[str]) -> List[Dict[str, Any]]:
+         """ Queries KG for diseases based on symptoms using an existing session. """
+         if not symptoms: return []
+         symptoms_lower = [s.lower().strip() for s in symptoms if s and s.strip()]
+         if not symptoms_lower: return []
+
+         cache_key = {"type": "kg_disease_match", "symptoms": tuple(sorted(symptoms_lower))}
          cached = get_cached(cache_key)
          if cached:
-             logger.debug("🧠 Using cached disease match (v2).")
+             logger.debug("🧠 Using cached KG disease match.")
              return cached
 
+         # Optimized Cypher Query: Match input symptoms -> diseases -> all symptoms of those diseases
          cypher_query = """
+         // 1. Find symptom nodes matching input (case-insensitive)
          UNWIND $symptomNames AS input_symptom_name
-         MATCH (s:symptom) WHERE toLower(s.Name) = toLower(input_symptom_name) // Case-insensitive match
-         MATCH (s)-[:INDICATES]->(d:disease)
-         WITH d, COLLECT(DISTINCT s.Name) AS matched_symptoms_from_input // Symptoms from the input that were found and matched
+         MATCH (s:symptom)
+         WHERE toLower(s.Name) = input_symptom_name
+         WITH COLLECT(DISTINCT s) AS matched_input_symptom_nodes, $symptomNames AS input_symptom_list
 
-         // Now, for these potential diseases, find ALL symptoms they indicate in the KG
-         OPTIONAL MATCH (d)<-[:INDICATES]-(all_s:symptom)
-         WITH d, matched_symptoms_from_input, COLLECT(DISTINCT all_s.Name) AS all_disease_symptoms_in_kg, size(COLLECT(DISTINCT all_s)) AS total_disease_symptoms_count, size(matched_symptoms_from_input) AS matching_symptoms_count
+         // If no input symptoms match nodes in KG, return empty
+         WHERE size(matched_input_symptom_nodes) > 0
 
-         // Calculate confidence based on input symptoms matching KG symptoms for the disease
-         WITH d.Name AS Disease, matched_symptoms_from_input, all_disease_symptoms_in_kg,
-              CASE WHEN total_disease_symptoms_count = 0 THEN 0
-                     ELSE matching_symptoms_count * 1.0 / total_disease_symptoms_count
-                END AS confidence_score
-                WHERE matching_symptoms_count > 0 // Only return diseases with at least one matching symptom from input
-         RETURN Disease, confidence_score AS Confidence, matched_symptoms_from_input AS MatchedSymptoms, all_disease_symptoms_in_kg AS AllDiseaseSymptomsKG
-         ORDER BY confidence_score DESC
-         LIMIT 5 // Limit potential diseases shown for performance/relevance
+         // 2. Find diseases indicated by ANY of the matched input symptoms
+         UNWIND matched_input_symptom_nodes AS matched_s_node
+         MATCH (matched_s_node)-[:INDICATES]->(d:disease)
+         WITH d, matched_input_symptom_nodes, input_symptom_list
+         ORDER BY d.Name // Ensure deterministic grouping
+         WITH d, matched_input_symptom_nodes, input_symptom_list
+         // Collect distinct diseases
+         WITH COLLECT(DISTINCT d) AS candidate_diseases, matched_input_symptom_nodes, input_symptom_list
+
+         // 3. For each candidate disease, find ALL symptoms it indicates in the KG
+         UNWIND candidate_diseases AS disease
+         OPTIONAL MATCH (disease)<-[:INDICATES]-(all_s:symptom)
+         WITH disease, matched_input_symptom_nodes, input_symptom_list, COLLECT(DISTINCT all_s) AS all_kg_symptom_nodes
+
+         // 4. Calculate matching symptoms and confidence
+         WITH disease,
+              [s_node IN all_kg_symptom_nodes WHERE s_node IN matched_input_symptom_nodes | s_node.Name] AS matched_symptom_names, // Symptoms from input that matched this disease's symptoms
+              [s_node IN all_kg_symptom_nodes | s_node.Name] AS all_kg_symptom_names, // All symptoms for this disease in KG
+              size(all_kg_symptom_nodes) AS total_kg_symptoms_count,
+              size([s_node IN all_kg_symptom_nodes WHERE s_node IN matched_input_symptom_nodes]) AS matched_symptoms_count
+
+         // Confidence: Ratio of (matched input symptoms for *this* disease) / (total symptoms for *this* disease in KG)
+         // Penalize slightly if the input had many symptoms not associated with this disease? (Optional, simpler for now)
+         WITH disease.Name AS DiseaseName,
+              matched_symptom_names AS MatchedSymptoms,
+              all_kg_symptom_names AS AllDiseaseSymptomsKG,
+              matched_symptoms_count,
+              total_kg_symptoms_count,
+              CASE
+                WHEN total_kg_symptoms_count = 0 THEN 0.0 // Avoid division by zero
+                // Boost score slightly if more matched symptoms found (up to a limit)
+                ELSE (matched_symptoms_count * 1.0 / total_kg_symptoms_count) * (1.0 + least(matched_symptoms_count, 5) * 0.05) // Small boost for more matches
+              END AS confidence_score
+
+         // Filter out diseases with no matched symptoms or below a minimal base threshold
+         WHERE matched_symptoms_count > 0 AND confidence_score >= $min_base_threshold
+
+         // Return results ordered by confidence
+         RETURN DiseaseName AS Disease,
+                round(confidence_score * 1000) / 1000 AS Confidence, // Round confidence
+                MatchedSymptoms,
+                AllDiseaseSymptomsKG
+         ORDER BY Confidence DESC, Disease // Secondary sort for stability
+         LIMIT 5 // Limit results
          """
-
          try:
-              result = session.run(cypher_query, symptomNames=[s.lower() for s in symptoms if s]) # Pass parameter
-              records = list(result)
+             params = {"symptomNames": symptoms_lower, "min_base_threshold": THRESHOLDS["disease_matching"] * 0.5} # Use half threshold as absolute minimum
+             result = session.run(cypher_query, params)
+             records = list(result) # Consume the result iterator fully
 
-              disease_data = [
-                   {
-                        "Disease": rec["Disease"],
-                        "Confidence": float(rec["Confidence"]),
-                        "MatchedSymptoms": rec["MatchedSymptoms"], # List of symptom strings (KG case)
-                        "AllDiseaseSymptomsKG": rec["AllDiseaseSymptomsKG"] # List of symptom strings (KG case)
-                   }
-                   for rec in records
-              ]
+             disease_data = [
+                  {
+                       "Disease": rec["Disease"],
+                       "Confidence": float(rec["Confidence"]),
+                       "MatchedSymptoms": sorted(rec["MatchedSymptoms"]), # Sort for consistency
+                       "AllDiseaseSymptomsKG": sorted(rec["AllDiseaseSymptomsKG"]) # Sort for consistency
+                  }
+                  for rec in records if rec["Confidence"] >= THRESHOLDS["disease_matching"] # Apply final threshold
+             ]
 
-              logger.debug(f"🦠 Executed KG Disease Query, found {len(disease_data)} results.")
-              set_cached(cache_key, disease_data)
-              return disease_data
-
+             logger.debug(f"🦠 Executed KG Disease Query for {symptoms_lower}, found {len(disease_data)} results passing threshold.")
+             set_cached(cache_key, disease_data) # Cache the final thresholded list
+             return disease_data
          except Exception as e:
-              logger.error(f"⚠️ Error executing KG query for diseases: {e}")
-              return [] # Return empty list on failure
+             logger.error(f"⚠️ Error executing KG query for diseases: {e}", exc_info=True)
+             return []
 
 
     def _query_treatments_with_session(self, session, disease: str) -> Tuple[List[str], float]:
-         """Queries KG for treatments using an existing session."""
-         if not disease:
-              return [], 0.0
+         """ Queries KG for treatments using an existing session. """
+         if not disease: return [], 0.0
+         disease_lower = disease.lower().strip()
 
-         cache_key = {"type": "treatment_query_kg", "disease": disease.lower()}
+         cache_key = {"type": "kg_treatment", "disease": disease_lower}
          cached = get_cached(cache_key)
          if cached:
              logger.debug("🧠 Using cached KG treatments.")
              return cached
 
+         # Simplified query, assuming Treatment nodes have Name property
          cypher_query = """
-         MATCH (d:disease)-[r:TREATED_BY]->(t:treatment)
-         WHERE toLower(d.Name) = toLower($diseaseName)
-         WITH t, COUNT(r) as rel_count
-         RETURN t.Name as Treatment,
-                CASE WHEN rel_count > 3 THEN 0.9
-                     WHEN rel_count > 1 THEN 0.8
-                     ELSE 0.7
-                END as Confidence
-         ORDER BY Confidence DESC
-         """ # Use parameter $diseaseName
-
+         MATCH (d:disease)-[:TREATED_BY]->(t:treatment)
+         WHERE toLower(d.Name) = $diseaseName
+         RETURN DISTINCT t.Name as TreatmentName
+         ORDER BY TreatmentName // Order alphabetically
+         LIMIT 10 // Limit number of treatments shown
+         """
          try:
-              result = session.run(cypher_query, diseaseName=disease) # Pass parameter
-              records = list(result)
+             result = session.run(cypher_query, diseaseName=disease_lower)
+             treatments_list = sorted([rec["TreatmentName"] for rec in result if rec["TreatmentName"]]) # Sort and remove nulls
 
-              treatments_list: List[str] = []
-              avg_confidence = 0.0
+             # Confidence is now based on whether treatments were found for this disease, not relation count
+             confidence = 0.8 if treatments_list else 0.0
 
-              if records:
-                   treatments = [(rec["Treatment"], float(rec["Confidence"])) for rec in records]
-                   treatments_list = [t[0] for t in treatments]
-                   avg_confidence = sum(t[1] for t in treatments) / len(treatments) if treatments else 0.0
-
-              logger.debug(f"💊 Executed KG Treatment Query for {disease}, found {len(treatments_list)} treatments.")
-              result = (treatments_list, avg_confidence)
-              set_cached(cache_key, result)
-              return result
+             logger.debug(f"💊 Executed KG Treatment Query for '{disease_lower}', found {len(treatments_list)} treatments.")
+             final_result = (treatments_list, confidence)
+             set_cached(cache_key, final_result)
+             return final_result
          except Exception as e:
-              logger.error(f"⚠️ Error executing KG query for treatments: {e}")
-              return [], 0.0
+             logger.error(f"⚠️ Error executing KG query for treatments: {e}", exc_info=True)
+             return [], 0.0
 
 
     def _query_home_remedies_with_session(self, session, disease: str) -> Tuple[List[str], float]:
-         """Queries KG for home remedies using an existing session."""
-         if not disease:
-             return [], 0.0
+         """ Queries KG for home remedies using an existing session. """
+         if not disease: return [], 0.0
+         disease_lower = disease.lower().strip()
 
-         cache_key = {"type": "remedy_query_kg", "disease": disease.lower()}
+         cache_key = {"type": "kg_remedy", "disease": disease_lower}
          cached = get_cached(cache_key)
          if cached:
              logger.debug("🧠 Using cached KG home remedies.")
              return cached
 
+         # Simplified query, assuming homeremedy nodes have Name property
          cypher_query = """
-         MATCH (d:disease)-[r:HAS_HOMEREMEDY]->(h:homeremedy)
-         WHERE toLower(d.Name) = toLower($diseaseName)
-         WITH h, COUNT(r) as rel_count
-         RETURN h.Name as HomeRemedy,
-                CASE WHEN rel_count > 2 THEN 0.85
-                     WHEN rel_count > 1 THEN 0.75
-                     ELSE 0.65
-                END as Confidence
-         ORDER BY Confidence DESC
-         """ # Use parameter $diseaseName
-
+         MATCH (d:disease)-[:HAS_HOMEREMEDY]->(h:homeremedy)
+         WHERE toLower(d.Name) = $diseaseName
+         RETURN DISTINCT h.Name as RemedyName
+         ORDER BY RemedyName // Order alphabetically
+         LIMIT 10 // Limit number of remedies shown
+         """
          try:
-             result = session.run(cypher_query, diseaseName=disease) # Pass parameter
-             records = list(result)
+             result = session.run(cypher_query, diseaseName=disease_lower)
+             remedies_list = sorted([rec["RemedyName"] for rec in result if rec["RemedyName"]])
 
-             remedies_list: List[str] = []
-             avg_confidence = 0.0
+             # Confidence based on whether remedies were found
+             confidence = 0.75 if remedies_list else 0.0
 
-             if records:
-                 remedies = [(rec["HomeRemedy"], float(rec["Confidence"])) for rec in records]
-                 remedies_list = [r[0] for r in remedies]
-                 avg_confidence = sum(r[1] for r in remedies) / len(remedies) if remedies else 0.0
-
-             logger.debug(f"🏡 Executed KG Remedy Query for {disease}, found {len(remedies_list)} remedies.")
-             result = (remedies_list, avg_confidence)
-             set_cached(cache_key, result)
-             return result
+             logger.debug(f"🏡 Executed KG Remedy Query for '{disease_lower}', found {len(remedies_list)} remedies.")
+             final_result = (remedies_list, confidence)
+             set_cached(cache_key, final_result)
+             return final_result
          except Exception as e:
-             logger.error(f"⚠️ Error executing KG query for home remedies: {e}")
+             logger.error(f"⚠️ Error executing KG query for home remedies: {e}", exc_info=True)
              return [], 0.0
 
 
+    # --- Symptom Extraction & Query Analysis ---
+
     def extract_symptoms(self, user_query: str) -> Tuple[List[str], float]:
-        """Extract symptoms from user query with confidence scores using LLM."""
+        """ Extract symptoms from user query using LLM (if available) and keywords. """
         cache_key = {"type": "symptom_extraction", "query": user_query}
         cached = get_cached(cache_key)
         if cached:
             logger.debug("🧠 Using cached symptom extraction.")
             return cached
 
-        if self.llm is None:
-             logger.warning("LLM not initialized. Cannot perform LLM symptom extraction.")
-             # Fallback to keyword extraction if LLM is not available
-             fallback_symptoms = []
-             common_symptom_keywords = ["fever", "cough", "headache", "sore throat", "nausea", "dizziness", "chest pain", "shortness of breath", "fatigue", "body aches", "runny nose", "congestion", "chills", "sweats", "joint pain", "muscle aches", "rash", "swelling", "pain", "ache", "burning", "itching", "numbness", "tingling", "diarrhea", "vomiting", "difficulty breathing", "difficulty swallowing"]
-             query_lower = user_query.lower()
-             for symptom in common_symptom_keywords:
-                 if symptom in query_lower:
-                     fallback_symptoms.append(symptom.capitalize()) # Capitalize for consistency
-
-             logger.info(f"🔍 Fallback Extracted Symptoms (LLM failed): {fallback_symptoms} (confidence: 0.4)")
-             result = (fallback_symptoms, 0.4) # Low confidence for fallback
-             set_cached(cache_key, result)
-             return result
-
-
-        # Use LLM for extraction first
-        # Use local_generate which wraps self.llm
-        SYMPTOM_PROMPT = '''
-        You are a medical assistant.
-        Extract all medical symptoms mentioned in the following user query.
-        For each symptom, assign a confidence score between 0.0 and 1.0 indicating how certain you are that it is a symptom.
-        Be strict and only extract actual symptoms or medical signs.
-        **Important:** Return your answer in exactly the following format:
-        Extracted Symptoms: [{{"symptom": "symptom1", "confidence": 0.9}}, {{"symptom": "symptom2", "confidence": 0.8}}, ...]
-
-        User Query: "{}"
-        '''.format(user_query)
-
         llm_symptoms = []
         llm_avg_confidence = 0.0
+        final_confidence = 0.0
+        combined_symptoms = []
 
-        try:
-            # Use local_generate for the LLM call
-            response = self.local_generate(SYMPTOM_PROMPT, max_tokens=500).strip()
-            # logger.debug(f"\nRaw Symptom Extraction Response:\n{response}")
-
-            # Parse JSON format response with regex
-            match = re.search(r"Extracted Symptoms:\s*(\[.*?\])", response, re.DOTALL)
-            if match:
-                try:
-                    symptom_data = json.loads(match.group(1))
-                    # Filter symptoms based on confidence threshold
-                    llm_symptoms_confident = [item["symptom"].strip() # Keep original casing for KG matching attempt later
-                                            for item in symptom_data
-                                            if item.get("confidence", 0) >= THRESHOLDS["symptom_extraction"]]
-
-                    # Calculate average confidence for all symptoms returned by LLM before thresholding
-                    if symptom_data:
-                        llm_avg_confidence = sum(item.get("confidence", 0) for item in symptom_data) / len(symptom_data)
-                    else:
-                        llm_avg_confidence = 0.0
-
-                    llm_symptoms = llm_symptoms_confident # Use the thresholded list
-                    # logger.debug(f"🔍 LLM Extracted Symptoms (confident): {llm_symptoms} (avg raw confidence: {llm_avg_confidence:.4f})")
-
-                except json.JSONDecodeError:
-                    logger.warning("Could not parse symptom JSON from LLM response")
-            else:
-                 logger.warning("Could not find 'Extracted Symptoms: [...]: in LLM response.")
-
-        except Exception as e:
-            logger.error(f"Error in LLM symptom extraction: {e}")
-
-        # Fallback/Enhancement with Keyword Matching
-        # If LLM extraction failed or returned nothing, use keyword matching as the sole result.
-        # If LLM extraction succeeded, combine with keyword matching.
-        fallback_symptoms_from_keywords = []
-        common_symptom_keywords = ["fever", "cough", "headache", "sore throat", "nausea", "dizziness", "chest pain", "shortness of breath", "fatigue", "body aches", "runny nose", "congestion", "chills", "sweats", "joint pain", "muscle aches", "rash", "swelling", "pain", "ache", "burning", "itching", "numbness", "tingling", "diarrhea", "vomiting", "difficulty breathing", "difficulty swallowing"]
+        # Common keywords (lowercase)
+        common_symptom_keywords = {"fever", "cough", "headache", "sore throat", "nausea", "dizziness", "chest pain", "shortness of breath", "difficulty breathing", "fatigue", "body aches", "runny nose", "congestion", "chills", "sweats", "joint pain", "muscle aches", "rash", "swelling", "pain", "ache", "burning", "itching", "numbness", "tingling", "diarrhea", "vomiting", "difficulty swallowing", "stomach ache", "abdominal pain", "back pain", "wheezing", "palpitations"}
         query_lower = user_query.lower()
 
-        for symptom in common_symptom_keywords:
-            # Simple keyword presence check
-            if symptom in query_lower:
-                fallback_symptoms_from_keywords.append(symptom.capitalize()) # Capitalize for consistency with KG case
+        # Keyword extraction (always run as baseline/fallback)
+        keyword_symptoms = {kw.capitalize() for kw in common_symptom_keywords if kw in query_lower}
+        logger.debug(f"Keyword check found: {keyword_symptoms}")
 
-        if not llm_symptoms and fallback_symptoms_from_keywords:
-             # LLM failed/found nothing, rely on keywords
-             combined_symptoms = list(set(fallback_symptoms_from_keywords))
-             final_confidence = 0.4 # Low confidence for keyword-only extraction
-             logger.info(f"🔍 Keyword Fallback Extracted Symptoms: {combined_symptoms} (confidence: {final_confidence:.4f})")
+        # LLM Extraction (if LLM available)
+        if self.llm:
+            SYMPTOM_PROMPT = f'''
+            You are a medical expert focused *only* on extracting potential symptoms from text.
+            Analyze the following user query and extract all potential medical symptoms or signs mentioned.
+            Do NOT infer conditions. Only extract explicit mentions or very close paraphrases of symptoms.
+            Assign a confidence score (0.0 to 1.0) for each extracted term being a symptom.
+
+            User Query: "{user_query}"
+
+            Return ONLY a JSON list object containing dictionaries in this format:
+            [{{"symptom": "Symptom Name 1", "confidence": 0.95}}, {{"symptom": "Symptom Name 2", "confidence": 0.80}}]
+            If no symptoms are found, return an empty list: []
+            '''
+            try:
+                response = self.local_generate(SYMPTOM_PROMPT, max_tokens=300).strip()
+                # Try to find JSON list directly
+                json_match = re.search(r'(\[[\s\S]*?\])', response) # Non-greedy match for list
+                if json_match:
+                    json_str = json_match.group(1)
+                    try:
+                        symptom_data = json.loads(json_str)
+                        if isinstance(symptom_data, list):
+                            # Process LLM results
+                            llm_symptoms_confident = []
+                            confidences = []
+                            for item in symptom_data:
+                                if isinstance(item, dict) and "symptom" in item and "confidence" in item:
+                                     symptom_name = str(item["symptom"]).strip()
+                                     # Simple normalization (capitalize first letter)
+                                     if symptom_name:
+                                          symptom_name = symptom_name[0].upper() + symptom_name[1:].lower()
+                                     try:
+                                         confidence = float(item["confidence"])
+                                         if confidence >= THRESHOLDS["symptom_extraction"]:
+                                             llm_symptoms_confident.append(symptom_name)
+                                             confidences.append(confidence)
+                                     except (ValueError, TypeError):
+                                          logger.warning(f"Invalid confidence value from LLM: {item.get('confidence')}")
+                                else:
+                                     logger.warning(f"Invalid item format from LLM symptom extraction: {item}")
+
+
+                            llm_symptoms = llm_symptoms_confident
+                            if confidences:
+                                llm_avg_confidence = sum(confidences) / len(confidences)
+                            logger.debug(f"🔍 LLM Extracted Symptoms (confident): {llm_symptoms} (Avg Conf: {llm_avg_confidence:.3f})")
+
+                        else:
+                            logger.warning(f"LLM returned JSON, but not a list: {json_str}")
+
+                    except json.JSONDecodeError:
+                        logger.warning(f"Could not parse symptom JSON from LLM response: {json_str}")
+                else:
+                    logger.warning(f"Could not find JSON list '[]' in LLM symptom response: {response}")
+
+            except Exception as e:
+                logger.error(f"Error in LLM symptom extraction: {e}")
         else:
-             # Combine LLM symptoms (confident ones) and keyword symptoms
-             combined_symptoms = list(set(llm_symptoms + fallback_symptoms_from_keywords)) # Use set to deduplicate
+             logger.info("LLM not available for symptom extraction, relying on keywords.")
 
-             # Assign a confidence score. If LLM provided confident symptoms, use its average. Otherwise, use a fallback confidence.
-             if llm_symptoms:
-                 final_confidence = llm_avg_confidence # Use LLM's average if it found anything
-             elif combined_symptoms: # If keywords found something but LLM didn't
-                  final_confidence = 0.4 # Low confidence for combined if LLM failed
-             else: # Nothing found
-                 final_confidence = 0.0
 
-             logger.info(f"🔍 Final Extracted Symptoms: {combined_symptoms} (confidence: {final_confidence:.4f})")
+        # Combine and determine final confidence
+        # Use a set for deduplication, comparing lowercase versions
+        combined_symptoms_set = {s.lower() for s in llm_symptoms}
+        combined_symptoms_set.update({s.lower() for s in keyword_symptoms})
 
+        # Convert back to original/capitalized form (prefer LLM's if available)
+        final_symptoms_map = {s.lower(): s for s in keyword_symptoms} # Start with keywords
+        final_symptoms_map.update({s.lower(): s for s in llm_symptoms}) # Overwrite with LLM versions if they exist
+
+        combined_symptoms = sorted([final_symptoms_map[s_lower] for s_lower in combined_symptoms_set])
+
+
+        # Confidence logic:
+        if llm_symptoms: # If LLM found confident symptoms, use its average confidence
+            final_confidence = llm_avg_confidence
+        elif keyword_symptoms: # If only keywords found something
+            final_confidence = 0.45 # Assign a moderate confidence for keyword-only
+        else: # Nothing found
+            final_confidence = 0.0
+
+        logger.info(f"🔍 Final Extracted Symptoms: {combined_symptoms} (Confidence Score: {final_confidence:.3f})")
 
         result = (combined_symptoms, final_confidence)
         set_cached(cache_key, result)
         return result
 
 
-    def is_disease_identification_query(self, query: str) -> bool:
-        """Improved check for queries primarily focused on identifying a disease from symptoms."""
+    def is_disease_identification_query(self, query: str, extracted_symptoms: List[str]) -> bool:
+        """ Check if query primarily aims to identify a disease from symptoms. """
         query_lower = query.lower()
-
-        # Keywords/patterns that strongly suggest disease identification
-        disease_keywords = [
-            r"what disease", r"what condition", r"what could be causing",
-            r"what might be causing", r"possible disease", r"possible condition",
-            r"diagnosis", r"diagnose", r"what causes", r"what is causing",
-            r"what do i have", r"what do they have", r"could this be", r"is it possible i have",
-            r"what's wrong with me", r"what does this mean", r"identify (?:a )?(?:condition|disease)", # Added more phrases
-            r"symptoms.*mean", r"what does .* symptom.* indicate", r"what is .* symptom of",
-            r"what about .* symptoms", r"what could be .* (?:illness|sickness)"
-        ]
-
-        # Check for symptom mentions (using a broader keyword list or rely on symptom extraction)
-        # Rely on successful symptom extraction as a strong indicator
-        extracted_symptoms, _ = self.extract_symptoms(query)
         has_symptoms = len(extracted_symptoms) > 0
 
+        # Strong indicators: Explicit questions about cause/diagnosis
+        disease_keywords = [
+            r"what disease", r"what condition", r"what could (this|it) be", r"what might be",
+            r"possible disease", r"possible condition", r"diagnose", r"what causes", r"what is causing",
+            r"what do i have", r"what could i have", r"identify .* (condition|disease|issue)",
+            r"(symptoms|signs) of what", r"what could be wrong"
+        ]
+        if any(re.search(pattern, query_lower) for pattern in disease_keywords):
+            logger.debug(f"Query '{query[:50]}...' identified as disease query (keyword match).")
+            return True
 
-        # Check for disease identification intent using regex patterns
-        is_asking_for_disease = any(re.search(pattern, query_lower) for pattern in disease_keywords)
+        # Moderate indicators: Personal symptom description + implicit question
+        personal_phrases = ["i have", "my symptoms are", "i'm experiencing", "feeling", "suffering from"]
+        ends_with_question = query.strip().endswith('?')
 
-        # It's a disease identification query if it explicitly asks for one (and symptoms were found),
-        # or if it's a personal query structure combined with symptoms found,
-        # or if it's a query that looks like a list of symptoms and asks implicitly.
-        is_symptom_query_pattern_v2 = re.search(r"i have .* (?:and|with) .*\.? what could (?:it|they|this) be", query_lower) is not None
-        is_personal_symptoms_query = (
-             ("i have" in query_lower or "my symptoms are" in query_lower or "i'm experiencing" in query_lower or "these are my symptoms" in query_lower or "my health issue is" in query_lower) and has_symptoms
-        )
-        # Check if the query is primarily a list of symptoms ending with a question mark
-        # Use the extracted symptoms to make this check more robust
-        is_symptom_list_query = (
-            has_symptoms and # Must contain symptom keywords
-            query_lower.strip().endswith('?') and # Must end with a question mark
-            # Check if most of the query consists of potential symptom phrases (simple heuristic using extracted symptoms)
-            len([word for word in query_lower.split() if any(s.lower() in word.lower() for s in extracted_symptoms)]) / max(len(query_lower.split()), 1) > 0.3 # Lower threshold
-        )
+        if has_symptoms and any(phrase in query_lower for phrase in personal_phrases) and ends_with_question:
+             logger.debug(f"Query '{query[:50]}...' identified as disease query (personal symptoms + question mark).")
+             return True
 
+        # Weak indicator: List of symptoms only, ending in question mark (less reliable)
+        # Check if query is mostly just the extracted symptoms
+        symptom_words = set(word for sym in extracted_symptoms for word in sym.lower().split())
+        query_words = set(query_lower.replace('?', '').replace('.', '').replace(',', '').split())
+        # High overlap between query words and symptom words might indicate a symptom list query
+        overlap = len(symptom_words.intersection(query_words))
+        # Heuristic: if > 50% of non-common query words are symptom words AND it ends with '?'
+        common_words = {'i', 'have', 'a', 'is', 'and', 'the', 'my', 'are', 'what', 'me', 'with'}
+        non_common_query_words = query_words - common_words
+        if non_common_query_words and has_symptoms and ends_with_question:
+            if overlap / len(non_common_query_words) > 0.5:
+                logger.debug(f"Query '{query[:50]}...' identified as disease query (symptom list heuristic).")
+                return True
 
-        # Combine conditions
-        is_disease_query = is_asking_for_disease or \
-                           is_symptom_query_pattern_v2 or \
-                           is_personal_symptoms_query or \
-                           is_symptom_list_query
-
-        # logger.debug(f"Is disease identification query ('{query}')? {is_disease_query}")
-        return is_disease_query
+        logger.debug(f"Query '{query[:50]}...' NOT identified as primarily a disease identification query.")
+        return False
 
 
     def identify_missing_elements(self, user_query: str, generated_answer: str) -> List[str]:
-        """
-        Identifies high-level concepts (like duration, severity, specific history points)
-        that *might* be missing from the answer relative to the query's potential intent.
-        This is a simpler check than identify_missing_info.
-        Used *before* LLM synthesis to tell the LLM what to focus on.
-        """
+        """ Heuristic check for potentially missing high-level concepts (duration, severity etc.) in the answer for LLM synthesis focus. """
         logger.debug("🔍 Identifying high-level potential missing elements for LLM focus...")
         missing = set()
         query_lower = user_query.lower()
         answer_lower = generated_answer.lower()
 
-        # Simple rule-based checks based on common medical info needs
-        # Check if query mentions personal symptoms ("i have", "my symptoms") or looks like a personal case
-        is_personal_symptom_query = ("i have" in query_lower or "my symptoms are" in query_lower or "i'm experiencing" in query_lower or self.is_disease_identification_query(user_query))
+        # Check only if the query seems personal (implies context like duration/severity might be relevant)
+        personal_phrases = ["i have", "my symptoms are", "i'm experiencing", "feeling"]
+        is_personal = any(phrase in query_lower for phrase in personal_phrases) or self.is_disease_identification_query(user_query, []) # Basic check if it looks like disease query
 
-        if is_personal_symptom_query:
-            # Look for common ways duration is mentioned in the answer
-            duration_keywords_in_answer = [" duration", "days", "weeks", "months", "how long", "since", "for X time"] # Added 'since'
-            if not any(kw in answer_lower for kw in duration_keywords_in_answer):
-                missing.add("duration")
+        if is_personal:
+            # Duration Check (Keywords in Answer)
+            duration_kws = {"duration", "days", "weeks", "months", "long", "since", "started", "began", "onset"}
+            if not any(kw in answer_lower for kw in duration_kws):
+                missing.add("duration/onset")
 
-            # Look for common ways severity is mentioned in the answer
-            severity_keywords_in_answer = [" severity", "mild", "moderate", "severe", "how severe", "intense", "level of pain", "scale of"] # Added more terms
-            if not any(kw in answer_lower for kw in severity_keywords_in_answer):
+            # Severity Check (Keywords in Answer)
+            severity_kws = {"severity", "mild", "moderate", "severe", "how severe", "intense", "level", "scale"}
+            if not any(kw in answer_lower for kw in severity_kws):
                  missing.add("severity")
 
-            # Add other checks as needed, e.g., "location", "frequency", "relieved by", "worsened by", "onset"
-            # Location: "where", "location", "area", "left side", "right side", specific body parts mentioned in query?
-            location_keywords_in_answer = [" location", "where", "area", "on the left", "on the right", "in the chest", "in the abdomen", "radiating"] # Example
-            # Only add location if the query mentioned a potentially localized symptom like pain, rash etc.
-            if any(symptom in query_lower for symptom in ["pain", "ache", "rash", "swelling", "bruise", "tenderness"]):
-                 if not any(kw in answer_lower for kw in location_keywords_in_answer):
+            # Location Check (if query mentions location-relevant symptoms)
+            location_relevant_symptoms = {"pain", "ache", "rash", "swelling", "bruise", "tenderness", "lump", "sore"}
+            location_kws = {"location", "where", "area", "side", "chest", "abdomen", "head", "limb", "back"}
+            if any(symptom in query_lower for symptom in location_relevant_symptoms):
+                 if not any(kw in answer_lower for kw in location_kws):
                       missing.add("location")
 
-
-            # Frequency: "how often", "frequency", "intermittent", "constant", "sporadic"
-            frequency_keywords_in_answer = [" frequency", "how often", "intermittent", "constant", "sporadic", "comes and goes"]
-            # Only add frequency if the query mentioned symptoms that could be episodic
-            if any(symptom in query_lower for symptom in ["pain", "headache", "dizziness", "nausea", "palpitations"]):
-                 if not any(kw in answer_lower for kw in frequency_keywords_in_answer):
+            # Frequency Check (if query mentions episodic symptoms)
+            frequency_relevant_symptoms = {"pain", "headache", "dizziness", "nausea", "palpitations", "attack", "episode"}
+            frequency_kws = {"frequency", "often", "intermittent", "constant", "sporadic", "times", "comes and goes", "episodic"}
+            if any(symptom in query_lower for symptom in frequency_relevant_symptoms):
+                 if not any(kw in answer_lower for kw in frequency_kws):
                     missing.add("frequency")
 
-            # Onset: "when it started", "onset", "began", "started"
-            onset_keywords_in_answer = [" onset", "started", "began", "when it happened"]
-            # Onset is generally useful for any personal symptom query
-            if not any(kw in answer_lower for kw in onset_keywords_in_answer):
-                 missing.add("onset")
-
-
-        # This is a heuristic, not a definitive check like identify_missing_info
-        missing_list = list(missing)
-        # logger.debug(f"Identified potential missing elements (for LLM focus): {missing_list}")
+        missing_list = sorted(list(missing))
+        logger.debug(f"Identified potential missing elements (for LLM focus): {missing_list}")
         return missing_list
 
 
     def combine_initial_answer_draft(self, kg_diagnosis_component: Optional[str], kg_content_other: str, rag_content: str) -> str:
-         """Combines the Path 1 KG diagnosis component (if any), other KG content, and RAG content."""
-         logger.info("Merging KG (diagnosis & other) and RAG results into initial draft...")
+         """ Combines KG diagnosis (Path 1), other KG info, and RAG content into a draft for LLM synthesis. """
+         logger.info("🧩 Combining KG and RAG results into initial draft...")
          combined_parts: List[str] = []
+         has_kg_diag = False
+         has_kg_other = False
+         has_rag = False
 
-         # Add KG diagnosis component if generated
-         if kg_diagnosis_component and kg_diagnosis_component.strip() != "":
+         # Add KG diagnosis component (from Path 1 LLM formatting) if meaningful
+         if kg_diagnosis_component and kg_diagnosis_component.strip() and "unidentifiable condition" not in kg_diagnosis_component and "error condition" not in kg_diagnosis_component :
               combined_parts.append(kg_diagnosis_component.strip())
+              has_kg_diag = True
 
-         # Add other KG content (treatments/remedies) if found and is not the default empty message
-         if kg_content_other and kg_content_other.strip() != "" and kg_content_other.strip() != "Medical Knowledge Graph information on treatments or remedies is unavailable." and kg_content_other.strip() != "Knowledge Graph did not find specific relevant information on treatments or remedies.":
-              # Add other KG content (treatments/remedies), separate if diagnosis is present
-              if combined_parts:
-                   combined_parts.append("\n\n" + kg_content_other.strip())
-              else:
-                   combined_parts.append(kg_content_other.strip())
+         # Add other KG content (treatments/remedies) if meaningful
+         kg_other_meaningful = kg_content_other and kg_content_other.strip() and "unavailable" not in kg_content_other and "did not find" not in kg_content_other
+         if kg_other_meaningful:
+              # Add heading if not already implied by diagnosis component structure
+              if not has_kg_diag or not kg_content_other.startswith("##"):
+                   # Check if diagnosis part already included treatments/remedies (unlikely with current format)
+                   if "treatment" not in (kg_diagnosis_component or "").lower() and "remed" not in (kg_diagnosis_component or "").lower():
+                        # Add separator if diagnosis was present
+                        if has_kg_diag: combined_parts.append("\n---\n")
+                        # Add the content (which should already have markdown headings)
+                        combined_parts.append(kg_content_other.strip())
+                        has_kg_other = True
+                   else: # Diagnosis component seems to cover it, don't add redundantly
+                       logger.debug("Skipping kg_content_other as diagnosis component might already cover it.")
+              else: # Diagnosis component likely already structured to include other KG info
+                   has_kg_other = True # Mark as included
 
 
-         # Add RAG content if found and is not the default empty message
-         if rag_content and rag_content.strip() != "" and rag_content.strip() != "An error occurred while retrieving information from documents." and rag_content.strip() != "Document search is currently unavailable." and rag_content.strip() != "I searched my documents but couldn't find specific information for that.":
-              # Add RAG content, potentially separated
-              if combined_parts:
-                   combined_parts.append("\n\n## Additional Information from Document Search\n")
-                   combined_parts.append(rag_content.strip())
-              else:
-                   combined_parts.append(rag_content.strip())
-         elif not combined_parts: # If neither KG diagnosis, other KG, nor RAG had useful content
-               combined_parts.append("I found limited specific information regarding your query from my knowledge sources.")
+         # Add RAG content if meaningful
+         rag_meaningful = rag_content and rag_content.strip() and "error occurred" not in rag_content and "unavailable" not in rag_content and "couldn't find specific" not in rag_content
+         if rag_meaningful:
+              # Add separator if KG content was added
+              if has_kg_diag or has_kg_other:
+                   combined_parts.append("\n---\n")
+              combined_parts.append("## Information from Document Search\n")
+              combined_parts.append(rag_content.strip())
+              has_rag = True
 
+         # If nothing meaningful was found from any source
+         if not has_kg_diag and not has_kg_other and not has_rag:
+               combined_parts.append("I searched the knowledge graph and documents but found limited specific information regarding your query.")
 
          initial_combined_answer = "\n".join(combined_parts).strip()
-         logger.debug("Initial combined answer draft created.")
+         logger.debug(f"Initial combined draft created (KG Diag: {has_kg_diag}, KG Other: {has_kg_other}, RAG: {has_rag}). Length: {len(initial_combined_answer)}")
          return initial_combined_answer
 
+    # --- Main Response Generation Orchestrator ---
 
-    # --- Main Response Generation Function (Orchestrator) ---
-
-    # Updated signature to accept confirmed_symptoms and original_query_if_followup
-    # Returns: (response_text, sources_list, action_flag, ui_data)
-    # action_flag: "final_answer", "llm_followup_prompt", "symptom_ui_prompt", "none" (no response/action needed)
-    # ui_data: None or Dict { "symptom_options": {disease_label: [symptoms]}, "original_query": str } for "symptom_ui_prompt"
-    
     def generate_response(self, user_input: str, user_type: str = "User / Family", confirmed_symptoms: Optional[List[str]] = None, original_query_if_followup: Optional[str] = None) -> Tuple[str, List[str], str, Optional[Dict]]:
         """
-        Generate response using orchestration based on Path 1 / Path 2 logic.
+        Orchestrates the response generation using KG, RAG, LLM, and follow-up logic.
 
-        Args:
-            user_input: The current input from the user (could be original query or response to prompt/UI).
-            user_type: The type of user ("User / Family" or "Physician").
-            confirmed_symptoms: List of symptoms selected by the user from the UI, if this turn is
-                                a response to a symptom confirmation prompt. None otherwise.
-            original_query_if_followup: The original query that triggered a symptom UI or LLM prompt,
-                                        passed back when the user responds to the prompt/UI. None otherwise.
-
-        Returns:
-            A tuple containing:
-            - response_text (str): The message to display to the user (answer or prompt).
-            - sources_list (List[str]): List of source references (only for final answers).
-            - action_flag (str): Indicates what the UI should do ("final_answer", "llm_followup_prompt", "symptom_ui_prompt", "none").
-            - ui_data (Optional[Dict]): Additional data needed by the UI if action_flag requires it (e.g., symptom options).
+        Returns: (response_text, sources_list, action_flag, ui_data)
+        action_flag: "final_answer", "llm_followup_prompt", "symptom_ui_prompt", "error", "none"
+        ui_data: Dict for "symptom_ui_prompt" containing {"symptom_options": Dict, "original_query": str}
         """
-        logger.info(f"--- Generating Response for Input: '{user_input}' ---")
-        logger.info(f"   Confirmed symptoms from UI: {confirmed_symptoms}")
-        logger.info(f"   Original query if follow-up: '{original_query_if_followup}'")
-        logger.info(f"   Current followup_context: {self.followup_context}")
-        logger.info(f"   Current chat_history length: {len(self.chat_history)}")
-
-
-        # Determine the core query being processed in this turn
-        # If confirmed_symptoms is provided, the "real" query is the one that triggered the UI (`original_query_if_followup`).
-        # If original_query_if_followup is provided (and confirmed_symptoms is None), the "real" query is the one that triggered the LLM prompt.
-        # Otherwise, the current user_input is the start of a new thread.
-        core_query_for_processing = original_query_if_followup if original_query_if_followup is not None else user_input
-        logger.info(f"   Core query for processing logic: '{core_query_for_processing}'")
-
-        if not core_query_for_processing.strip() and confirmed_symptoms is None:
-             logger.info("Empty core query and no confirmed symptoms. Skipping.")
-             return "", [], "none", None # No action needed for empty input
-
+        t_start_generate = datetime.now()
+        logger.info(f"--- START generate_response --- Input: '{user_input[:50]}...' ---")
+        logger.info(f"   Confirmed symptoms: {confirmed_symptoms}, Original query context: {original_query_if_followup[:50] if original_query_if_followup else 'None'}")
+        logger.info(f"   Follow-up round: {self.followup_context['round']}, History length: {len(self.chat_history)}")
 
         # --- Initialization Check ---
-        # Check if *critical* components are missing. LLM is needed for basic function. RAG needs LLM + VDB + Chain. KG needs KG driver.
-        # Re-attempt initialization if LLM or RAG chain is None
-        if self.llm is None or self.qa_chain is None or not self.kg_connection_ok:
-            logger.info("Chatbot is not fully initialized. Attempting re-initialization...")
-            success, message = self.initialize_qa_chain() # Re-attempt initialization
-            if not success:
-                error_message = f"Error processing request: Assistant failed to initialize fully ({message}). Some features may be unavailable. Please check your configuration and try again later."
-                self.log_orchestration_decision(core_query_for_processing, f"SELECTED_STRATEGY: INIT_ERROR\nREASONING: Re-initialization failed: {message}", 0.0, 0.0)
-                if self.llm is None:
-                     # If LLM is still none after re-attempt, we cannot do anything useful
-                     logger.critical("LLM is still not initialized after re-attempt. Cannot generate any response.")
-                     return error_message, [], "final_answer", None
-                else:
-                    # If LLM is available but RAG/KG failed, proceed with limited features
-                    logger.warning("Initialization partially successful (LLM available). Proceeding with limited features (No RAG or KG).")
-                    # Continue processing below, but RAG/KG calls will gracefully handle missing components
+        init_ok, init_msg = self.initialize_qa_chain() # Verify/re-init components
+        if not init_ok and self.llm is None: # LLM is absolutely critical
+             error_message = f"Critical Error: Chat assistant core (LLM) failed to initialize ({init_msg}). Cannot proceed."
+             logger.critical(error_message)
+             # Add user message to history, but respond with error
+             self.chat_history.append((user_input, error_message))
+             return error_message, [], "error", None
+        elif not init_ok:
+            logger.warning(f"Initialization incomplete ({init_msg}). Proceeding with limited features.")
+            # UI should show warnings based on init_msg in sidebar
 
+        # --- Determine Core Query and Context ---
+        # If processing response to a prompt/UI, use the original query as the main topic
+        core_query_for_processing = original_query_if_followup if original_query_if_followup is not None else user_input
+        is_response_to_llm_followup = original_query_if_followup is not None and self.followup_context["round"] == 1 and confirmed_symptoms is None
+        is_response_to_symptom_ui = confirmed_symptoms is not None
 
-        # --- Step 0.1: Handle User Response to Prior LLM Follow-up ---
-        # Check if this input is a response to the single allowed LLM follow-up prompt.
-        # This is indicated by `original_query_if_followup` being present AND `self.followup_context["round"] == 1`.
-        is_response_to_llm_followup = original_query_if_followup is not None and self.followup_context["round"] == 1
-        if is_response_to_llm_followup:
-             logger.info(f"Detected response to LLM follow-up (round {self.followup_context['round']}). Processing '{user_input}' in context of '{original_query_if_followup}'.")
-             # The `core_query_for_processing` is already set to `original_query_if_followup` correctly.
-             # The user_input (the response) will be implicitly included in the RAG history due to Langchain memory.
+        logger.info(f"   Core query for logic: '{core_query_for_processing[:50]}...'")
+        if is_response_to_llm_followup: logger.info("   Context: Response to LLM follow-up.")
+        if is_response_to_symptom_ui: logger.info("   Context: Response to Symptom UI.")
+
+        # --- Step 1: Basic Input Validation & Relevance Check ---
+        if not core_query_for_processing.strip():
+             logger.info("Empty core query. Skipping.")
+             return "", [], "none", None
+
+        is_med_query, med_reason = self.is_medical_query(core_query_for_processing)
+        if not is_med_query:
+            logger.info(f"Query classified as non-medical: '{core_query_for_processing[:50]}...'. Reason: {med_reason}")
+            # Provide a polite refusal or a general non-medical answer using LLM
+            non_med_prompt = f"The user asked: '{core_query_for_processing}'. This seems unrelated to medical topics. Provide a polite, brief response indicating you are a medical assistant and cannot help with this topic. Do not answer the query directly."
+            response_text = self.local_generate(non_med_prompt, max_tokens=100) if self.llm else "I am a medical assistant and can only help with health-related questions."
+            self.log_orchestration_decision(core_query_for_processing, "SELECTED_STRATEGY: NON_MEDICAL", 0, 0)
+            self.chat_history.append((user_input, response_text)) # Log user input and refusal
+            return response_text, [], "final_answer", None
 
 
         # --- Step 2: Extract Symptoms ---
-        # Combine symptoms extracted from the *core query* with any *confirmed symptoms* from UI.
-        # If processing a response to an LLM follow-up, extract symptoms from the *response* text AND combine with symptoms from the *original query*.
-        extracted_symptoms_from_core_query, extracted_conf_core = self.extract_symptoms(core_query_for_processing)
+        # Combine symptoms from core query, user's response (if follow-up), and confirmed symptoms (if UI response)
         all_symptoms: List[str] = []
         symptom_confidence = 0.0
 
+        # Extract from core query first
+        symptoms_core, conf_core = self.extract_symptoms(core_query_for_processing)
+
         if is_response_to_llm_followup:
-            logger.info(f"Extracting symptoms from LLM follow-up response: '{user_input}'")
-            extracted_symptoms_from_response, response_conf = self.extract_symptoms(user_input)
-            all_symptoms = list(set(extracted_symptoms_from_response + extracted_symptoms_from_core_query))
-            symptom_confidence = max(response_conf, extracted_conf_core) # Simple confidence merge
-            logger.info(f"Combined symptoms from response and original query: {all_symptoms}")
+             # Also extract from the user's *answer* to the follow-up
+             symptoms_response, conf_response = self.extract_symptoms(user_input)
+             all_symptoms = list(set(symptoms_core + symptoms_response))
+             symptom_confidence = max(conf_core, conf_response) # Simple max confidence
+             logger.info(f"Combined symptoms from original query and follow-up response: {all_symptoms}")
+        elif is_response_to_symptom_ui:
+             # Use confirmed symptoms + any *new* symptoms mentioned in the text box alongside UI
+             symptoms_new_text, conf_new_text = self.extract_symptoms(user_input) # user_input might just be original query again if text box empty
+             all_symptoms = list(set(confirmed_symptoms + symptoms_new_text))
+             symptom_confidence = max(0.9, conf_new_text) # High confidence due to UI confirmation
+             logger.info(f"Using symptoms from UI confirmation (+ new text): {all_symptoms}")
+        else: # Standard initial query
+             all_symptoms = symptoms_core
+             symptom_confidence = conf_core
+             logger.info(f"Using symptoms extracted from initial query: {all_symptoms}")
 
-        elif confirmed_symptoms is not None:
-            logger.info(f"Using symptoms from UI confirmation: {confirmed_symptoms}")
-            # Extract symptoms from the current input text as well, just in case user added more
-            extracted_symptoms_from_input, extracted_conf_input = self.extract_symptoms(user_input)
-            all_symptoms = list(set(extracted_symptoms_from_input + confirmed_symptoms)) # Combine and deduplicate
-            # Boost confidence significantly if user confirmed via UI
-            symptom_confidence = max(extracted_conf_input, 0.9) # Assume high confidence if user confirmed
+        # Filter out empty strings just in case
+        all_symptoms = [s for s in all_symptoms if s and s.strip()]
 
 
-        else: # Standard initial input
-            all_symptoms = extracted_symptoms_from_core_query
-            symptom_confidence = extracted_conf_core
-            logger.info(f"Extracted symptoms from input: {all_symptoms}")
-
-        # --- Step 3: KG Processing ---
-        # Run KG agent with all available symptoms
-        logger.info("📚 Processing with Knowledge Graph...")
-        t_start_kg = datetime.now()
-        # Pass the core query as context to KG agent if needed internally (optional)
+        # --- Step 3: Knowledge Graph Processing ---
         kg_data = self.knowledge_graph_agent(core_query_for_processing, all_symptoms)
         top_disease_confidence = kg_data.get("top_disease_confidence", 0.0)
-        kg_diagnosis_data_for_llm = kg_data.get("kg_content_diagnosis_data_for_llm") # Data for LLM Path 1 formatting
-        kg_content_other = kg_data.get("kg_content_other", "") # Treatments/Remedies
-
-        logger.info(f"📊 KG Top Disease Confidence: {top_disease_confidence:.4f} (took {(datetime.now() - t_start_kg).total_seconds():.2f}s)")
-
-        # --- Step 4: Path 1 - Diagnosis Focus & Symptom Follow-up UI (Decision Point 1) ---
-        is_disease_query = self.is_disease_identification_query(core_query_for_processing)
+        kg_diagnosis_data_for_llm = kg_data.get("kg_content_diagnosis_data_for_llm")
+        kg_content_other = kg_data.get("kg_content_other", "")
         kg_found_diseases = len(kg_data.get("identified_diseases_data", [])) > 0
 
-        # Condition to trigger Symptom Follow-up UI:
-        # 1. It's a disease identification query.
-        # 2. KG found *at least one* disease.
-        # 3. Top disease confidence is below the threshold for direct Path 1 conclusion.
-        # 4. We are *not* currently processing a response *from* the symptom confirmation UI (confirmed_symptoms is None).
-        # 5. KG returned potential disease-symptom associations for the UI step (`identified_diseases_data` has 'AllDiseaseSymptomsKG' for top diseases).
-        # 6. We haven't asked the single LLM follow-up yet (round == 0).
-        # 7. LLM is initialized (needed to process the UI response effectively later).
-        # 8. KG connection is OK (otherwise we can't get relevant symptom options from KG).
-        if is_disease_query and \
-           kg_found_diseases and \
-           top_disease_confidence < THRESHOLDS["disease_symptom_followup_threshold"] and \
-           confirmed_symptoms is None and \
-           any(d.get("AllDiseaseSymptomsKG") for d in kg_data.get("identified_diseases_data", [])[:5]) and \
-           self.followup_context["round"] == 0 and \
-           self.llm is not None and \
-           self.kg_connection_ok: # Symptom UI requires KG is available
+        # --- Step 4: Symptom Follow-up UI Trigger (Decision Point 1) ---
+        is_diag_query = self.is_disease_identification_query(core_query_for_processing, all_symptoms) # Pass extracted symptoms
+        trigger_symptom_ui = False
+        symptom_options_for_ui = {}
 
-            logger.info(f"❓ Disease query ('{core_query_for_processing}') with low KG confidence ({top_disease_confidence:.4f}). Triggering Symptom Follow-up UI.")
-            # Prepare data for the UI checklist
-            symptom_options_for_ui: Dict[str, List[str]] = {}
-            # Get symptoms associated with top N diseases (e.g., top 3-5) for the UI
-            # Ensure we only include diseases that actually have associated symptoms in KG
-            relevant_diseases_for_ui = [d for d in kg_data["identified_diseases_data"][:5] if d.get("AllDiseaseSymptomsKG")]
-            for disease_data in relevant_diseases_for_ui:
-                 disease_label = f"{disease_data['Disease']} (Confidence: {disease_data['Confidence']:.2f})"
-                 # Ensure symptom names are strings and unique within the disease list
-                 symptoms_list = sorted(list(set(str(s) for s in disease_data.get("AllDiseaseSymptomsKG", []) if isinstance(s, str))))
-                 if symptoms_list:
-                    symptom_options_for_ui[disease_label] = symptoms_list
+        # Conditions to trigger UI:
+        # - Is a diagnosis-seeking query.
+        # - KG found *some* potential diseases.
+        # - Confidence is below the UI trigger threshold.
+        # - We are NOT currently processing a response *from* the symptom UI.
+        # - KG provided symptom associations for the top diseases (needed for checklist).
+        # - We haven't asked the single LLM follow-up yet (round 0).
+        # - Critical components (LLM, KG) are available.
+        if (is_diag_query and kg_found_diseases and
+            top_disease_confidence < THRESHOLDS["disease_symptom_followup_threshold"] and
+            not is_response_to_symptom_ui and # Don't trigger if already responding to UI
+            any(d.get("AllDiseaseSymptomsKG") for d in kg_data.get("identified_diseases_data", [])[:3]) and # Check top 3 for symptoms
+            self.followup_context["round"] == 0 and # Only if no LLM follow-up used yet
+            self.llm is not None and self.kg_connection_ok):
 
-            follow_up_prompt_text = f"""
-            Thank you for sharing your symptoms. Based on what you've told me, I found some potential conditions.
-            To help narrow it down and provide a more relevant response, please confirm which of the associated symptoms from my knowledge base you are also experiencing.
-            """
-            # The Streamlit UI will display the checkboxes below this message based on symptom_options_for_ui
+            logger.info(f"❓ Decision: Trigger Symptom Follow-up UI (Query: '{core_query_for_processing[:50]}...', KG Conf: {top_disease_confidence:.3f})")
+            trigger_symptom_ui = True
 
-            # Log decision
-            self.log_orchestration_decision(
-                core_query_for_processing,
-                f"SELECTED_STRATEGY: SYMPTOM_UI_FOLLOWUP\nREASONING: Disease query with low KG confidence ({top_disease_confidence:.2f}). Presenting symptom checklist for confirmation.",
-                top_disease_confidence, # Use specific KG conf here
-                0.0 # RAG skipped in this path
-            )
+            # Prepare data for the UI checklist (Top 3-5 diseases with symptoms)
+            relevant_diseases = [d for d in kg_data["identified_diseases_data"][:5] if d.get("AllDiseaseSymptomsKG")]
+            for disease_data in relevant_diseases:
+                 disease_label = f"{disease_data['Disease']} (KG Conf: {disease_data['Confidence']:.2f})"
+                 # Get unique, non-empty, string symptoms associated with this disease in KG
+                 symptoms = sorted(list(set(str(s).strip() for s in disease_data.get("AllDiseaseSymptomsKG", []) if isinstance(s, str) and str(s).strip())))
+                 if symptoms: symptom_options_for_ui[disease_label] = symptoms
 
-            # Return data indicating UI action is needed
-            # Pass the core_query_for_processing back so Streamlit can resubmit it with confirmed symptoms
-            logger.info("Returning Symptom UI prompt.")
-            return follow_up_prompt_text.strip(), [], "symptom_ui_prompt", {"symptom_options": symptom_options_for_ui, "original_query": core_query_for_processing}
+            if symptom_options_for_ui: # Only trigger if we have options to show
+                follow_up_prompt_text = f"""
+                Based on '{core_query_for_processing[:100]}...' and symptoms like {', '.join(all_symptoms) if all_symptoms else 'those mentioned'}, the knowledge graph suggests a few possibilities.
 
-
-        # --- Step 5: Path 1 - Direct KG Diagnosis Component (if high confidence or after symptom confirmation) ---
-        # This step is reached IF confirmed_symptoms is NOT None (user responded to UI)
-        # OR IF confirmed_symptoms IS None BUT top_disease_confidence was already >= threshold on first check
-        # AND it is a disease identification query.
-        path1_kg_diagnosis_component = None
-        is_high_conf_kg_diagnosis = is_disease_query and kg_found_diseases and top_disease_confidence >= THRESHOLDS["disease_symptom_followup_threshold"]
-        is_post_symptom_confirmation = confirmed_symptoms is not None # Flag indicates user completed the UI step
-
-        if (is_high_conf_kg_diagnosis or is_post_symptom_confirmation) and kg_diagnosis_data_for_llm:
-            if self.llm is not None: # LLM needed for formatting
-                 logger.info(f"✅ Path 1: High confidence KG diagnosis ({top_disease_confidence:.4f}) OR received symptom confirmation. Formatting KG diagnosis answer with LLM.")
-
-                 # Use LLM to format the KG diagnosis into a user-friendly statement
-                 # Pass all available symptoms (extracted + confirmed) to the formatter for phrasing
-                 path1_kg_diagnosis_component = self.format_kg_diagnosis_with_llm(
-                      kg_diagnosis_data_for_llm["disease_name"],
-                      all_symptoms, # Use the combined list of symptoms for phrasing
-                      kg_diagnosis_data_for_llm["confidence"]
-                  )
-
-                 # Log decision for the KG Diagnosis component (internal log)
-                 logger.info(f"   --- KG Diagnosis Component Generated ---")
-
+                To help refine this, please check any *additional* symptoms from the list below that you are experiencing. You can also add others in the text box.
+                """
+                self.log_orchestration_decision(core_query_for_processing, f"SELECTED_STRATEGY: SYMPTOM_UI_FOLLOWUP\nREASONING: Disease query with low KG confidence ({top_disease_confidence:.2f}). Presenting symptom checklist.", top_disease_confidence, 0.0)
+                # Return UI trigger
+                # Pass original query back so Streamlit can resubmit it with confirmed symptoms
+                return follow_up_prompt_text.strip(), [], "symptom_ui_prompt", {"symptom_options": symptom_options_for_ui, "original_query": core_query_for_processing}
             else:
-                 # Fallback to manual formatting if LLM is not available but KG found data
-                 logger.warning("⚠️ LLM not available for formatting KG diagnosis. Using manual format.")
-                 disease_name = kg_diagnosis_data_for_llm["disease_name"]
-                 symptoms_str = ", ".join(all_symptoms) if all_symptoms else "your symptoms"
-                 path1_kg_diagnosis_component = f"Based on {symptoms_str}, **{disease_name}** is a potential condition. This is not a definitive diagnosis and requires professional medical evaluation."
-
-        elif (is_high_conf_kg_diagnosis or is_post_symptom_confirmation):
-             # KG found no diseases even after potential confirmation, provide a statement
-             logger.info("⚠️ KG found no diseases even after symptom input. Proceeding to Path 2 without specific KG diagnosis component.")
-             path1_kg_diagnosis_component = "Based on the symptoms provided, I couldn't find a specific medical condition matching them in my knowledge base."
+                 logger.warning("Symptom UI trigger condition met, but no valid symptom options found from KG. Skipping UI.")
+                 trigger_symptom_ui = False # Abort UI trigger
 
 
-        # --- NEW: Decision Point 2 - Conclude with KG-only answer for high-confidence diagnosis query ---
-        # Only do this if LLM is available to ensure the formatted answer is good
-        if (is_high_conf_kg_diagnosis or is_post_symptom_confirmation) and path1_kg_diagnosis_component is not None and self.llm is not None:
-             # Check if the original query *primarily* asked for a diagnosis and not other things explicitly.
-             # This check is heuristic, refine as needed.
-             query_lower = core_query_for_processing.lower()
-             asks_for_treatment = any(kw in query_lower for kw in ["treat", "medication", "cure", "what to do", "how to manage", "resolve"])
-             asks_for_remedy = any(kw in query_lower for kw in ["remedy", "home", "natural", "relief"])
+        # --- Step 5: Path 1 KG Diagnosis Component Generation ---
+        # Generate if: (High KG confidence OR responding to symptom UI) AND is a diagnosis query
+        path1_kg_diagnosis_component = None
+        generate_kg_diag_component = False
+        is_high_conf_kg_diagnosis = kg_found_diseases and top_disease_confidence >= THRESHOLDS["disease_symptom_followup_threshold"]
+
+        if is_diag_query and (is_high_conf_kg_diagnosis or is_response_to_symptom_ui):
+             if kg_diagnosis_data_for_llm and kg_diagnosis_data_for_llm["disease_name"] not in ["an unidentifiable condition", "an error condition"]:
+                  if self.llm:
+                      logger.info(f"✅ Path 1: Formatting KG diagnosis component (Disease: '{kg_diagnosis_data_for_llm['disease_name']}', Conf: {kg_diagnosis_data_for_llm['confidence']:.3f})")
+                      path1_kg_diagnosis_component = self.format_kg_diagnosis_with_llm(
+                          kg_diagnosis_data_for_llm["disease_name"],
+                          all_symptoms, # Use all current symptoms for phrasing
+                          kg_diagnosis_data_for_llm["confidence"]
+                      )
+                      generate_kg_diag_component = True
+                  else: # Fallback format if LLM failed
+                      logger.warning("⚠️ LLM not available for formatting KG diagnosis. Using manual format.")
+                      d_name = kg_diagnosis_data_for_llm["disease_name"]
+                      s_str = ", ".join(all_symptoms) if all_symptoms else "your symptoms"
+                      conf = kg_diagnosis_data_for_llm["confidence"]
+                      path1_kg_diagnosis_component = f"Based on {s_str}, the knowledge graph suggests **{d_name}** (Confidence: {conf:.2f}). This is not a diagnosis; consult a professional."
+                      generate_kg_diag_component = True
+             else: # KG didn't find a specific disease even after UI/high conf check
+                 logger.info("Path 1: KG found no specific disease match for diagnosis query.")
+                 path1_kg_diagnosis_component = "Based on the symptoms provided, the knowledge graph did not identify a specific matching condition."
+                 generate_kg_diag_component = True # Generate this neutral statement
 
 
-             # Conclude with KG-only if it's a diagnosis query AND (high conf OR post-confirmation)
-             # AND it doesn't seem to explicitly ask for treatments/remedies in the *original* phrasing.
-             # Note: The "what could i do?" query in your log *does* imply asking for action/treatment,
-             # so this logic *shouldn't* trigger for that specific example, and it should proceed to RAG/Path 2.
-             # If you want "what could i do?" to ALSO trigger KG-only when diagnosis is high confidence,
-             # you might adjust the `asks_for_treatment` condition or add a specific check.
-             # Let's keep the check strict for now based on explicit keywords.
-             # Adding a condition: If the initial query has *no* symptom keywords, it's likely a general info query,
-             # so we shouldn't conclude with KG-only diagnosis unless symptoms were added via UI.
-             # Check if the core query contained symptom keywords initially
-             extracted_symptoms_initial, _ = self.extract_symptoms(user_input if original_query_if_followup is None else original_query_if_followup)
-             core_query_had_symptoms_initially = len(extracted_symptoms_initial) > 0
+        # --- Step 6: Conclude with KG-Only? (Decision Point 2) ---
+        # If we generated a KG diagnosis component (Path 1) AND the original query seems *only* about diagnosis (no treatment/remedy keywords)
+        # AND we have an LLM to ensure formatting is good.
+        if generate_kg_diag_component and path1_kg_diagnosis_component and self.llm:
+            query_lower = core_query_for_processing.lower()
+            asks_for_more = any(kw in query_lower for kw in ["treat", "medication", "cure", "what to do", "manage", "remedy", "home", "natural", "relief", "information on", "tell me about"])
 
-
-             if (is_high_conf_kg_diagnosis or is_post_symptom_confirmation) and not (asks_for_treatment or asks_for_remedy or not core_query_had_symptoms_initially): # Don't KG-only if original query had no symptoms unless it's post-confirmation
-                 logger.info(f"✅ Decision Point 2: Concluding with KG-only answer for high-confidence diagnosis ({top_disease_confidence:.4f}). Query did not explicitly ask for treatment/remedy AND it had symptoms initially.")
-
-                 # The formatted diagnosis component includes the disclaimer
+            if not asks_for_more:
+                 logger.info(f"✅ Decision Point 2: Concluding with KG-only diagnosis answer (High Conf or Post-UI). Query didn't explicitly ask for more details.")
                  final_response_text = path1_kg_diagnosis_component
-
-                 # Collect KG sources for this diagnosis component
-                 all_sources: List[str] = []
-                 if self.kg_connection_ok:
-                      all_sources.append(f"[Source: Medical Knowledge Graph (Diagnosis Data)]")
-
-                 # Log the orchestration decision
-                 self.log_orchestration_decision(
-                     core_query_for_processing,
-                     f"SELECTED_STRATEGY: KG_DIAGNOSIS_ONLY\nREASONING: Disease query with high KG confidence ({top_disease_confidence:.2f}) or post-symptom confirmation, and query did not explicitly ask for treatment/remedy.",
-                     top_disease_confidence,
-                     0.0 # RAG was skipped
-                 )
-
-                 # Add to chat history *before* returning
-                 # Use the user_input (what the user actually typed this turn) and the final formatted response
-                 self.chat_history.append((user_input, final_response_text.strip()))
-
-
-                 logger.info("Returning KG-only Final Answer.")
-                 # Return the formatted KG diagnosis answer as the final answer
+                 # Add KG source mention
+                 all_sources = ["[Source: Medical Knowledge Graph (Diagnosis Suggestion)]"] if self.kg_connection_ok else []
+                 self.log_orchestration_decision(core_query_for_processing, f"SELECTED_STRATEGY: KG_DIAGNOSIS_ONLY\nREASONING: Diagnosis query answered with sufficient KG confidence ({top_disease_confidence:.2f}) or post-UI confirmation. Query focus seemed limited to diagnosis.", top_disease_confidence, 0.0)
+                 self.chat_history.append((user_input, final_response_text.strip())) # Add user input + final bot answer
+                 processing_time = (datetime.now() - t_start_generate).total_seconds()
+                 logger.info(f"--- END generate_response (KG_DIAGNOSIS_ONLY) --- Time: {processing_time:.2f}s ---")
                  return final_response_text.strip(), all_sources, "final_answer", None
-
-             # Else: It's a high-confidence diagnosis query, BUT it also asked for treatment/remedy,
-             # OR it was the result of symptom confirmation which should always proceed to Path 2
-             # to combine with RAG, OR the original query had no symptoms. Proceed to Path 2.
-             logger.info("✅ Proceeding to Path 2 with KG Diagnosis Component (if generated), as query asked for treatments/remedies or it's post-symptom confirmation/general query.")
+            else:
+                 logger.info("Proceeding to Path 2 (RAG/Synthesis) as query asked for more than just diagnosis, or KG diagnosis component was neutral.")
 
 
-        # --- Step 6: Path 2 - RAG Processing ---
-        # This step is reached if Path 1 Symptom UI was not triggered,
-        # or if Path 1 Diagnosis resulted in a component but didn't conclude the answer.
-        logger.info("📚 Processing with RAG...")
-        t_start_rag = datetime.now()
-
+        # --- Step 7: Path 2 - RAG Processing ---
         rag_content = ""
         rag_source_docs = []
         rag_confidence = 0.0
 
-        # Only attempt RAG if both the LLM and QA Chain (which includes VectorDB/Embeddings) are initialized
-        if self.llm is not None and self.qa_chain is not None:
+        if self.qa_chain: # Check if RAG chain is available
+            logger.info("📚 Path 2: Processing with RAG...")
             try:
-                 # The qa_chain handles chat history internally via its memory
-                 # Pass the core_query_for_processing to the RAG chain
-                 logger.info(f"Invoking RAG chain with question: {core_query_for_processing}")
+                 # Pass the core query. History is managed by the chain's memory.
+                 # Ensure chat history used by memory is reasonably up-to-date.
+                 # Note: The memory buffer might include the current user_input if added *before* invoke.
+                 # This might be okay, or might need adjustment depending on desired memory behavior.
+                 # Let's assume memory adds history *after* a turn completes.
+                 # The current user_input is not yet in self.chat_history when invoke is called here.
                  rag_response = self.qa_chain.invoke({"question": core_query_for_processing})
 
                  rag_content = rag_response.get("answer", "").strip()
-                 # Clean up potential prefixes or unwanted phrases from RAG LLM step
-                 if "Helpful Answer:" in rag_content:
-                      rag_content = rag_content.split("Helpful Answer:", 1)[-1].strip()
-
-                 # Extract RAG sources
                  rag_source_docs = rag_response.get("source_documents", [])
-                 if rag_source_docs:
-                      # Calculate RAG confidence (simplified - could use retrieval scores if available)
-                      # Base score 0.3, adds up to 0.7 based on up to 5 docs
-                      rag_confidence = 0.3 + min(len(rag_source_docs), 5) / 5.0 * 0.4
 
+                 # Simple RAG confidence based on finding sources
+                 rag_confidence = 0.7 if rag_source_docs else 0.2
+                 if rag_content and "couldn't find" not in rag_content.lower() and "don't know" not in rag_content.lower():
+                     rag_confidence += 0.2 # Boost if answer seems substantive
 
-                 logger.info(f"📊 RAG Confidence: {rag_confidence:.4f} (took {(datetime.now() - t_start_rag).total_seconds():.2f}s)")
+                 logger.info(f"📊 RAG Result: Found {len(rag_source_docs)} sources. Confidence estimate: {rag_confidence:.2f}")
 
             except Exception as e:
-                 logger.error(f"⚠️ Error during RAG processing: {e}", exc_info=True) # Log traceback
+                 logger.error(f"⚠️ Error during RAG processing: {e}", exc_info=True)
                  rag_content = "An error occurred while retrieving information from documents."
-                 rag_source_docs = []
                  rag_confidence = 0.0
-                 # Note: The RAG chain might fail if the LLM fails during the synthesis step *within* the chain.
-                 # This is one reason why the LLM is critical.
         else:
-             logger.warning("Warning: RAG chain (or necessary components) not initialized. Skipping RAG processing.")
-             rag_content = "Document search is currently unavailable." # Indicate RAG skipped
+             logger.warning("RAG chain not available. Skipping RAG processing.")
+             rag_content = "Document search is currently unavailable."
 
 
-        # --- Step 7: Initial Combination of Path 1 Component and RAG ---
+        # --- Step 8: Initial Combination & Missing Element ID ---
         initial_combined_answer = self.combine_initial_answer_draft(
-             path1_kg_diagnosis_component,
-             kg_content_other,
+             path1_kg_diagnosis_component, # Use the KG component generated in Step 5 (if any)
+             kg_content_other, # Use other KG info (treatments/remedies)
              rag_content
         )
-
-        # --- Step 8: Identify Missing Elements for LLM Focus ---
-        # Evaluate the *initial combined answer* to guide the LLM synthesis
         missing_elements_for_llm = self.identify_missing_elements(core_query_for_processing, initial_combined_answer)
 
 
         # --- Step 9: LLM Synthesis ---
-        logger.info("➡️ Initiating LLM Synthesis Step...")
-        llm_synthesized_answer = ""
-        if self.llm is not None: # Only attempt synthesis if LLM is available
-            # Provide the initial combined answer draft and the original query to the synthesis LLM
-            llm_synthesized_answer = self.generate_llm_answer(
-                core_query_for_processing, # Original user query context
-                initial_combined_answer=initial_combined_answer, # The combined draft
-                missing_elements=missing_elements_for_llm # Tell LLM to focus on these
+        final_core_answer = ""
+        if self.llm:
+            logger.info("➡️ Path 2: Initiating LLM Synthesis Step...")
+            final_core_answer = self.generate_llm_answer(
+                core_query_for_processing,
+                initial_combined_answer=initial_combined_answer, # Pass combined draft
+                missing_elements=missing_elements_for_llm
             ).strip()
         else:
-            logger.warning("LLM not initialized. Skipping synthesis. Using initial combined answer directly.")
-            llm_synthesized_answer = initial_combined_answer.strip() # Use draft directly as fallback
+            logger.warning("LLM not available for synthesis. Using combined draft directly.")
+            final_core_answer = initial_combined_answer.strip()
+            # Add mandatory disclaimer if LLM is missing
+            final_core_answer += "\n\n**IMPORTANT MEDICAL DISCLAIMER:** LLM synthesis unavailable. This information is combined from sources but lacks final review. It is not a substitute for professional medical advice, diagnosis, or treatment. Always consult a qualified healthcare provider."
 
-        final_core_answer = llm_synthesized_answer # The LLM synthesis (or draft) is the core final answer
 
-
-        # --- Step 10: Final Reflection Check for LLM Follow-up (Decision Point 2) ---
-        logger.info("🧠 Initiating Final Reflection Check (for LLM Follow-up)...")
-        # Check completeness of the LLM-synthesized answer against the original query
-        # Do NOT check if the LLM itself failed or if we are already processing a response to an LLM follow-up
-        needs_final_followup_llm_opinion = False
+        # --- Step 10: Final Reflection Check for LLM Follow-up ---
+        needs_final_followup = False
         missing_questions_list = []
-        # Only check if LLM is available AND we are NOT processing a response to an LLM follow-up
-        if self.llm is not None and not is_response_to_llm_followup:
-            needs_final_followup_llm_opinion, missing_questions_list = self.identify_missing_info(
-                 core_query_for_processing, final_core_answer, self.chat_history # Pass current chat history state
+        # Only check if LLM is available AND we haven't used the follow-up round AND we are not processing a response TO the follow-up
+        if self.llm is not None and self.followup_context["round"] == 0 and not is_response_to_llm_followup:
+            logger.info("🧠 Initiating Final Reflection Check (for LLM Follow-up)...")
+            needs_final_followup, missing_questions_list = self.identify_missing_info(
+                 core_query_for_processing, final_core_answer, self.chat_history
             )
         else:
-             logger.info("Skipping final reflection check (LLM not available or currently processing follow-up response).")
+             logger.info("Skipping final reflection check (LLM unavailable, follow-up used, or processing follow-up response).")
 
-        logger.debug(f"Checking conditions for LLM Final Follow-up:")
-        logger.debug(f"  needs_final_followup_llm_opinion: {needs_final_followup_llm_opinion}")
-        logger.debug(f"  self.followup_context['round']: {self.followup_context['round']}")
-        logger.debug(f"  missing_questions_list: {missing_questions_list}")
-        logger.debug(f"  self.llm is not None: {self.llm is not None}")
-        # --- Step 11: Final LLM Follow-up Decision / Return Final Answer ---
-        # Decide if the ONE allowed LLM follow-up should be asked now.
-        # Trigger if LLM *thinks* a follow-up is needed AND we haven't asked it yet (round == 0).
-        # Also ensure there's actually a question to ask AND LLM is available to phrase the prompt.
-            
-        if needs_final_followup_llm_opinion and self.followup_context["round"] == 0 and missing_questions_list and self.llm is not None:
-             logger.info("❓ Final Reflection indicates missing critical info, asking the one allowed LLM follow-up.")
-             # Construct the final LLM follow-up prompt (using the question from identify_missing_info)
-             follow_up_question_text = missing_questions_list[0] # Use the first question recommended
 
-             llm_follow_up_prompt_text = f"""
-             Thank you. To ensure I provide the most helpful response, I need a bit more information:
+        # --- Step 11: Final Decision: LLM Follow-up or Final Answer ---
+        if needs_final_followup and missing_questions_list:
+             logger.info("❓ Decision: Ask the one allowed LLM Follow-up.")
+             follow_up_question_text = missing_questions_list[0] # Use the first (and likely only) question
 
-             {follow_up_question_text}
-             """
-             self.followup_context["round"] = 1 # Mark that the one LLM follow-up has been asked for this thread
+             llm_follow_up_prompt_text = f"Thank you. To provide the most relevant information based on our discussion about '{core_query_for_processing[:50]}...', could you please clarify:\n\n> {follow_up_question_text}"
 
-             # Log decision
-             self.log_orchestration_decision(
-                 core_query_for_processing,
-                 f"SELECTED_STRATEGY: LLM_FINAL_FOLLOWUP\nREASONING: Final answer completeness check failed (LLM opinion). Asking for critical missing info (round 1).",
-                 kg_data.get("top_disease_confidence", 0.0), # Use specific KG conf if available
-                 rag_confidence
-             )
+             self.followup_context["round"] = 1 # Mark follow-up as used for this thread
+             self.log_orchestration_decision(core_query_for_processing, f"SELECTED_STRATEGY: LLM_FINAL_FOLLOWUP\nREASONING: Final answer completeness check failed (LLM opinion). Asking critical follow-up (Round 1). Question: {follow_up_question_text}", top_disease_confidence, rag_confidence)
 
+             # Add user message + bot prompt to history now
+             self.chat_history.append((user_input, llm_follow_up_prompt_text.strip()))
+
+             processing_time = (datetime.now() - t_start_generate).total_seconds()
+             logger.info(f"--- END generate_response (LLM_FINAL_FOLLOWUP) --- Time: {processing_time:.2f}s ---")
              # Return prompt text and action flag
-             # We don't add this to chat history here. Let the UI manage adding the user's message and this prompt.
-             logger.info("Returning LLM Follow-up prompt.")
-             return llm_follow_up_prompt_text.strip(), [], "llm_followup_prompt", None
+             # Pass original query so next turn knows the context
+             return llm_follow_up_prompt_text.strip(), [], "llm_followup_prompt", {"original_query": core_query_for_processing}
 
         else:
-            logger.info("✅ Final Reflection indicates answer is sufficient or single LLM follow-up already asked.")
-            # This is the end of the processing path, return the final answer.
-
-            # Collect all sources (RAG docs + KG mentions)
-            all_sources: List[str] = []
-            if rag_source_docs: # Add RAG sources
-                for doc in rag_source_docs:
-                    if hasattr(doc, "metadata") and "source" in doc.metadata:
-                        source_name = doc.metadata["source"]
-                        page_num = doc.metadata.get("page", "N/A")
-                        # Include a snippet if available, but prioritize clean source string
-                        source_snippet = doc.page_content[:100].replace('\n', ' ') + '...' if doc.page_content else ''
-                        all_sources.append(f"[Source: {source_name}{f', Page {page_num}' if page_num != 'N/A' else ''}] {source_snippet}".strip())
-                    # Else: Unknown source, could add a generic "[Source: Document]" if desired
-
-
-            # Add KG source mentions if KG contributed specific sections and KG connection was ok
-            if self.kg_connection_ok and (kg_data.get("identified_diseases_data") or kg_data.get("kg_treatments") or kg_data.get("kg_home_remedies")):
-                 # Check which KG components actually had data to mention
-                 kg_parts_mentioned = []
-                 if kg_data.get("identified_diseases_data"): kg_parts_mentioned.append("Diagnosis Data")
-                 if kg_data.get("kg_treatments"): kg_parts_mentioned.append("Treatment Data")
-                 if kg_data.get("kg_home_remedies"): kg_parts_mentioned.append("Home Remedy Data")
-
-                 if kg_parts_mentioned:
-                    all_sources.append(f"[Source: Medical Knowledge Graph ({', '.join(kg_parts_mentioned)})]")
-                 else:
-                    # Fallback just mention KG if connection ok but no specific data extracted
-                     all_sources.append(f"[Source: Medical Knowledge Graph]")
-
-
-            # Deduplicate and clean up source strings for final display
-            # Sort for consistent ordering
-            all_sources_unique = sorted(list(set(s.strip() for s in all_sources if s.strip())))
-
-
+            logger.info("✅ Decision: Provide Final Answer (Synthesis complete or follow-up not needed/used).")
+            # --- Step 12: Final Answer Formatting ---
             final_response_text = final_core_answer
+            all_sources: List[str] = []
 
-            # Add references section if not already included by LLM synthesis
-            has_reference_section_pattern = re.compile(r"##?\s*(?:References|Sources)[:\n]", re.IGNORECASE | re.DOTALL)
-            has_reference_section = has_reference_section_pattern.search(final_response_text) is not None
+            # Add RAG sources
+            source_strings = set() # Use set to avoid duplicates initially
+            for doc in rag_source_docs:
+                source_name = "Unknown Document"
+                page_num = ""
+                if hasattr(doc, "metadata"):
+                     source_name = doc.metadata.get("source", source_name)
+                     # Clean up source path if necessary
+                     source_name = os.path.basename(source_name) # Show only filename
+                     page_num = f", Page {doc.metadata.get('page', 'N/A')}" if doc.metadata.get('page') is not None else ""
+                source_strings.add(f"Document: {source_name}{page_num}")
 
-            if not has_reference_section and all_sources_unique:
-                references_section = "\n\n## References:\n"
-                for i, src_display in enumerate(all_sources_unique, 1):
-                     references_section += f"\n{i}. {src_display}"
+            # Add KG source mentions if KG contributed meaningfully
+            kg_used = (kg_data.get("identified_diseases_data") or
+                       (kg_data.get("kg_treatments") and "unavailable" not in kg_content_other) or
+                       (kg_data.get("kg_home_remedies") and "unavailable" not in kg_content_other))
 
+            if self.kg_connection_ok and kg_used:
+                 source_strings.add("Medical Knowledge Graph")
+
+            all_sources = sorted(list(source_strings))
+
+
+            # Append references section if sources exist and LLM didn't add one
+            ref_header_patterns = [r"##?\s+references", r"##?\s+sources"]
+            if all_sources and not any(re.search(p, final_response_text, re.IGNORECASE) for p in ref_header_patterns):
+                references_section = "\n\n---\n**Sources:**\n"
+                references_section += "\n".join([f"- {src}" for src in all_sources])
                 final_response_text += references_section
 
+            # Ensure disclaimer is present (final check)
+            disclaimer_patterns = [r"professional medical advice", r"healthcare provider", r"not a substitute", r"disclaimer"]
+            if not any(re.search(p, final_response_text, re.IGNORECASE) for p in disclaimer_patterns):
+                 logger.warning("Final answer missing disclaimer! Appending default.")
+                 final_response_text += "\n\n**IMPORTANT MEDICAL DISCLAIMER:** This information is for educational purposes only and not a substitute for professional medical advice, diagnosis, or treatment. Always consult a qualified healthcare provider."
 
-            # Add standard medical disclaimer if not already present or if needed for safety
-            has_disclaimer_pattern = re.compile(r"This information is not a substitute for professional medical advice", re.IGNORECASE | re.DOTALL)
-            has_disclaimer = has_disclaimer_pattern.search(final_response_text) is not None
+            # Log final decision
+            self.log_orchestration_decision(core_query_for_processing, "SELECTED_STRATEGY: FINAL_ANSWER\nREASONING: Synthesis complete, follow-up not needed or already used.", top_disease_confidence, rag_confidence)
 
-            if not has_disclaimer:
-                disclaimer = "\n\n---\nIMPORTANT MEDICAL DISCLAIMER:\nThis information is for educational purposes only and is not a substitute for professional medical advice, diagnosis, or treatment. "
-                # Add specific warning for chest pain/shortness of breath if relevant
-                query_lower = core_query_for_processing.lower()
-                # Check if the original query or the identified diseases mentioned these serious symptoms
-                mentions_serious_symptoms = any(symptom in query_lower for symptom in ["chest pain", "shortness of breath", "difficulty breathing"]) or \
-                                           any(any(symptom.lower() in d['Disease'].lower() for symptom in ["heart attack", "angina", "pulmonary embolism", "pneumonia"]) for d in kg_data.get("identified_diseases_data", [])) # Check KG diseases known to cause this
-
-                if mentions_serious_symptoms:
-                     disclaimer += "Chest pain and shortness of breath can be symptoms of serious conditions requiring immediate medical attention. Please seek emergency medical care if you experience severe symptoms, or if symptoms are sudden or worsening. "
-
-                disclaimer += "Always consult with a qualified healthcare provider for any questions you may have regarding a medical condition. Never disregard professional medical advice or delay seeking it because of something you have read here."
-                final_response_text += disclaimer
-
-            # Log the final orchestration decision
-            self.log_orchestration_decision(
-                core_query_for_processing,
-                f"SELECTED_STRATEGY: FINAL_ANSWER\nREASONING: Answer deemed sufficient after synthesis and final check or single LLM follow-up already asked.",
-                kg_data.get("top_disease_confidence", 0.0),
-                rag_confidence
-            )
-
-            # Add the conversation turn to the chat history *before* returning
-            # Use the user_input (what the user *actually* typed this turn) and the final formatted response
+            # Add final user input and bot answer to chat history
             self.chat_history.append((user_input, final_response_text.strip()))
 
-            logger.info("Returning Final Answer.")
-            # Return response text, sources list, and action flag
-            source_strings_for_display = all_sources_unique # Use the cleaned unique list
-            return final_response_text.strip(), source_strings_for_display, "final_answer", None
-
-        # The exception handler at the very bottom of generate_response catches any uncaught errors
+            processing_time = (datetime.now() - t_start_generate).total_seconds()
+            logger.info(f"--- END generate_response (FINAL_ANSWER) --- Time: {processing_time:.2f}s ---")
+            # Return final answer
+            return final_response_text.strip(), all_sources, "final_answer", None
 
 
-    # --- Existing and Adjusted Logging Functions ---
-
-    def log_response_metrics(self, metrics):
-        """Log response generation metrics to CSV for analysis."""
-        # Note: This function isn't explicitly called in the current generate_response
-        # as the primary logging is done via log_orchestration_decision.
-        # You could add calls here if needed, e.g., after a final_answer is generated.
-        try:
-            log_file = "response_metrics.csv"
-            file_exists = os.path.isfile(log_file)
-
-            metrics["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            metrics["query"] = metrics["query"].replace("\n", " ") # Sanitize query for CSV
-
-            with open(log_file, mode='a', newline='', encoding='utf-8') as file:
-                fieldnames = ['timestamp', 'query', 'kg_confidence', 'rag_confidence',
-                              'strategy', 'response_length', 'processing_time', 'source_count']
-                writer = csv.DictWriter(file, fieldnames=fieldnames)
-
-                if not file_exists:
-                    writer.writeheader()
-
-                writer.writerow(metrics)
-
-        except Exception as e:
-            logger.error(f"⚠️ Error logging response metrics: {e}")
+    # --- Logging and Reset ---
 
     def log_orchestration_decision(self, query, orchestration_result, kg_confidence, rag_confidence):
-        """
-        Analyzes and logs the orchestration decision for monitoring and improvement.
-        Extracts the strategy and reasoning from the orchestration result.
-        """
+        """ Logs the high-level strategy decision for analysis. """
         try:
-            # Extract strategy and reasoning
             strategy = "UNKNOWN"
             reasoning = "Not provided"
-
             if "SELECTED_STRATEGY:" in orchestration_result:
-                strategy_part = orchestration_result.split("SELECTED_STRATEGY:")[1].split("\n", 1)[0].strip() # Take first line after strategy
-                strategy = strategy_part
-
+                strategy = orchestration_result.split("SELECTED_STRATEGY:")[1].split("\n", 1)[0].strip()
             if "REASONING:" in orchestration_result:
-                # Capture everything between REASONING: and RESPONSE: or end of string
-                reasoning_match = re.search(r"REASONING:(.*?)(?:RESPONSE:|$)", orchestration_result, re.DOTALL)
-                if reasoning_match:
-                    reasoning = reasoning_match.group(1).strip()
+                reasoning = orchestration_result.split("REASONING:", 1)[1].strip()
+                reasoning = reasoning.split("\n")[0][:200] + ('...' if len(reasoning.split("\n")[0]) > 200 else '') # Limit length
 
-            # Truncate reasoning if too long for CSV
-            max_reasoning_len = 200
-            if len(reasoning) > max_reasoning_len:
-                 reasoning = reasoning[:max_reasoning_len] + "..."
-
-
-            # Log the decision
             log_entry = {
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "query": query.replace("\n", " "), # Sanitize query for CSV
+                "query": query.replace("\n", " ").replace(",", ";")[:200], # Sanitize/limit query
                 "strategy": strategy,
-                "reasoning": reasoning,
-                "kg_confidence": kg_confidence,
-                "rag_confidence": rag_confidence
+                "reasoning": reasoning.replace("\n", " ").replace(",", ";"),
+                "kg_confidence": f"{kg_confidence:.3f}",
+                "rag_confidence": f"{rag_confidence:.3f}"
             }
 
-            # Print logging information
-            logger.info(f"📊 Orchestration Decision:")
-            logger.info(f"   Query: {log_entry['query']}")
-            logger.info(f"   Strategy: {strategy}")
-            logger.info(f"   KG Confidence: {kg_confidence:.4f}")
-            logger.info(f"   RAG Confidence: {rag_confidence:.4f}")
-            logger.info(f"   Reasoning: {reasoning}")
+            # Log to console
+            logger.info(f"📊 Orchestration: Strategy='{strategy}', KG Conf={log_entry['kg_confidence']}, RAG Conf={log_entry['rag_confidence']}, Reasoning='{reasoning}'")
 
-            # Save to CSV file for analysis
-            log_file = "orchestration_log.csv"
-            file_exists = os.path.isfile(log_file)
-
+            # Save to CSV
+            log_file = Path("orchestration_log.csv")
+            file_exists = log_file.is_file()
             with open(log_file, mode='a', newline='', encoding='utf-8') as file:
                 fieldnames = ['timestamp', 'query', 'strategy', 'reasoning', 'kg_confidence', 'rag_confidence']
                 writer = csv.DictWriter(file, fieldnames=fieldnames)
-
                 if not file_exists:
                     writer.writeheader()
-
                 writer.writerow(log_entry)
-
-            return strategy
 
         except Exception as e:
             logger.error(f"⚠️ Error logging orchestration decision: {e}")
-            return "ERROR"
 
 
     def reset_conversation(self):
       """Reset the conversation history and follow-up context"""
-      logger.info("🔄 Resetting conversation.")
+      logger.info("🔄 Resetting conversation state.")
       self.chat_history = []
-      self.followup_context = {"round": 0} # Reset round counter
-      # Reset Streamlit session state variables from the UI if they are managed externally
-      # This needs to be done in the Streamlit main function, not here.
+      self.followup_context = {"round": 0}
+      # Also reset the memory of the Langchain chain if it exists
+      if self.qa_chain and hasattr(self.qa_chain, 'memory'):
+           self.qa_chain.memory.clear()
+           logger.info("Cleared RAG chain memory.")
       return "Conversation has been reset."
 
 
-# --- Streamlit UI Components and Logic ---
+# --- Feedback Functions ---
 
-# Helper function to display symptom checklist in Streamlit
-def display_symptom_checklist(symptom_options: Dict[str, List[str]], original_query: str):
-    """
-    Streamlit UI component to display symptom checkboxes from a combined list.
+def save_feedback(log_file, data):
+    """Append feedback data to a CSV file."""
+    try:
+        file_exists = os.path.isfile(log_file)
+        with open(log_file, mode='a', newline='', encoding='utf-8') as file:
+            # Define fieldnames based on expected keys in data dictionary
+            # Ensure all potential keys are listed
+            fieldnames = ['timestamp', 'user_type', 'user_query', 'bot_response',
+                          'vote_type', 'feedback_text', 'full_history']
+            writer = csv.DictWriter(file, fieldnames=fieldnames)
+            if not file_exists:
+                writer.writeheader()
+            # Ensure all fieldnames exist in the data dict, adding None if missing
+            row_data = {field: data.get(field, None) for field in fieldnames}
+            writer.writerow(row_data)
+        return True
+    except Exception as e:
+        logger.error(f"Error saving feedback to {log_file}: {e}")
+        return False
 
-    Args:
-        symptom_options: A dictionary where keys are disease labels (string) and
-                         values are lists of associated symptoms (List[str]).
-                         The function will combine symptoms from all lists.
-        original_query: The user's original query that triggered the UI.
-    """
-    st.subheader("Confirm Your Symptoms")
-    st.info(f"Based on your query: '{original_query}' and initial analysis, please confirm the symptoms you are experiencing from the list below to help narrow down possibilities.")
-
-    # Use a unique key for the form based on the original query and a timestamp
-    form_key = f"symptom_confirmation_form_{abs(hash(original_query))}_{st.session_state.get('form_timestamp', datetime.now().timestamp())}"
-
-    # Initialize a local set to store confirmed symptoms during the current form interaction
-    local_confirmed_symptoms_key = f'{form_key}_confirmed_symptoms_local'
-    if local_confirmed_symptoms_key not in st.session_state:
-        st.session_state[local_confirmed_symptoms_key] = set()
-        logger.debug(f"Initialized local symptom set for form {form_key}")
+def vote_message(user_query, bot_response, vote_type, user_type):
+    """Handles thumbs up/down feedback."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    feedback_data = {
+        "timestamp": timestamp,
+        "user_type": user_type,
+        "user_query": user_query.replace("\n", " "), # Sanitize
+        "bot_response": bot_response.replace("\n", " "), # Sanitize
+        "vote_type": vote_type,
+        "feedback_text": None, # No text for vote
+        "full_history": None # History not needed for simple vote
+    }
+    if save_feedback("feedback_log.csv", feedback_data):
+        logger.info(f"Feedback vote '{vote_type}' recorded for query: '{user_query[:50]}...'")
+        return f"Feedback ({vote_type}) recorded. Thank you!"
     else:
-         logger.debug(f"Using existing local symptom set for form {form_key} with {len(st.session_state[local_confirmed_symptoms_key])} items.")
+        return "Error recording feedback."
+
+def submit_feedback(feedback_text, chat_history, user_type):
+    """Handles detailed text feedback submission."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+     # Format chat history for CSV (e.g., simple JSON string)
+    history_str = json.dumps([{"user": u, "bot": b} for u, b in chat_history], indent=None)
+
+    feedback_data = {
+        "timestamp": timestamp,
+        "user_type": user_type,
+        "user_query": chat_history[-1][0].replace("\n", " ") if chat_history else "N/A", # Last user query
+        "bot_response": chat_history[-1][1].replace("\n", " ") if chat_history else "N/A", # Last bot response
+        "vote_type": None, # No vote for text feedback
+        "feedback_text": feedback_text.replace("\n", " "), # Sanitize
+        "full_history": history_str # Include history context
+    }
+    if save_feedback("feedback_log.csv", feedback_data):
+        logger.info(f"Detailed feedback submitted by {user_type}: '{feedback_text[:50]}...'")
+        return "Detailed feedback submitted. Thank you!"
+    else:
+        return "Error submitting feedback."
 
 
-    # --- New Logic: Combine all symptoms into a single list ---
+# --- Streamlit UI ---
+
+def display_symptom_checklist(symptom_options: Dict[str, List[str]], original_query: str):
+    """ Streamlit UI for confirming symptoms via checkboxes. """
+    st.subheader("Confirm Your Symptoms")
+    st.info(f"Based on your query ('{original_query[:50]}...') and initial analysis, please confirm any additional symptoms you are experiencing from the list below to help narrow down possibilities.")
+
+    # Unique key for the form based on original query hash and a timestamp (robust against reruns)
+    form_key = f"symptom_form_{abs(hash(original_query))}_{st.session_state.get('form_timestamp', 0)}"
+    # Local state within the form to track selections *during* interaction before submit
+    local_confirm_key = f"{form_key}_confirmed_local"
+
+    if local_confirm_key not in st.session_state:
+        st.session_state[local_confirm_key] = set() # Initialize as set
+
+    # Combine all unique symptoms from all diseases into one list
     all_unique_symptoms = set()
-    for disease_label, symptoms_list in symptom_options.items():
-        # Ensure symptoms_list is iterable and contains strings before adding to the set
+    for symptoms_list in symptom_options.values():
         if isinstance(symptoms_list, list):
             for symptom in symptoms_list:
-                 if isinstance(symptom, str):
-                      all_unique_symptoms.add(symptom.strip()) # Add stripped symptom, keep original case for display
+                 if isinstance(symptom, str) and symptom.strip():
+                      all_unique_symptoms.add(symptom.strip().capitalize()) # Capitalize for display consistency
 
-    # Sort the unique symptoms alphabetically for consistent display order
     sorted_all_symptoms = sorted(list(all_unique_symptoms))
-    # --- End New Logic ---
 
-
-    with st.form(form_key):
-        st.markdown("Please check all symptoms that apply to you from the list below:")
+    with st.form(key=form_key):
+        st.markdown("**Check all symptoms that apply:**")
 
         if not sorted_all_symptoms:
-            st.info("No specific symptoms were found in the knowledge graph for the potential conditions. You can use the box below to add any symptoms you are experiencing.")
+            st.warning("No specific associated symptoms found in the knowledge graph to confirm.")
         else:
-            # --- Modified Display Logic: Iterate through the combined list ---
-            cols = st.columns(4) # Arrange checkboxes in columns (adjust number of columns as needed)
+            # Display checkboxes in columns
+            num_columns = 4
+            cols = st.columns(num_columns)
             for i, symptom in enumerate(sorted_all_symptoms):
-                col = cols[i % 4]
-                # Use a unique key for each checkbox
-                checkbox_key = f"{form_key}_checkbox_{symptom}" # Key based on form and symptom name
-                # Check if this symptom was previously selected in this form render cycle (using lower case for comparison)
-                initial_state = symptom.strip().lower() in st.session_state[local_confirmed_symptoms_key]
-
-                if col.checkbox(symptom, key=checkbox_key, value=initial_state):
-                     # Add the lower case stripped symptom to the local set on click
-                     st.session_state[local_confirmed_symptoms_key].add(symptom.strip().lower())
+                col_idx = i % num_columns
+                # Checkbox state reflects the *local* confirmation set for this form instance
+                is_checked = symptom in st.session_state[local_confirm_key]
+                if cols[col_idx].checkbox(symptom, key=f"{form_key}_{symptom}", value=is_checked):
+                     st.session_state[local_confirm_key].add(symptom) # Add to local set if checked
                 else:
-                     # Remove from the local set if unchecked (using lower case for comparison)
-                     st.session_state[local_confirmed_symptoms_key].discard(symptom.strip().lower())
-            # --- End Modified Display Logic ---
+                     st.session_state[local_confirm_key].discard(symptom) # Remove if unchecked
 
+        st.markdown("**Other Symptoms (optional, comma-separated):**")
+        other_symptoms_text = st.text_input("Add any other symptoms here", key=f"{form_key}_other_input")
 
-        # Add an "Other" symptom input field (remains the same)
-        st.markdown("**Other Symptoms (if any):**")
-        other_symptoms_text = st.text_input("Enter additional symptoms here (comma-separated)", key=f"{form_key}_other_symptoms_input")
-        if other_symptoms_text:
-             other_symptoms_list = [s.strip().lower() for s in other_symptoms_text.split(',') if s.strip()]
-             st.session_state[local_confirmed_symptoms_key].update(other_symptoms_list) # Add lower case stripped symptoms
-
-
-        # When the form is submitted, save the *final* state of the local set
-        submit_button = st.form_submit_button("Confirm and Continue")
+        # Submit button
+        submit_button = st.form_submit_button("Confirm Symptoms and Continue")
 
         if submit_button:
-            logger.info(f"Symptom confirmation form submitted. Final confirmed symptoms: {st.session_state[local_confirmed_symptoms_key]}")
-            # Store the confirmed symptoms from the local set into the *main* session state variable
-            # Store as a list of lowercase strings for consistent processing later
-            st.session_state.confirmed_symptoms_from_ui = sorted(list(st.session_state[local_confirmed_symptoms_key]))
+            # Combine checked symptoms with manually entered ones
+            confirmed_set = st.session_state[local_confirm_key].copy() # Start with checked ones
+            if other_symptoms_text:
+                 other_list = [s.strip().capitalize() for s in other_symptoms_text.split(',') if s.strip()]
+                 confirmed_set.update(other_list)
 
-            # Clear the UI state flags *after* submitting the form, but before the rerun.
-            st.session_state.awaiting_symptom_confirmation = False
-            # Keep original_query_for_followup; generate_response needs it to know which query to process.
+            final_confirmed_list = sorted(list(confirmed_set))
+            logger.info(f"Symptom confirmation submitted. Confirmed: {final_confirmed_list}")
 
-            # Set a new form timestamp for the next potential checklist interaction
+            # Store the final list in the main session state to be picked up by the next processing cycle
+            st.session_state.confirmed_symptoms_from_ui = final_confirmed_list
+            st.session_state.awaiting_symptom_confirmation = False # Turn off UI flag
+            # Do NOT clear original_query_for_followup here, generate_response needs it
+
+            # Set the trigger for processing in the next rerun
+            st.session_state.input_ready_for_processing = {
+                 "text": st.session_state.original_query_for_followup, # Process the original query again
+                 "confirmed_symptoms": final_confirmed_list,
+                 "original_query_context": st.session_state.original_query_for_followup
+            }
+
+            # Clear the form's local state and update timestamp *after* processing submit logic
+            del st.session_state[local_confirm_key]
             st.session_state.form_timestamp = datetime.now().timestamp()
 
-            # Set the original query into current_input_to_process to trigger its processing in the next rerun
-            st.session_state.current_input_to_process = original_query # This is the prompt that triggered the UI
-
-            st.rerun() # Trigger rerun to process the confirmed symptoms
+            st.rerun() # Trigger rerun to process with confirmed symptoms
 
 
-# Create chatbot instance (globally or in main)
-# This should only be done once per session
-# Using session state for the chatbot instance
-# chatbot = DocumentChatBot() # Moved to session state
-
-
-# --- Main Streamlit App Function ---
+# --- Main Streamlit App ---
 def main():
-    # Set page title and favicon
-    try:
-        st.set_page_config(
-            page_title="DxAI-Agent",
-            page_icon=f"data:image/png;base64,{icon}", # Use base64 encoded icon
-            layout="wide"
-        )
-    except Exception as e:
-        logger.error(f"Error setting page config: {e}") # Log potential errors
-        st.set_page_config(page_title="DxAI-Agent", layout="wide") # Fallback config
-
-    # Title and description
-    try:
-        logo = Image.open(image_path)
-        col1, col2 = st.columns([1, 10])
-        with col1:
-            st.image(logo, width=100)  # Adjust width as needed
-        with col2:
-            st.markdown("# DxAI-Agent")
-    except FileNotFoundError:
-         st.markdown("# DxAI-Agent") # Fallback title if logo not found
-    except Exception as e:
-         logger.error(f"Error displaying logo: {e}")
-         st.markdown("# DxAI-Agent")
-
-
-    # Initialize session state variables if they don't exist
-    # The chatbot instance itself lives in session state
-    if 'chatbot' not in st.session_state:
-        st.session_state.chatbot = DocumentChatBot()
-        # Trigger initialization on first load
-        with st.spinner("Initializing chat assistant..."):
-             success, init_message = st.session_state.chatbot.initialize_qa_chain()
-             if not success:
-                  st.error(f"Initialization failed: {init_message}")
-                  st.session_state.init_failed = True
-             else:
-                  st.success(init_message) # Show success message briefly
-                  st.session_state.init_failed = False # Ensure this is false on success
-
-    # --- UI State Variables ---
-    # These variables control how the UI behaves in the current rerun cycle
-    if 'messages' not in st.session_state:
-        st.session_state.messages = [] # List of (content, is_user) tuples for UI display
-
-    # UI State variables for symptom confirmation and follow-up management
-    if 'awaiting_symptom_confirmation' not in st.session_state:
-        st.session_state.awaiting_symptom_confirmation = False
-    if 'symptom_options_for_ui' not in st.session_state:
-        st.session_state.symptom_options_for_ui = {} # Dict {disease_label: [symptom_names]} for UI
-    if 'confirmed_symptoms_from_ui' not in st.session_state:
-        st.session_state.confirmed_symptoms_from_ui = None # List of confirmed symptoms after form submit
-    if 'original_query_for_followup' not in st.session_state:
-        st.session_state.original_query_for_followup = "" # Stores the query that triggered a follow-up prompt/UI
-    if 'init_failed' not in st.session_state:
-         st.session_state.init_failed = False # Flag to track initialization status
-    # Add a timestamp for the symptom confirmation form key to ensure uniqueness across reruns
-    if 'form_timestamp' not in st.session_state:
-         st.session_state.form_timestamp = datetime.now().timestamp()
-
-    # Variable to hold input that needs processing in the next rerun cycle
-    # Used for example clicks and symptom form submissions
-    if 'current_input_to_process' not in st.session_state:
-         st.session_state.current_input_to_process = None
-
-
-    # User type selection dropdown in sidebar
-    user_type = st.sidebar.selectbox(
-        "Who is asking?",
-        ["User / Family", "Physician"],
-        index=0
+    # --- Page Config ---
+    st.set_page_config(
+        page_title="DxAI-Agent",
+        page_icon=icon_base64, # Use base64 icon
+        layout="wide"
     )
 
-    # Add sidebar info
-    st.sidebar.info("DxAI-Agent helps answer medical questions using our medical knowledge base.")
-    # Display LLM follow-up attempt count from the chatbot instance
-    st.sidebar.markdown(f"LLM Final Follow-up Attempts: {st.session_state.chatbot.followup_context['round']} / 1")
+    # --- Title and Logo ---
+    col1, col2 = st.columns([1, 10])
+    try:
+        logo = Image.open(image_path)
+        with col1:
+            st.image(logo, width=100)
+    except FileNotFoundError:
+        with col1: st.markdown(" ") # Placeholder if logo fails
+        logger.warning(f"Logo image not found at: {image_path}")
+    except Exception as e:
+        with col1: st.markdown(" ") # Placeholder if error
+        logger.error(f"Error loading logo: {e}")
 
-    # Display initialization status in sidebar
-    if st.session_state.init_failed:
-         st.sidebar.error("Initialization Failed. Check console logs.")
-    else:
-         # Display detailed initialization status from the chatbot
-         init_status_success, init_status_msg = st.session_state.chatbot.initialize_qa_chain()
-         st.sidebar.markdown(f"Status: {init_status_msg}")
+    with col2:
+        st.markdown("# DxAI-Agent")
+        st.caption("Your AI Medical Assistant for Information Retrieval")
+
+    # --- Initialize Chatbot in Session State ---
+    if 'chatbot' not in st.session_state:
+        st.session_state.chatbot = DocumentChatBot()
+        # Initial attempt to initialize components
+        with st.spinner("Initializing assistant..."):
+            init_ok, init_msg = st.session_state.chatbot.initialize_qa_chain()
+            st.session_state.init_status_msg = init_msg # Store status message
+            st.session_state.init_failed = not init_ok and st.session_state.chatbot.llm is None # Failed if core LLM failed
+            if st.session_state.init_failed:
+                st.error(f"Critical Initialization Failed: {init_msg}. Core features unavailable.")
+            elif not init_ok:
+                 st.warning(f"Initialization Incomplete: {init_msg}. Some features may be limited.")
+            else:
+                 st.success(f"Initialization Status: {init_msg}") # Show initial status briefly
+
+    # --- Initialize UI State Variables ---
+    if 'messages' not in st.session_state: st.session_state.messages = [] # For UI display: List[(content, is_user)]
+    if 'awaiting_symptom_confirmation' not in st.session_state: st.session_state.awaiting_symptom_confirmation = False
+    if 'symptom_options_for_ui' not in st.session_state: st.session_state.symptom_options_for_ui = {}
+    if 'confirmed_symptoms_from_ui' not in st.session_state: st.session_state.confirmed_symptoms_from_ui = None
+    if 'original_query_for_followup' not in st.session_state: st.session_state.original_query_for_followup = None
+    if 'form_timestamp' not in st.session_state: st.session_state.form_timestamp = datetime.now().timestamp()
+    if 'input_ready_for_processing' not in st.session_state: st.session_state.input_ready_for_processing = None
+    if 'init_failed' not in st.session_state: st.session_state.init_failed = False
+    if 'init_status_msg' not in st.session_state: st.session_state.init_status_msg = "Initializing..."
+    if 'current_user_type' not in st.session_state: st.session_state.current_user_type = "User / Family"
 
 
-    # Tabs
-    tab1, tab2 = st.tabs(["Chat", "About"])
+    # --- Sidebar ---
+    with st.sidebar:
+        st.header("Configuration")
+        st.session_state.current_user_type = st.selectbox(
+            "Select User Type:",
+            ["User / Family", "Physician"],
+            index=["User / Family", "Physician"].index(st.session_state.current_user_type) # Maintain selection
+        )
+        st.markdown("---")
+        st.header("Status")
+        if st.session_state.init_failed:
+             st.error(f"Status: Initialization Failed!\n{st.session_state.init_status_msg}")
+        else:
+             st.info(st.session_state.init_status_msg) # Display current status
+
+        st.markdown("---")
+        st.info("DxAI-Agent uses AI to answer medical questions based on provided documents and a knowledge graph. Always consult a professional for medical advice.")
+        st.markdown(f"LLM Follow-up Count: {st.session_state.chatbot.followup_context['round']} / 1")
+
+
+    # --- Main Area Tabs ---
+    tab1, tab2 = st.tabs(["Chat Interface", "About & Diagnostics"])
 
     with tab1:
-        # Examples section (keep as is, but ensure they trigger the main logic flow)
-        st.subheader("Try these examples")
+        st.subheader("Example Queries")
         examples = [
             "What are treatments for cough and cold?",
-            "I have a headache and sore throat. What could it be?", # Example that might trigger Path 1 / low conf
+            "I have a headache and sore throat. What could it be?",
             "What home remedies help with flu symptoms?",
-            "I have chest pain and shortness of breath. What could i do?" # Example that should trigger symptom UI
+            "I have chest pain and shortness of breath. What could i do?"
         ]
-
         cols = st.columns(len(examples))
-        # Check if initialization failed or symptom UI is active before enabling example buttons
+        # Disable examples if init failed or symptom UI is active
         examples_disabled = st.session_state.init_failed or st.session_state.awaiting_symptom_confirmation
         for i, col in enumerate(cols):
-            if col.button(examples[i], key=f"example_{i}", disabled=examples_disabled):
-                # On example click, clear relevant UI state and trigger bot response
-                # We keep the chat history for the example flow
+            if col.button(examples[i], key=f"example_{i}", disabled=examples_disabled, use_container_width=True):
+                # Reset state for a new example thread
+                st.session_state.chatbot.reset_conversation() # Reset internal state
+                st.session_state.messages = [] # Clear UI messages
                 st.session_state.awaiting_symptom_confirmation = False
-                st.session_state.symptom_options_for_ui = {}
-                st.session_state.confirmed_symptoms_from_ui = None # Clear confirmed symptoms state
-                st.session_state.original_query_for_followup = "" # Clear original query for follow-up
-                st.session_state.chatbot.followup_context = {"round": 0} # Reset LLM follow-up round for a new thread
-                st.session_state.form_timestamp = datetime.now().timestamp() # Reset form timestamp
+                st.session_state.original_query_for_followup = None
+                st.session_state.confirmed_symptoms_from_ui = None
 
-                prompt = examples[i]
-                # Add the example text to messages as user input
-                st.session_state.messages.append((prompt, True)) # True means user message
-
-                # Set the input into session state to be processed in the next rerun cycle
-                st.session_state.current_input_to_process = prompt
-                st.rerun() # Trigger rerun
+                # Add example to messages and trigger processing
+                st.session_state.messages.append((examples[i], True)) # Add user msg to UI
+                st.session_state.input_ready_for_processing = {
+                    "text": examples[i],
+                    "confirmed_symptoms": None,
+                    "original_query_context": None
+                }
+                st.rerun()
 
 
-        # --- Chat Messages Display ---
-        # Iterate through messages state for display
+        st.divider()
+
+        # --- Chat History Display ---
         for i, (msg_content, is_user) in enumerate(st.session_state.messages):
-            if is_user:
-                with st.chat_message("user"):
-                    st.write(msg_content)
-            else: # Assistant message
-                with st.chat_message("assistant"):
-                    st.write(msg_content)
+            with st.chat_message("user" if is_user else "assistant"):
+                st.write(msg_content)
+                # Add feedback buttons only to non-prompt assistant messages
+                if not is_user:
+                    # Simple check if it looks like a prompt
+                    is_prompt = "could you please clarify" in msg_content.lower() or \
+                                "please check any additional symptoms" in msg_content.lower() or \
+                                "confirm your symptoms" in msg_content.lower()
 
-                    # Add feedback buttons only for assistant messages that are *not* prompts or UI triggers
-                    # Check if the message looks like a prompt (heuristic) or UI trigger
-                    is_prompt_or_ui = (
-                        st.session_state.awaiting_symptom_confirmation or # If we are awaiting symptom UI, the *last* assistant message was the prompt
-                        # Check if this message IS the follow-up prompt message based on the original query flag and round count
-                        # This check uses the *previous* user message (st.session_state.messages[i-1]) and the *current* bot message (msg_content)
-                        (i > 0 and st.session_state.messages[i-1][0] == st.session_state.original_query_for_followup and st.session_state.chatbot.followup_context["round"] == 1) or
-                        ("could you please" in msg_content.lower()) or
-                        ("please tell me" in msg_content.lower()) or
-                        ("please confirm" in msg_content.lower()) or
-                        ("enter additional symptoms" in msg_content.lower()) or
-                        ("additional details" in msg_content.lower()) or
-                        ("to help me answer better" in msg_content.lower()) or
-                        ("this will help me provide the most accurate information" in msg_content.lower()) # Add phrase from prompt
-                    )
-                    # Add feedback buttons if it doesn't look like a prompt/UI trigger
-                    if not is_prompt_or_ui:
-                        # Add feedback buttons using callback keys
-                        col = st.container()
-                        with col:
-                            # Add hash of content and index for unique keys per message
-                            feedback_key_up = f"thumbs_up_{i}_{abs(hash(msg_content))}"
-                            feedback_key_down = f"thumbs_down_{i}_{abs(hash(msg_content))}"
-
-                            b1, b2 = st.columns([0.05, 0.95]) # Adjust column width
-                            with b1:
-                                 if st.button("👍", key=feedback_key_up):
-                                     # Find the preceding user message for context
-                                     user_msg_content = ""
-                                     # Look back for the nearest user message
-                                     for j in range(i - 1, -1, -1):
-                                         if st.session_state.messages[j][1] is True:
-                                             user_msg_content = st.session_state.messages[j][0]
-                                             break
-
-                                     feedback_result = vote_message(
-                                         user_msg_content, msg_content, # Pass user/bot pair
-                                         "thumbs_up", user_type
-                                     )
-                                     st.toast(feedback_result)
-                            with b2:
-                                 if st.button("👎", key=feedback_key_down):
-                                    user_msg_content = ""
-                                    # Look back for the nearest user message
-                                    for j in range(i - 1, -1, -1):
-                                        if st.session_state.messages[j][1] is True:
-                                            user_msg_content = st.session_state.messages[j][0]
-                                            break
-                                    feedback_result = vote_message(
-                                        user_msg_content, msg_content, # Pass user/bot pair
-                                        "thumbs_down", user_type
-                                    )
-                                    st.toast(feedback_result)
+                    if not is_prompt:
+                         feedback_key_base = f"feedback_{i}_{abs(hash(msg_content))}"
+                         vote_cols = st.columns([1, 1, 10]) # Adjust spacing
+                         if vote_cols[0].button("👍", key=f"{feedback_key_base}_up", help="Good response"):
+                              # Find preceding user message
+                              user_q = ""
+                              if i > 0 and st.session_state.messages[i-1][1]: user_q = st.session_state.messages[i-1][0]
+                              vote_result = vote_message(user_q, msg_content, "thumbs_up", st.session_state.current_user_type)
+                              st.toast(vote_result, icon="👍")
+                         if vote_cols[1].button("👎", key=f"{feedback_key_base}_down", help="Bad response"):
+                              user_q = ""
+                              if i > 0 and st.session_state.messages[i-1][1]: user_q = st.session_state.messages[i-1][0]
+                              vote_result = vote_message(user_q, msg_content, "thumbs_down", st.session_state.current_user_type)
+                              st.toast(vote_result, icon="👎")
 
 
-        # --- Input Area ---
-        # This container helps position the input area
-        input_area_container = st.container()
-        st.write("  \n" * 5) # Add space pusher at the end of the tab
+        # --- Dynamic Input Area (at the bottom) ---
+        # This container ensures elements are grouped correctly at the bottom
+        input_container = st.container()
 
-
-        # --- UI Elements for Input ---
-        # Place the symptom checklist and chat input UI elements within the container.
-        # Their rendering will be conditional based on session state.
-
-        with input_area_container:
-            # Conditional rendering of symptom checklist vs chat input
+        with input_container:
+            # Case 1: Initialization Failed
             if st.session_state.init_failed:
-                 st.error("Chat assistant failed to initialize. Please check the logs and configuration.")
+                st.error("Chat assistant failed to initialize. Cannot accept input.")
+            # Case 2: Awaiting Symptom Confirmation UI
             elif st.session_state.awaiting_symptom_confirmation:
-                # Display the symptom checklist UI
-                # The display_symptom_checklist function includes the form and submit button
-                display_symptom_checklist(st.session_state.symptom_options_for_ui, st.session_state.original_query_for_followup)
-                # Hide the standard chat input while checklist is active
-                st.chat_input("Confirm symptoms above...", disabled=True, key="disabled_chat_input_while_form_active")
-
+                if st.session_state.symptom_options_for_ui and st.session_state.original_query_for_followup:
+                    display_symptom_checklist(st.session_state.symptom_options_for_ui, st.session_state.original_query_for_followup)
+                else:
+                    st.warning("Symptom confirmation needed, but data is missing. Please reset.")
+                # Disable chat input while form is active
+                st.chat_input("Confirm symptoms above...", disabled=True, key="disabled_chat_input_form")
+            # Case 3: Standard Chat Input
             else:
-                # Display the standard chat input
-                # Use a unique key for the chat input
-                user_query = st.chat_input("Ask your medical question...", disabled=st.session_state.init_failed, key="main_chat_input")
-
-                # --- Logic to Detect Input and Trigger Processing ---
-                # This runs *after* the chat input widget is rendered and potentially returns a value.
-
-                # Check if a new message was submitted in the chat input box
+                user_query = st.chat_input("Ask your medical question...", key="main_chat_input")
                 if user_query:
-                    logger.info(f"Detected chat input submission: '{user_query}'")
-                    # Add user message to state immediately for display
+                    logger.info(f"User input detected: '{user_query[:50]}...'")
+                    # Add user message to UI state immediately
                     st.session_state.messages.append((user_query, True))
-
-                    # Clear any previous follow-up state for a brand new query thread
-                    st.session_state.chatbot.followup_context = {"round": 0} # Reset LLM follow-up round
-                    st.session_state.original_query_for_followup = "" # Clear original query for follow-up
-                    st.session_state.confirmed_symptoms_from_ui = None # Ensure this is clear
-                    st.session_state.form_timestamp = datetime.now().timestamp() # Set a new timestamp for forms
-
-                    # Set the input into a specific state variable to signal it's ready for processing
+                    # Prepare for processing this new input
                     st.session_state.input_ready_for_processing = {
                         "text": user_query,
-                        "confirmed_symptoms": None, # Not from symptom form
-                        "original_query_context": None # Not a follow-up response
+                        "confirmed_symptoms": None, # Not from UI
+                        "original_query_context": None # This *is* the original query
                     }
-                    st.rerun() # Trigger rerun to process the input
+                    # Reset follow-up context for a new query thread
+                    st.session_state.chatbot.followup_context = {"round": 0}
+                    st.session_state.original_query_for_followup = None # Clear any previous follow-up context
+                    st.session_state.confirmed_symptoms_from_ui = None # Clear any lingering confirmed symptoms
+
+                    st.rerun() # Rerun to process the input
 
 
-            # --- Check for Symptom Form Submission ---
-            # This logic runs *after* the form (if displayed) is processed in the rerun.
-            # The display_symptom_checklist function sets st.session_state.confirmed_symptoms_from_ui
-            # and st.session_state.awaiting_symptom_confirmation = False upon form submission.
-
-            if st.session_state.confirmed_symptoms_from_ui is not None and not st.session_state.awaiting_symptom_confirmation:
-                logger.info("Detected symptom confirmation form submission via state.")
-                # Get the confirmed symptoms and the original query that triggered the UI
-                confirmed_symps_to_pass = st.session_state.confirmed_symptoms_from_ui
-                original_query_to_pass = st.session_state.original_query_for_followup # Use the stored original query
-
-                # Clear the UI state variables after capturing them for processing
-                st.session_state.confirmed_symptoms_from_ui = None
-                # original_query_for_followup is cleared by generate_response based on its action flag
-                # awaiting_symptom_confirmation is already False here
-
-                # Set the input into a specific state variable to signal it's ready for processing
-                st.session_state.input_ready_for_processing = {
-                     "text": original_query_to_pass, # Use the original query text as the main input for bot processing
-                     "confirmed_symptoms": confirmed_symps_to_pass,
-                     "original_query_context": original_query_to_pass # The original query is the context for processing the confirmed symptoms
-                }
-                st.rerun() # Trigger rerun to process the input
-
-
-        # --- Call generate_response if input_ready_for_processing is set ---
-        # This is the SINGLE point where generate_response is called based on the state.
-        if 'input_ready_for_processing' in st.session_state and st.session_state.input_ready_for_processing is not None:
+        # --- Process Input (if ready) ---
+        # This block runs *after* UI elements are drawn and potentially input detected
+        if st.session_state.input_ready_for_processing:
             input_data = st.session_state.input_ready_for_processing
-            # Clear the input_ready flag immediately
+            # Clear the flag immediately to prevent reprocessing on next rerun unless explicitly set again
             st.session_state.input_ready_for_processing = None
 
-            prompt = input_data["text"]
-            confirmed_symps = input_data["confirmed_symptoms"]
-            original_query_context = input_data["original_query_context"]
+            logger.info(f"Processing input: Text='{input_data['text'][:50]}...', ConfirmedSymp={input_data['confirmed_symptoms']}, OrigQueryContext='{input_data['original_query_context'][:50] if input_data['original_query_context'] else 'None'}'")
 
+            with st.chat_message("assistant"): # Show thinking indicator in assistant bubble
+                with st.spinner("Thinking..."):
+                     try:
+                         response_text, sources, action_flag, ui_data = st.session_state.chatbot.generate_response(
+                              input_data["text"],
+                              st.session_state.current_user_type,
+                              confirmed_symptoms=input_data["confirmed_symptoms"],
+                              original_query_if_followup=input_data["original_query_context"]
+                         )
+                         logger.info(f"generate_response returned action: {action_flag}")
+                     except Exception as e:
+                          logger.error(f"Unhandled error during generate_response: {e}", exc_info=True)
+                          response_text = f"An unexpected error occurred: {e}"
+                          sources = []
+                          action_flag = "error"
+                          ui_data = None
 
-            # Call the chatbot's generate_response function
-            with st.spinner("Thinking..."):
-                 response_text, sources, action_flag, ui_data = st.session_state.chatbot.generate_response(
-                      prompt, user_type,
-                      confirmed_symptoms=confirmed_symps,
-                      original_query_if_followup=original_query_context # Pass the original query context
-                 )
-
-            # --- Process the action flag returned by generate_response ---
-            logger.info(f"generate_response returned action_flag: {action_flag}")
+            # --- Handle Action Flag ---
+            rerun_needed = False
             if action_flag == "symptom_ui_prompt":
-                 # Update UI state to show the symptom checklist next rerun
-                 st.session_state.awaiting_symptom_confirmation = True
-                 st.session_state.symptom_options_for_ui = ui_data["symptom_options"]
-                 st.session_state.original_query_for_followup = ui_data["original_query"] # Store query that triggered UI
-                 st.session_state.form_timestamp = datetime.now().timestamp() # Set new timestamp for the form key
-
-                 # Add the prompt message for the UI to messages (it's the response_text)
-                 if not st.session_state.messages or st.session_state.messages[-1] != (response_text, False):
-                      st.session_state.messages.append((response_text, False))
+                st.session_state.awaiting_symptom_confirmation = True
+                st.session_state.symptom_options_for_ui = ui_data.get("symptom_options", {})
+                st.session_state.original_query_for_followup = ui_data.get("original_query", input_data["text"]) # Store query that triggered UI
+                st.session_state.form_timestamp = datetime.now().timestamp() # New form instance
+                # Add the prompt message to UI state
+                st.session_state.messages.append((response_text, False))
+                rerun_needed = True
 
             elif action_flag == "llm_followup_prompt":
-                 # Add the LLM prompt message to messages (it's the response_text)
-                 if not st.session_state.messages or st.session_state.messages[-1] != (response_text, False):
-                    st.session_state.messages.append((response_text, False))
-
-                 # Store the original query so generate_response knows the *next* user input is a response to *this* query thread's prompt
-                 st.session_state.original_query_for_followup = prompt # Store the query that *received* the prompt
+                # Store the original query context for the *next* turn
+                st.session_state.original_query_for_followup = ui_data.get("original_query", input_data["text"])
+                # Add prompt message to UI state
+                st.session_state.messages.append((response_text, False))
+                # No UI state change needed here, just display message
+                rerun_needed = True
 
 
             elif action_flag == "final_answer":
-                 # Add the final answer message to messages (it's the response_text)
-                  if not st.session_state.messages or st.session_state.messages[-1] != (response_text, False):
-                       st.session_state.messages.append((response_text, False))
+                # Add final answer to UI state
+                st.session_state.messages.append((response_text, False))
+                # Clear follow-up context as the thread is done or follow-up used
+                st.session_state.original_query_for_followup = None
+                st.session_state.awaiting_symptom_confirmation = False # Ensure UI is off
+                rerun_needed = True
 
-                   # Clear original_query_for_followup as the thread is concluded or follow-up limit reached
-                  st.session_state.original_query_for_followup = ""
-                  # Clear symptom UI specific state too just in case
-                  st.session_state.awaiting_symptom_confirmation = False
-                  st.session_state.symptom_options_for_ui = {}
-
+            elif action_flag == "error":
+                 # Add error message to UI state
+                 st.session_state.messages.append((response_text, False))
+                 # Clear follow-up context
+                 st.session_state.original_query_for_followup = None
+                 st.session_state.awaiting_symptom_confirmation = False
+                 rerun_needed = True
 
             elif action_flag == "none":
-                 # No action needed, do not add to messages
-                 pass # generate_response already logged why it skipped
+                 # No response generated (e.g., empty input)
+                 logger.info("Action 'none' received, no UI update needed.")
+                 pass # No rerun needed, no message added
 
-            # Force a rerun to update the UI based on state/messages
-            # This rerun is necessary to display the *new* message(s) and potentially the symptom form
-            st.rerun()
+            # Rerun Streamlit to display the new message/UI state
+            if rerun_needed:
+                 st.rerun()
 
-        # --- Reset Conversation Button ---
-        # This button is outside the input area conditional rendering
-        st.divider() # Add a visual separator
-        if st.button("Reset Conversation", key="reset_conversation_button"):
-            st.session_state.chatbot.reset_conversation() # Resets internal history and followup_context
-            st.session_state.messages = [] # Clear UI messages
-            # Also reset UI state variables
+
+        # --- Reset Button ---
+        st.divider()
+        if st.button("🔄 Reset Conversation", key="reset_button_main"):
+            reset_message = st.session_state.chatbot.reset_conversation()
+            st.session_state.messages = []
             st.session_state.awaiting_symptom_confirmation = False
-            st.session_state.symptom_options_for_ui = {}
+            st.session_state.original_query_for_followup = None
             st.session_state.confirmed_symptoms_from_ui = None
-            st.session_state.original_query_for_followup = ""
-            st.session_state.current_input_to_process = None # Clear any pending input
-            st.session_state.input_ready_for_processing = None # Clear any pending processing input
-            st.session_state.form_timestamp = datetime.now().timestamp() # Reset form timestamp
-            logger.info("Conversation reset triggered by user.")
+            st.session_state.input_ready_for_processing = None
+            st.toast(reset_message, icon="🔄")
+            logger.info("Conversation reset by user.")
             st.rerun()
 
+    # --- About Tab ---
+    with tab2:
+        st.header("About DxAI-Agent")
+        st.markdown("""
+        This application demonstrates an AI assistant designed to answer medical questions using multiple information sources.
 
-        # Physician feedback section (keep as is, uses chatbot's internal chat_history)
+        **Core Components:**
+        *   **Language Model (LLM):** Google Gemini Flash 1.5 for understanding queries, extracting information, synthesizing answers, and checking relevance/completeness.
+        *   **Knowledge Graph (KG):** Neo4j graph database containing structured medical knowledge (symptoms, diseases, treatments, remedies). Used for direct lookups based on extracted symptoms. *(Requires active Neo4j connection & credentials)*
+        *   **Retrieval-Augmented Generation (RAG):** Searches local PDF documents using semantic embeddings (Sentence Transformers) and a vector store (FAISS) to find relevant text passages. These passages augment the LLM's knowledge. *(Requires PDF files, embedding model, and vector store libraries)*
+        *   **Orchestration:** Logic that decides which components to use based on the query type, extracted information, and confidence scores. Manages follow-up questions (Symptom UI, LLM prompt) to gather more information when needed.
+
+        **Workflow Summary:**
+        1.  **Input & Symptom Extraction:** User query is analyzed, and symptoms are extracted (LLM + keywords).
+        2.  **Relevance Check:** Determines if the query is medical.
+        3.  **KG Query:** If symptoms are found, the KG is queried for associated diseases, treatments, and remedies.
+        4.  **Symptom Confirmation (UI):** If it's a diagnosis query with low KG confidence, a symptom checklist may be shown.
+        5.  **RAG Query:** Relevant documents are searched based on the query.
+        6.  **Synthesis:** Information from KG and RAG (and potentially the KG diagnosis component) is combined and synthesized by the LLM into a final answer.
+        7.  **Reflection & Follow-up:** The final answer is checked for completeness. If critical info is missing (and a follow-up hasn't already been asked), one clarifying question might be posed by the LLM.
+        8.  **Output:** The final answer, including sources and disclaimers, is presented.
+
+        **Disclaimer:** This is a demonstration system. **It is NOT a substitute for professional medical advice, diagnosis, or treatment.** Always consult with a qualified healthcare provider for any health concerns. Information provided may not be complete or accurate.
+        """)
+
+        st.subheader("Diagnostics & Logs")
+        # Display basic info from chatbot instance
+        st.text(f"LLM Initialized: {st.session_state.chatbot.llm is not None}")
+        st.text(f"Embedding Model Initialized: {st.session_state.chatbot.embedding_model is not None}")
+        st.text(f"Vector DB Initialized: {st.session_state.chatbot.vectordb is not None}")
+        st.text(f"RAG Chain Initialized: {st.session_state.chatbot.qa_chain is not None}")
+        st.text(f"KG Driver Initialized: {st.session_state.chatbot.kg_driver is not None}")
+        st.text(f"KG Connection OK: {st.session_state.chatbot.kg_connection_ok}")
+        st.text(f"Current Chat History Length: {len(st.session_state.chatbot.chat_history)}")
+        st.text(f"Current LLM Follow-up Round: {st.session_state.chatbot.followup_context['round']}")
+
+        # Display logs (consider showing only recent or allowing download)
+        st.subheader("Recent Logs (View Console for Full Logs)")
+        log_file_orch = Path("orchestration_log.csv")
+        log_file_fb = Path("feedback_log.csv")
+        if log_file_orch.exists():
+            try:
+                with open(log_file_orch, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                st.text_area("Orchestration Log (Last 10 entries)", "".join(lines[-10:]), height=200, key="log_orch_area")
+            except Exception as e: st.error(f"Error reading orchestration log: {e}")
+        else: st.info("Orchestration log not found.")
+
+        if log_file_fb.exists():
+            try:
+                with open(log_file_fb, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                st.text_area("Feedback Log (Last 10 entries)", "".join(lines[-10:]), height=200, key="log_fb_area")
+            except Exception as e: st.error(f"Error reading feedback log: {e}")
+        else: st.info("Feedback log not found.")
+
+        # Detailed Feedback Form (copied from Tab 1 for convenience)
         st.divider()
         st.subheader("🩺 Detailed Feedback")
-        with st.form("feedback_form"):
+        with st.form("feedback_form_tab2"):
             feedback_text = st.text_area(
                 "Enter corrections, improvements, or comments here...",
-                height=100
+                height=100, key="feedback_text_tab2"
             )
             submit_feedback_btn = st.form_submit_button("Submit Feedback")
 
             if submit_feedback_btn and feedback_text:
                 # Use the chatbot's internal chat_history for feedback context
                 history_for_feedback = st.session_state.chatbot.chat_history
-                feedback_result = submit_feedback(feedback_text, history_for_feedback, user_type)
+                feedback_result = submit_feedback(feedback_text, history_for_feedback, st.session_state.current_user_type)
                 st.success(feedback_result)
 
-        # Reset conversation button
-        if st.button("Reset Conversation"):
-            st.session_state.chatbot.reset_conversation() # Resets internal history and followup_context
-            st.session_state.messages = [] # Clear UI messages
-            # Also reset UI state variables
-            st.session_state.awaiting_symptom_confirmation = False
-            st.session_state.symptom_options_for_ui = {}
-            st.session_state.confirmed_symptoms_from_ui = None
-            st.session_state.original_query_for_followup = ""
-            st.session_state.current_input_to_process = None # Clear any pending input
-            st.session_state.form_timestamp = datetime.now().timestamp() # Reset form timestamp
-            st.rerun()
 
-    with tab2:
-        st.markdown("""
-        ## Medical Chat Assistant
-
-        **Powered by:**
-        - **Symptom Extraction:** Identifies symptoms mentioned in your query using an LLM and keyword matching.
-        - **Knowledge Graph (KG):** Queries a medical database (Neo4j) for diseases potentially related to symptoms, as well as treatments and home remedies for identified conditions. Requires Neo4j connection.
-        - **Retrieval-Augmented Generation (RAG):** Searches internal medical documents (PDFs) using embeddings and an LLM to retrieve and summarize relevant information. Requires PDF files, embedding model, and LLM.
-        - **LLM Synthesis:** Uses a large language model (Gemini Flash 1.5) to synthesize information from KG and RAG into a coherent, user-friendly answer, focusing on addressing the original query and filling any identified information gaps. Requires LLM.
-        - **Reflection/Completeness Check:** Evaluates the final generated answer using an LLM to see if any critical information is still missing that warrants a follow-up question to the user. Requires LLM.
-
-        **Workflow:**
-        The system orchestrates these components following two main paths:
-
-        **Path 1: Diagnosis Focus**
-        1.  Extracts symptoms from your query.
-        2.  Queries the Knowledge Graph for potential diseases indicated by these symptoms.
-        3.  If KG confidence for potential diseases is below a threshold, it presents you with a list of symptoms associated with the top candidate diseases (from the KG) to confirm via checkboxes (UI Interaction). This is the first type of follow-up. (Requires LLM, KG).
-        4.  After you confirm symptoms, KG confidence is recalculated based on all symptoms (initial + confirmed).
-        5.  The highest confidence KG disease is selected. An LLM formats a concise diagnosis-focused statement based on this KG result, including a disclaimer. (Requires LLM).
-        6.  This KG Diagnosis component is then passed to Path 2 for potential combination with RAG and further synthesis.
-
-        **Path 2: General & Comprehensive Answer**
-        1.  This path is followed if Path 1 symptom confirmation wasn't triggered, or after the KG Diagnosis component is ready from Path 1.
-        2.  It performs a RAG search using your original query and conversation history. (Requires RAG chain - LLM, Embeddings, Vector DB, PDFs).
-        3.  It combines the (optional) KG Diagnosis component from Path 1 and the RAG results into an initial draft.
-        4.  An LLM synthesizes this draft into a final user-facing answer, focusing on addressing the original query and any identified gaps identified in the draft. (Requires LLM).
-        5.  A final check evaluates the completeness of the LLM-synthesized answer against the original query using an LLM. (Requires LLM).
-        6.  If critical information is still missing from the *final answer* according to the LLM check, AND this is the first time asking for clarification in *this specific conversation thread* (controlled by a counter), the system asks *one* targeted follow-up question generated by an LLM. This is the second type of follow-up (LLM prompt). (Requires LLM).
-        7.  Otherwise, it provides the final answer, including references from both KG and RAG sources, and a standard medical disclaimer.
-
-        **Note:** An LLM follow-up question in Path 2 is limited to a single question per conversation thread to avoid excessive questioning. The symptom confirmation in Path 1 is a separate UI interaction that does not count towards this LLM follow-up limit. Features requiring LLM, Embeddings, Vector DB, or KG will be unavailable if initialization fails.
-
-        **Modes:**
-        - **User / Family:** Provides a comprehensive answer including potential conditions, treatments, and remedies, with strong disclaimers.
-        - **Physician:** *(Note: Current implementation provides similar output regardless of mode, but this is a placeholder for future differentiation)*. The intention is to focus more on diagnostic possibilities and evidence for physicians.
-
-        **Disclaimer:** This system is informational only and is not a substitute for professional medical advice, diagnosis, or treatment. Always consult with a qualified healthcare provider for any health concerns.
-        """)
-
-
-# Add a main guard for execution
+# --- Run Main App ---
 if __name__ == "__main__":
-    # When running with `streamlit run app.py`, streamlit calls main()
-    main()
+    # Check if required libraries are installed before running main
+    libs_ok = all([GOOGLE_GENAI_AVAILABLE, LANGCHAIN_COMMUNITY_AVAILABLE, LANGCHAIN_CORE_AVAILABLE, NEO4J_AVAILABLE])
+    if libs_ok:
+        main()
+    else:
+        st.error("Essential libraries are missing. Please install the required packages mentioned in the error messages above and restart.")
+        logger.critical("Application cannot start due to missing essential libraries.")
