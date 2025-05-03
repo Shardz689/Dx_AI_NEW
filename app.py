@@ -1325,7 +1325,7 @@ class DocumentChatBot:
         logger.info(f"   Original query if follow-up: '{original_query_if_followup}'")
         logger.info(f"   Current followup_context: {self.followup_context}")
         logger.info(f"   Current chat_history length: {len(self.chat_history)}")
-
+        reliable_sources_prompt_section_local = ""
         core_query_for_processing = original_query_if_followup if original_query_if_followup is not None else user_input
         logger.info(f"   Core query for processing logic: '{core_query_for_processing}'")
 
