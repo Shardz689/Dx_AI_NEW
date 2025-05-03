@@ -470,16 +470,7 @@ class DocumentChatBot:
             return "I'm unable to generate a specific response right now due to a technical issue. Please try again later."
 
         try:
-            temp_llm = ChatGoogleGenerativeAI(
-                model="gemini-1.5-flash",
-                google_api_key=GEMINI_API_KEY,
-                temperature=0.3, # Use base temperature from init
-                top_p=0.95,    # Use base top_p from init
-                top_k=40,      # Use base top_k from init
-                max_tokens=max_tokens, # Set max_tokens here
-                convert_system_message_to_human=True
-            )
-            response = temp_llm.invoke(prompt) 
+            response = self.llm.invoke(prompt, max_tokens=max_tokens, temperature=0.3, top_p=0.95, top_k=40) 
             # Access the content attribute for the generated text
             logger.debug(f"LLM local_generate successful. Response length: {len(response.content)}")
             return response.content
