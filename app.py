@@ -595,10 +595,15 @@ class DocumentChatBot:
             recent_history = conversation_history[-history_limit:]
             for i, (user_msg, bot_msg) in enumerate(recent_history):
                  context += f"User: {user_msg}\n"
-                 if bot_msg: # Include bot responses including prompts
-                     # Truncate long responses to fit into context window
+                 if isinstance(bot_msg, str):
+                     # Only perform string ops if it's actually a string
                      truncated_bot_msg = bot_msg[:300] + "..." if len(bot_msg) > 300 else bot_msg
                      context += f"Assistant: {truncated_bot_msg}\n"
+                 elif bot_msg is not None:
+                     # Log if it's not a string but not None (unexpected)
+                     logger.warning(f"Unexpected type in chat_history bot message. Type: {type(bot_msg)}. Value: {bot_msg}")
+                     # Add a placeholder to the context
+                     context += f"Assistant: [Non-string response of type {type(bot_msg)}]\n"
 
 
             # The `generate_response` function will check `self.followup_context["round"]`
