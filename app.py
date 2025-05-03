@@ -593,17 +593,28 @@ class DocumentChatBot:
             context = ""
             history_limit = 6 # Include last 3 exchanges (user+bot)
             recent_history = conversation_history[-history_limit:]
-            for i, (user_msg, bot_msg) in enumerate(recent_history):
-                 context += f"User: {user_msg}\n"
-                 if isinstance(bot_msg, str):
-                     # Only perform string ops if it's actually a string
-                     truncated_bot_msg = bot_msg[:300] + "..." if len(bot_msg) > 300 else bot_msg
-                     context += f"Assistant: {truncated_bot_msg}\n"
-                 elif bot_msg is not None:
-                     # Log if it's not a string but not None (unexpected)
-                     logger.warning(f"Unexpected type in chat_history bot message. Type: {type(bot_msg)}. Value: {bot_msg}")
-                     # Add a placeholder to the context
-                     context += f"Assistant: [Non-string response of type {type(bot_msg)}]\n"
+            for i, entry in enumerate(recent_history):
+                # Ensure the entry is a tuple of length 2
+                if isinstance(entry, tuple) and len(entry) == 2:
+                    user_msg, bot_msg = entry
+
+                    # Safely get string representation of user_msg
+                    user_msg_str = str(user_msg) if user_msg is not None else ""
+                    context += f"User: {user_msg_str}\n"
+
+                    # Safely get string representation of bot_msg before formatting
+                    if isinstance(bot_msg, str):
+                        truncated_bot_msg = bot_msg[:300] + "..." if len(bot_msg) > 300 else bot_msg
+                        context += f"Assistant: {truncated_bot_msg}\n"
+                    elif bot_msg is not None:
+                        # Log if it's not a string but not None (unexpected type)
+                        logger.warning(f"Unexpected type in chat_history bot message at index {i}. Type: {type(bot_msg)}. Value: {bot_msg}. Appending placeholder.")
+                        context += f"Assistant: [Non-string response of type {type(bot_msg)}]\n"
+                    # else: bot_msg is None, do not add Assistant line
+                else:
+                    # Log if an entry in history is not a tuple of length 2 or not a tuple at all
+                    logger.warning(f"Unexpected format in chat_history entry at index {i}. Entry: {entry}. Skipping entry or adding placeholder.")
+                    context += f"[Invalid history entry at index {i}]\n"
 
 
             # The `generate_response` function will check `self.followup_context["round"]`
