@@ -30,7 +30,23 @@ from langchain.memory import ConversationBufferMemory
 
 # Import Neo4j components
 from neo4j import GraphDatabase
+try:
+    import torch
+    # Hint to Streamlit's watcher to ignore torch internals that cause issues
+    # This might prevent the __path__._path error
+    if hasattr(torch, '_C') and hasattr(torch._C, '_get_custom_class_python_wrapper'):
+         # Try to disable watching on this specific part if it exists
+         # This is a heuristic and might not work on all torch versions
+         try:
+              del torch._C._get_custom_class_python_wrapper # Remove the attribute temporarily during watcher scan? (Risky)
+              # A safer approach might be to configure Streamlit's watcher if possible, but this requires app config files.
+              # Let's stick to the config file approach if needed.
+              pass # Do nothing risky here.
+         except AttributeError:
+              pass # Attribute doesn't exist, no need to delete
 
+except ImportError:
+     pass
 # Configuration
 # Load environment variables from .env file
 from dotenv import load_dotenv
@@ -454,9 +470,16 @@ class DocumentChatBot:
             return "I'm unable to generate a specific response right now due to a technical issue. Please try again later."
 
         try:
-            generation_config = genai.GenerationConfig(max_output_tokens=max_tokens)
-            # Use .invoke as it's standard in ChatModels
-            response = self.llm.invoke(prompt, generation_config=generation_config) 
+            temp_llm = ChatGoogleGenerativeAI(
+                model="gemini-1.5-flash",
+                google_api_key=GEMINI_API_KEY,
+                temperature=0.3, # Use base temperature from init
+                top_p=0.95,    # Use base top_p from init
+                top_k=40,      # Use base top_k from init
+                max_tokens=max_tokens, # Set max_tokens here
+                convert_system_message_to_human=True
+            )
+            response = temp_llm.invoke(prompt) 
             # Access the content attribute for the generated text
             logger.debug(f"LLM local_generate successful. Response length: {len(response.content)}")
             return response.content
