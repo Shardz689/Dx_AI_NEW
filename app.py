@@ -61,10 +61,10 @@ logger.info("Starting application setup...")
 
 # Get environment variables with fallback to placeholder values
 # IMPORTANT: Replace 'YOUR_GEMINI_API_KEY' with your actual key or ensure .env is set
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY_PLACEHOLDER") # Use a clear placeholder
-NEO4J_URI = os.getenv("NEO4J_URI", "neo4j+s://YOUR_NEO4J_URI_PLACEHOLDER")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyAifk9Gntw6eYfaZkLOsd9d1-TkfOR1el0")
+NEO4J_URI = os.getenv("NEO4J_URI", "neo4j+s://1b47920f.databases.neo4j.io")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "YOUR_NEO4J_PASSWORD_PLACEHOLDER")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "eCqDfyhDcuGMLzbYfiqL6jsvjH3LIXr86xQGAEKmY8Y")
 
 # Check if placeholder values are being used and log warnings
 if GEMINI_API_KEY == "YOUR_GEMINI_API_KEY_PLACEHOLDER":
