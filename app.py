@@ -588,129 +588,186 @@ class DocumentChatBot:
 
 
     def identify_missing_info(self, user_query: str, generated_answer: str, conversation_history: List[Tuple[str, str]]) -> Tuple[bool, List[str]]:
-            """
-            Identifies what CRITICAL medical information is still missing from the GENERATED ANSWER
-            relative to the USER QUERY, using conversation context.
-            This is used for the FINAL completeness check in Path 2.
-            """
-            logger.info("🕵️ Identifying missing info from generated answer (Final Check)...")
-
-            if self.llm is None:
-                 logger.warning("LLM not initialized. Cannot perform final completeness check.")
-                 return (False, []) # Cannot check completeness without LLM
-
-
-            # Convert conversation history to a string for context
-            # Include a few recent exchanges for better understanding
-            context = ""
-            history_limit = 6 # Include last 3 exchanges (user+bot)
-            recent_history = conversation_history[-history_limit:]
-            for i, entry in enumerate(recent_history):
-                # Ensure the entry is a tuple of length 2
-                if isinstance(entry, tuple) and len(entry) == 2:
-                    user_msg, bot_msg = entry
-
-                    # Safely get string representation of user_msg
-                    user_msg_str = str(user_msg) if user_msg is not None else ""
-                    context += f"User: {user_msg_str}\n"
-
-                    # Safely get string representation of bot_msg before formatting
-                    if isinstance(bot_msg, str):
-                        truncated_bot_msg = bot_msg[:300] + "..." if len(bot_msg) > 300 else bot_msg
-                        context += f"Assistant: {truncated_bot_msg}\n"
-                    elif bot_msg is not None:
-                        # Log if it's not a string but not None (unexpected type)
-                        logger.warning(f"Unexpected type in chat_history bot message at index {i}. Type: {type(bot_msg)}. Value: {bot_msg}. Appending placeholder.")
-                        context += f"Assistant: [Non-string response of type {type(bot_msg)}]\n"
-                    # else: bot_msg is None, do not add Assistant line
-                else:
-                    # Log if an entry in history is not a tuple of length 2 or not a tuple at all
-                    logger.warning(f"Unexpected format in chat_history entry at index {i}. Entry: {entry}. Skipping entry or adding placeholder.")
-                    context += f"[Invalid history entry at index {i}]\n"
-
-
-            # The `generate_response` function will check `self.followup_context["round"]`
-            # This function just needs to determine *if* a follow-up is logically required based on completeness.
-
-            MISSING_INFO_PROMPT = '''
-            You are a medical AI assistant analyzing a patient's conversation history and the latest generated answer.
-            Your primary goal is to help provide a safe and comprehensive answer to the user's initial medical question.
-            After reviewing the entire conversation history and the most recent generated answer, determine if there is any *absolutely critical* piece of medical information still missing from the *latest generated answer itself* that is essential for providing a safe and minimally helpful response.
-
-            Conversation history (for context, includes previous turns and the latest generated answer):
-            ---
-            {context}
-            ---
-
-            USER'S INITIAL QUESTION: "{user_query}" # Refer to the initial question for the core intent
-            LATEST GENERATED ANSWER: "{generated_answer}" # Evaluate the completeness of this specific answer
-
-            **CRITICAL EVALUATION:**
-            Based on the ENTIRE CONVERSATION HISTORY and the LATEST GENERATED ANSWER:
-            1.  Does the latest answer directly address the core medical question posed by the user, using all available information in the history?
-            2.  Does the answer include necessary safety disclaimers for personal medical queries?
-            3.  Are there any obvious gaps regarding *critical safety information* (e.g., symptoms requiring urgent care) that are missing from the latest answer, given what the user has described throughout the conversation?
-            4.  **Review the Conversation History Carefully:** Has a similar or the same type of critical follow-up question *already been clearly asked* by the Assistant in a previous turn that the user responded to or did not provide the requested information for?
-            5.  **Considering all information in the history and the latest answer:** Is there *one single most critical piece* of information still needed from the user to proceed safely or provide a meaningfully better answer?
-
-            If information is missing *from the latest generated answer* based on your critical evaluation (especially point 5), and it is *absolutely necessary* to ask the user for input to fill this *single most critical gap*, formulate ONE clear, specific follow-up question. If a similar question was already asked in history (point 4), do NOT ask it again; assume you have already attempted to get that information. If you determine no single critical question is needed, or if the history shows you've already tried to get crucial missing info, indicate no follow-up needed.
-
-            Return your answer in this exact JSON format:
-            {{
-                "needs_followup": true/false,
-                "reasoning": "brief explanation of why more information is needed from the answer or why the answer is sufficient, referencing the history review and critical gaps",
-                "missing_info_questions": [
-                    {{"question": "specific follow-up question 1"}}
-                ]
-            }}
-
-            Only include the "missing_info_questions" array if "needs_followup" is true, and limit it to exactly 1 question. If "needs_followup" is true but you cannot formulate the *single most critical* specific question based on your evaluation, still return "needs_followup": true but with an empty "missing_info_questions" array (though try hard to formulate one if needed).
-            '''.format(
-                context=context,
-                user_query=user_query,
-                generated_answer=generated_answer
-            )
-
-            try:
-                # Use local_generate for this LLM call
-                response = self.local_generate(MISSING_INFO_PROMPT, max_tokens=500).strip()
-                # logger.debug(f"\nRaw Missing Info Evaluation (Final Check):\n{response}")
-
-                # Attempt to parse JSON
-                json_match = re.search(r'\{[\s\S]*\}', response)
-                if json_match:
-                    json_str = json_match.group(0)
-                    try:
-                        data = json.loads(json_str)
-                        needs_followup_llm = data.get("needs_followup", False) # LLM's opinion
-                        missing_info_questions = [item["question"] for item in data.get("missing_info_questions", []) if isinstance(item, dict) and "question" in item] # Safely get questions
-                        reasoning = data.get("reasoning", "Answer is missing critical information.")
-
-                        if needs_followup_llm and missing_info_questions:
-                             logger.info(f"❓ Critical Information Missing from Final Answer (LLM opinion): {missing_info_questions}. Reasoning: {reasoning}")
-                             return (True, missing_info_questions) # Return True and questions
-
-                        else:
-                             logger.info("✅ Final Answer appears sufficient (LLM opinion) or no questions provided.")
-                             return (False, []) # Return False and no questions
-
-                    except json.JSONDecodeError:
-                        logger.warning("Could not parse final missing info JSON from LLM response.")
-                        # Fallback: Assume no critical info is missing if JSON parsing fails
-                        return (False, [])
-                    except Exception as e:
-                         logger.error(f"Error processing LLM response structure in identify_missing_info: {e}", exc_info=True)
-                         return (False, []) # Fallback on structure error
-
-                else:
-                    logger.warning("LLM response did not contain expected JSON format.")
-                    # Fallback: Assume no critical info is missing if no JSON is found
+        """
+        Identifies what CRITICAL medical information is still missing from the GENERATED ANSWER
+        relative to the USER QUERY, using conversation context.
+        This is used for the FINAL completeness check in Path 2.
+        """
+        logger.info("🕵️ Identifying missing info from generated answer (Final Check)...")
+    
+        if self.llm is None:
+            logger.warning("LLM not initialized. Cannot perform final completeness check.")
+            return (False, [])  # Cannot check completeness without LLM
+    
+        # Convert conversation history to a string for context
+        # Include a few recent exchanges for better understanding
+        context = ""
+        history_limit = 6  # Include last 3 exchanges (user+bot)
+        recent_history = conversation_history[-history_limit:]
+        
+        # Track previously asked questions to avoid redundancy
+        previously_asked_questions = []
+        
+        for i, entry in enumerate(recent_history):
+            # Ensure the entry is a tuple of length 2
+            if isinstance(entry, tuple) and len(entry) == 2:
+                user_msg, bot_msg = entry
+    
+                # Safely get string representation of user_msg
+                user_msg_str = str(user_msg) if user_msg is not None else ""
+                context += f"User: {user_msg_str}\n"
+    
+                # Safely get string representation of bot_msg before formatting
+                if isinstance(bot_msg, str):
+                    truncated_bot_msg = bot_msg[:300] + "..." if len(bot_msg) > 300 else bot_msg
+                    context += f"Assistant: {truncated_bot_msg}\n"
+                    
+                    # Check for questions in the bot's message to track previously asked questions
+                    question_patterns = [
+                        r"(?<!\w)how (?:long|much|often|severe|many|would|could|should|do|does|did|is|are|was|were)(?!\w).*\?",
+                        r"(?<!\w)what (?:are|is|was|were|do|does|did|should|would|could|will|might)(?!\w).*\?",
+                        r"(?<!\w)when (?:did|do|does|is|are|was|were|will|would|should|could|might)(?!\w).*\?",
+                        r"(?<!\w)where (?:is|are|was|were|do|does|did|will|would|should|could|might)(?!\w).*\?",
+                        r"(?<!\w)why (?:is|are|was|were|do|does|did|will|would|should|could|might)(?!\w).*\?",
+                        r"(?<!\w)which (?:is|are|was|were|do|does|did|will|would|should|could|might)(?!\w).*\?",
+                        r"(?<!\w)can you (?:tell|describe|explain|clarify|specify|indicate)(?!\w).*\?",
+                        r"(?<!\w)could you (?:tell|describe|explain|clarify|specify|indicate)(?!\w).*\?",
+                        r"(?<!\w)have you (?:ever|had|been|experienced|noticed|observed)(?!\w).*\?",
+                        r"(?<!\w)do you (?:have|feel|experience|notice|observe)(?!\w).*\?",
+                        r"(?<!\w)are you (?:experiencing|feeling|having|noticing|observing)(?!\w).*\?",
+                        r"\?$"  # Catch any remaining questions ending with ?
+                    ]
+                    
+                    for pattern in question_patterns:
+                        matches = re.finditer(pattern, truncated_bot_msg, re.IGNORECASE)
+                        for match in matches:
+                            # Add any questions found to our tracking list
+                            question = match.group(0).strip()
+                            if len(question) > 10:  # Avoid very short fragments
+                                previously_asked_questions.append(question)
+                    
+                elif bot_msg is not None:
+                    # Log if it's not a string but not None (unexpected type)
+                    logger.warning(f"Unexpected type in chat_history bot message at index {i}. Type: {type(bot_msg)}. Value: {bot_msg}. Appending placeholder.")
+                    context += f"Assistant: [Non-string response of type {type(bot_msg)}]\n"
+                # else: bot_msg is None, do not add Assistant line
+            else:
+                # Log if an entry in history is not a tuple of length 2 or not a tuple at all
+                logger.warning(f"Unexpected format in chat_history entry at index {i}. Entry: {entry}. Skipping entry or adding placeholder.")
+                context += f"[Invalid history entry at index {i}]\n"
+    
+        # Enhance the prompt to explicitly highlight previously asked questions
+        previously_asked_str = "\n".join(previously_asked_questions) if previously_asked_questions else "None detected."
+    
+        MISSING_INFO_PROMPT = '''
+        You are a medical AI assistant analyzing a patient's conversation history and the latest generated answer.
+        Your primary goal is to help provide a safe and comprehensive answer to the user's initial medical question.
+        After reviewing the entire conversation history and the most recent generated answer, determine if there is any *absolutely critical* piece of medical information still missing from the *latest generated answer itself* that is essential for providing a safe and minimally helpful response.
+    
+        Conversation history (for context, includes previous turns and the latest generated answer):
+        ---
+        {context}
+        ---
+    
+        PREVIOUSLY ASKED QUESTIONS (DO NOT ASK THESE AGAIN):
+        ---
+        {previously_asked}
+        ---
+    
+        USER'S INITIAL QUESTION: "{user_query}" # Refer to the initial question for the core intent
+        LATEST GENERATED ANSWER: "{generated_answer}" # Evaluate the completeness of this specific answer
+    
+        **CRITICAL EVALUATION:**
+        Based on the ENTIRE CONVERSATION HISTORY and the LATEST GENERATED ANSWER:
+        1.  Does the latest answer directly address the core medical question posed by the user, using all available information in the history?
+        2.  Does the answer include necessary safety disclaimers for personal medical queries?
+        3.  Are there any obvious gaps regarding *critical safety information* (e.g., symptoms requiring urgent care) that are missing from the latest answer, given what the user has described throughout the conversation?
+        4.  **Review the Conversation History Carefully:** Has a similar or the same type of critical follow-up question *already been clearly asked* by the Assistant in a previous turn that the user responded to or did not provide the requested information for?
+        5.  **Considering all information in the history and the latest answer:** Is there *one single most critical piece* of information still needed from the user to proceed safely or provide a meaningfully better answer?
+    
+        STRICT REQUIREMENTS:
+        1. You must ONLY identify absolutely critical missing information that is essential for safety.
+        2. You must NEVER ask a follow-up question that is semantically similar to anything in the "PREVIOUSLY ASKED QUESTIONS" section.
+        3. You must return EXACTLY ONE follow-up question at most - never multiple questions.
+        4. If no critical information is missing or a similar question was already asked, you must set "needs_followup" to false.
+    
+        Return your answer in this exact JSON format:
+        {{
+            "needs_followup": true/false,
+            "reasoning": "brief explanation of why more information is needed from the answer or why the answer is sufficient, referencing the history review and critical gaps",
+            "missing_info_questions": [
+                {{"question": "specific follow-up question 1"}}
+            ]
+        }}
+    
+        Only include the "missing_info_questions" array if "needs_followup" is true, and limit it to exactly 1 question. If "needs_followup" is true but you cannot formulate the *single most critical* specific question based on your evaluation, still return "needs_followup": true but with an empty "missing_info_questions" array (though try hard to formulate one if needed).
+        '''.format(
+            context=context,
+            user_query=user_query,
+            generated_answer=generated_answer,
+            previously_asked=previously_asked_str
+        )
+    
+        try:
+            # Use local_generate for this LLM call
+            response = self.local_generate(MISSING_INFO_PROMPT, max_tokens=500).strip()
+    
+            # Attempt to parse JSON
+            json_match = re.search(r'\{[\s\S]*\}', response)
+            if json_match:
+                json_str = json_match.group(0)
+                try:
+                    data = json.loads(json_str)
+                    needs_followup_llm = data.get("needs_followup", False)  # LLM's opinion
+                    
+                    # IMPORTANT FIX: Strictly enforce the limit of one question
+                    missing_info_questions = []
+                    if needs_followup_llm and "missing_info_questions" in data:
+                        # Only take the first question if any exist
+                        questions_list = data.get("missing_info_questions", [])
+                        if questions_list and len(questions_list) > 0:
+                            if isinstance(questions_list[0], dict) and "question" in questions_list[0]:
+                                question = questions_list[0]["question"]
+                                
+                                # Check if the proposed question is similar to previously asked questions
+                                is_redundant = any(
+                                    self.calculate_similarity(question, prev_q) > 0.7  # Using a hypothetical similarity function
+                                    for prev_q in previously_asked_questions
+                                )
+                                
+                                if not is_redundant:
+                                    missing_info_questions.append(question)
+                                else:
+                                    logger.info("⚠️ Proposed follow-up question is too similar to a previously asked question. Skipping.")
+                                    needs_followup_llm = False  # Override the LLM's decision since the question is redundant
+                    
+                    reasoning = data.get("reasoning", "Answer is missing critical information.")
+    
+                    if needs_followup_llm and missing_info_questions:
+                        logger.info(f"❓ Critical Information Missing from Final Answer (LLM opinion): {missing_info_questions}. Reasoning: {reasoning}")
+                        return (True, missing_info_questions)  # Return True and questions
+    
+                    else:
+                        logger.info("✅ Final Answer appears sufficient (LLM opinion) or no questions provided.")
+                        return (False, [])  # Return False and no questions
+    
+                except json.JSONDecodeError:
+                    logger.warning("Could not parse final missing info JSON from LLM response.")
+                    # Fallback: Assume no critical info is missing if JSON parsing fails
                     return (False, [])
-
-            except Exception as e:
-                logger.error(f"⚠️ Error during LLM call in identify_missing_info: {e}", exc_info=True)
-                # Fallback: Assume no critical info is missing if LLM call fails
+                except Exception as e:
+                    logger.error(f"Error processing LLM response structure in identify_missing_info: {e}", exc_info=True)
+                    return (False, [])  # Fallback on structure error
+    
+            else:
+                logger.warning("LLM response did not contain expected JSON format.")
+                # Fallback: Assume no critical info is missing if no JSON is found
                 return (False, [])
+    
+        except Exception as e:
+            logger.error(f"⚠️ Error during LLM call in identify_missing_info: {e}", exc_info=True)
+            # Fallback: Assume no critical info is missing if LLM call fails
+            return (False, [])
 
 
     def knowledge_graph_agent(self, user_query: str, all_symptoms: List[str]) -> Dict[str, Any]:
