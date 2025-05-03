@@ -454,9 +454,9 @@ class DocumentChatBot:
             return "I'm unable to generate a specific response right now due to a technical issue. Please try again later."
 
         try:
-        
+            generation_config = genai.GenerationConfig(max_output_tokens=max_tokens)
             # Use .invoke as it's standard in ChatModels
-            response = self.llm.invoke(prompt, max_tokens=max_tokens)
+            response = self.llm.invoke(prompt, generation_config=generation_config) 
             # Access the content attribute for the generated text
             logger.debug(f"LLM local_generate successful. Response length: {len(response.content)}")
             return response.content
@@ -1225,6 +1225,7 @@ class DocumentChatBot:
     # Returns: (response_text, sources_list, action_flag, ui_data)
     # action_flag: "final_answer", "llm_followup_prompt", "symptom_ui_prompt", "none" (no response/action needed)
     # ui_data: None or Dict { "symptom_options": {disease_label: [symptoms]}, "original_query": str } for "symptom_ui_prompt"
+    
     def generate_response(self, user_input: str, user_type: str = "User / Family", confirmed_symptoms: Optional[List[str]] = None, original_query_if_followup: Optional[str] = None) -> Tuple[str, List[str], str, Optional[Dict]]:
         """
         Generate response using orchestration based on Path 1 / Path 2 logic.
@@ -1255,7 +1256,7 @@ class DocumentChatBot:
         # If confirmed_symptoms is provided, the "real" query is the one that triggered the UI (`original_query_if_followup`).
         # If original_query_if_followup is provided (and confirmed_symptoms is None), the "real" query is the one that triggered the LLM prompt.
         # Otherwise, the current user_input is the start of a new thread.
-        core_query_for_processing = original_query_if_followup if original_query_if_followup else user_input
+        core_query_for_processing = original_query_if_followup if original_query_if_followup is not None else user_input
         logger.info(f"   Core query for processing logic: '{core_query_for_processing}'")
 
         if not core_query_for_processing.strip() and confirmed_symptoms is None:
@@ -1383,7 +1384,8 @@ class DocumentChatBot:
 
             # Return data indicating UI action is needed
             # Pass the core_query_for_processing back so Streamlit can resubmit it with confirmed symptoms
-            return follow_up_prompt_text, [], "symptom_ui_prompt", {"symptom_options": symptom_options_for_ui, "original_query": core_query_for_processing}
+            logger.info("Returning Symptom UI prompt.")
+            return follow_up_prompt_text.strip(), [], "symptom_ui_prompt", {"symptom_options": symptom_options_for_ui, "original_query": core_query_for_processing}
 
 
         # --- Step 5: Path 1 - Direct KG Diagnosis Component (if high confidence or after symptom confirmation) ---
@@ -1422,8 +1424,67 @@ class DocumentChatBot:
              path1_kg_diagnosis_component = "Based on the symptoms provided, I couldn't find a specific medical condition matching them in my knowledge base."
 
 
+        # --- NEW: Decision Point 2 - Conclude with KG-only answer for high-confidence diagnosis query ---
+        # Only do this if LLM is available to ensure the formatted answer is good
+        if (is_high_conf_kg_diagnosis or is_post_symptom_confirmation) and path1_kg_diagnosis_component is not None and self.llm is not None:
+             # Check if the original query *primarily* asked for a diagnosis and not other things explicitly.
+             # This check is heuristic, refine as needed.
+             query_lower = core_query_for_processing.lower()
+             asks_for_treatment = any(kw in query_lower for kw in ["treat", "medication", "cure", "what to do", "how to manage", "resolve"])
+             asks_for_remedy = any(kw in query_lower for kw in ["remedy", "home", "natural", "relief"])
+
+
+             # Conclude with KG-only if it's a diagnosis query AND (high conf OR post-confirmation)
+             # AND it doesn't seem to explicitly ask for treatments/remedies in the *original* phrasing.
+             # Note: The "what could i do?" query in your log *does* imply asking for action/treatment,
+             # so this logic *shouldn't* trigger for that specific example, and it should proceed to RAG/Path 2.
+             # If you want "what could i do?" to ALSO trigger KG-only when diagnosis is high confidence,
+             # you might adjust the `asks_for_treatment` condition or add a specific check.
+             # Let's keep the check strict for now based on explicit keywords.
+             # Adding a condition: If the initial query has *no* symptom keywords, it's likely a general info query,
+             # so we shouldn't conclude with KG-only diagnosis unless symptoms were added via UI.
+             # Check if the core query contained symptom keywords initially
+             extracted_symptoms_initial, _ = self.extract_symptoms(user_input if original_query_if_followup is None else original_query_if_followup)
+             core_query_had_symptoms_initially = len(extracted_symptoms_initial) > 0
+
+
+             if (is_high_conf_kg_diagnosis or is_post_symptom_confirmation) and not (asks_for_treatment or asks_for_remedy or not core_query_had_symptoms_initially): # Don't KG-only if original query had no symptoms unless it's post-confirmation
+                 logger.info(f"✅ Decision Point 2: Concluding with KG-only answer for high-confidence diagnosis ({top_disease_confidence:.4f}). Query did not explicitly ask for treatment/remedy AND it had symptoms initially.")
+
+                 # The formatted diagnosis component includes the disclaimer
+                 final_response_text = path1_kg_diagnosis_component
+
+                 # Collect KG sources for this diagnosis component
+                 all_sources: List[str] = []
+                 if self.kg_connection_ok:
+                      all_sources.append(f"[Source: Medical Knowledge Graph (Diagnosis Data)]")
+
+                 # Log the orchestration decision
+                 self.log_orchestration_decision(
+                     core_query_for_processing,
+                     f"SELECTED_STRATEGY: KG_DIAGNOSIS_ONLY\nREASONING: Disease query with high KG confidence ({top_disease_confidence:.2f}) or post-symptom confirmation, and query did not explicitly ask for treatment/remedy.",
+                     top_disease_confidence,
+                     0.0 # RAG was skipped
+                 )
+
+                 # Add to chat history *before* returning
+                 # Use the user_input (what the user actually typed this turn) and the final formatted response
+                 self.chat_history.append((user_input, final_response_text.strip()))
+
+
+                 logger.info("Returning KG-only Final Answer.")
+                 # Return the formatted KG diagnosis answer as the final answer
+                 return final_response_text.strip(), all_sources, "final_answer", None
+
+             # Else: It's a high-confidence diagnosis query, BUT it also asked for treatment/remedy,
+             # OR it was the result of symptom confirmation which should always proceed to Path 2
+             # to combine with RAG, OR the original query had no symptoms. Proceed to Path 2.
+             logger.info("✅ Proceeding to Path 2 with KG Diagnosis Component (if generated), as query asked for treatments/remedies or it's post-symptom confirmation/general query.")
+
+
         # --- Step 6: Path 2 - RAG Processing ---
-        # This step is reached if Path 1 Symptom UI was not triggered, or if Path 1 Diagnosis resulted in a component.
+        # This step is reached if Path 1 Symptom UI was not triggered,
+        # or if Path 1 Diagnosis resulted in a component but didn't conclude the answer.
         logger.info("📚 Processing with RAG...")
         t_start_rag = datetime.now()
 
