@@ -2070,105 +2070,125 @@ def main():
 
 
         # --- Input Area ---
-        # Position input area at the bottom using space pusher
-        st.write("  \n" * 5) # Add more space pusher if needed
-
-        # Conditional rendering of symptom checklist vs chat input
-        # Check if initialization failed before showing inputs
-        if st.session_state.init_failed:
-             st.error("Chat assistant failed to initialize. Please check the logs and configuration.")
-        elif st.session_state.awaiting_symptom_confirmation:
-            # Display the symptom checklist UI
-            # The display_symptom_checklist function includes the form and submit button
-            display_symptom_checklist(st.session_state.symptom_options_for_ui, st.session_state.original_query_for_followup)
-            # Disable the chat input while checklist is active
-            st.chat_input("Confirm symptoms above...", disabled=True)
-
-        else:
-            # Display the standard chat input
-            # Check if there's an input pending from an example click or symptom form submission
-            # This block handles the processing *after* a rerun triggered by an example click or form submission
-            if 'current_input_to_process' in st.session_state and st.session_state.current_input_to_process is not None:
-                 # Get the input that needs processing
-                 prompt = st.session_state.current_input_to_process
-                 # Clear the pending input flag immediately
-                 st.session_state.current_input_to_process = None
-
-                 # Determine context flags for generate_response call based on current UI state
-                 # confirmed_symptoms_from_ui will be None unless the form was just submitted
-                 confirmed_symps_to_pass = st.session_state.confirmed_symptoms_from_ui
-
-                 # original_query_for_followup will be set if the *previous* turn resulted in a prompt/UI
-                 original_query_to_pass = st.session_state.original_query_for_followup
+        # This container helps position the input at the bottom
+        input_container = st.container()
+        st.write("  \n" * 5) # Add space pusher at the end of the tab
 
 
-                 # Clear the state variables *after* reading them but *before* the bot call
-                 # confirmed_symptoms_from_ui is cleared now as its value is passed
-                 st.session_state.confirmed_symptoms_from_ui = None
-                 # original_query_for_followup is NOT cleared here, it's cleared *after* the bot call
-                 # based on the bot's returned action_flag.
+        # --- Process Input (Triggered by Rerun) ---
+        # This block runs on every rerun. It checks session state and widgets
+        # to determine if a response needs to be generated.
+
+        # Initialize variables to hold the input and context for the chatbot
+        current_user_text_input = None
+        confirmed_symps_to_pass = None
+        original_query_to_pass = None
+
+        # Check if the symptom confirmation form was just submitted
+        # This happens if confirmed_symptoms_from_ui is set AND we are NOT currently awaiting confirmation (meaning the form was submitted)
+        if st.session_state.confirmed_symptoms_from_ui is not None and not st.session_state.awaiting_symptom_confirmation:
+             logger.info("Detected symptom confirmation form submission.")
+             # Get the confirmed symptoms and the original query that triggered the UI
+             confirmed_symps_to_pass = st.session_state.confirmed_symptoms_from_ui
+             original_query_to_pass = st.session_state.original_query_for_followup # Use the stored original query for processing context
+             # The user's actual response text in this turn is not relevant, the confirmed symptoms are the input.
+             # We use the original query as the "user_input" for generate_response's first argument in this case
+             current_user_text_input = original_query_to_pass # Pass the original query text as user input for the bot's process
+
+             # Clear the UI state variables after capturing them
+             st.session_state.confirmed_symptoms_from_ui = None
+             # original_query_for_followup is cleared by generate_response based on its action flag
+             st.session_state.awaiting_symptom_confirmation = False # Ensure this is off
+
+             # Add the original query to messages as if the user typed it if it's not already the last user message
+             # This makes the conversation flow look correct
+             if not st.session_state.messages or st.session_state.messages[-1] != (original_query_to_pass, True):
+                  st.session_state.messages.append((original_query_to_pass, True))
 
 
-                 # Trigger response generation
-                 with st.spinner("Thinking..."):
-                      # Call generate_response with appropriate context flags
-                      response_text, sources, action_flag, ui_data = st.session_state.chatbot.generate_response(
-                           prompt, user_type,
-                           confirmed_symptoms=confirmed_symps_to_pass,
-                           original_query_if_followup=original_query_to_pass
-                      )
+        # Check if a new message was submitted in the chat input box
+        # This happens if st.chat_input returns a non-empty string AND we are NOT awaiting symptom confirmation
+        elif (prompt := st.chat_input("Ask your medical question...", disabled=st.session_state.init_failed or st.session_state.awaiting_symptom_confirmation)):
+             logger.info(f"Detected chat input submission: '{prompt}'")
+             current_user_text_input = prompt
+             # For a new chat input, confirmed_symps_to_pass and original_query_to_pass remain None
 
-                 # Process the action flag returned by generate_response
-                 if action_flag == "symptom_ui_prompt":
-                      # Update UI state to show the symptom checklist next rerun
-                      st.session_state.awaiting_symptom_confirmation = True
-                      st.session_state.symptom_options_for_ui = ui_data["symptom_options"]
-                      st.session_state.original_query_for_followup = ui_data["original_query"] # Store query that triggered UI
-                      st.session_state.form_timestamp = datetime.now().timestamp() # Set new timestamp for the form key
+             # Add the user message to the UI messages state immediately
+             st.session_state.messages.append((current_user_text_input, True))
 
-                      # Add the prompt message for the UI to messages
-                      # Check if the last message wasn't this exact prompt to avoid duplicates
-                      if not st.session_state.messages or st.session_state.messages[-1] != (response_text, False):
-                           st.session_state.messages.append((response_text, False))
+             # Clear any previous follow-up state for a brand new query thread
+             st.session_state.chatbot.followup_context = {"round": 0} # Reset LLM follow-up round
+             st.session_state.original_query_for_followup = "" # Clear original query for follow-up
+             # confirmed_symptoms_from_ui should already be None here
 
-                 elif action_flag == "llm_followup_prompt":
-                      # Add the LLM prompt message to messages
-                      # Check if the last message wasn't this exact prompt to avoid duplicates
-                      if not st.session_state.messages or st.session_state.messages[-1] != (response_text, False):
-                         st.session_state.messages.append((response_text, False))
 
-                      # Store the original query so generate_response knows the *next* user input is a response to *this* query thread's prompt
-                      # Use the user_input *that triggered this prompt* as the original query for follow-up
-                      st.session_state.original_query_for_followup = prompt
+        # --- Call generate_response if there is input to process ---
+        # This call happens only if one of the above blocks set current_user_text_input
+        if current_user_text_input is not None:
+            with st.spinner("Thinking..."):
+                 response_text, sources, action_flag, ui_data = st.session_state.chatbot.generate_response(
+                      current_user_text_input, user_type,
+                      confirmed_symptoms=confirmed_symps_to_pass,
+                      original_query_if_followup=original_query_to_pass # Pass the original query context if available
+                 )
 
-                 elif action_flag == "final_answer":
-                      # Add the final answer message to messages (includes refs/disclaimer formatted internally)
-                       # Check if the last message wasn't this exact answer to avoid duplicates
-                       if not st.session_state.messages or st.session_state.messages[-1] != (response_text, False):
-                            st.session_state.messages.append((response_text, False))
+            # --- Process the action flag returned by generate_response ---
+            logger.info(f"generate_response returned action_flag: {action_flag}")
+            if action_flag == "symptom_ui_prompt":
+                 # Update UI state to show the symptom checklist next rerun
+                 st.session_state.awaiting_symptom_confirmation = True
+                 st.session_state.symptom_options_for_ui = ui_data["symptom_options"]
+                 st.session_state.original_query_for_followup = ui_data["original_query"] # Store query that triggered UI
+                 st.session_state.form_timestamp = datetime.now().timestamp() # Set new timestamp for the form key
 
-                       # Clear original_query_for_followup as the thread is concluded or follow-up limit reached
-                       st.session_state.original_query_for_followup = ""
+                 # Add the prompt message for the UI to messages (it's the response_text)
+                 if not st.session_state.messages or st.session_state.messages[-1] != (response_text, False):
+                      st.session_state.messages.append((response_text, False))
 
-                 # else "none" or other flags don't add to messages
+            elif action_flag == "llm_followup_prompt":
+                 # Add the LLM prompt message to messages (it's the response_text)
+                 if not st.session_state.messages or st.session_state.messages[-1] != (response_text, False):
+                    st.session_state.messages.append((response_text, False))
 
-                 # Force a rerun to update the UI based on state/messages
-                 st.rerun()
+                 # Store the original query so generate_response knows the *next* user input is a response to *this* query thread's prompt
+                 # The 'original_query_if_followup' for the *next* turn should be the 'core_query_for_processing' of *this* turn
+                 st.session_state.original_query_for_followup = core_query_for_processing
 
-            elif prompt := st.chat_input("Ask your medical question...", disabled=st.session_state.init_failed):
-                # Standard chat input - this is the start of a new thread triggered by the chat_input widget
-                # Add user message to state immediately
-                st.session_state.messages.append((prompt, True))
 
-                # Clear any previous follow-up context/state for a new thread
-                st.session_state.chatbot.followup_context = {"round": 0} # Reset LLM follow-up round for a new query thread
-                st.session_state.original_query_for_followup = "" # Ensure this is clear for a new thread
-                st.session_state.confirmed_symptoms_from_ui = None # Ensure this is clear
-                st.session_state.form_timestamp = datetime.now().timestamp() # Set a new timestamp for forms
+            elif action_flag == "final_answer":
+                 # Add the final answer message to messages (it's the response_text)
+                  if not st.session_state.messages or st.session_state.messages[-1] != (response_text, False):
+                       st.session_state.messages.append((response_text, False))
 
-                # Set the input into session state to be processed in the next rerun cycle
-                st.session_state.current_input_to_process = prompt
-                st.rerun()
+                  # Clear original_query_for_followup as the thread is concluded or follow-up limit reached
+                  st.session_state.original_query_for_followup = ""
+                  # Clear symptom UI specific state too just in case
+                  st.session_state.awaiting_symptom_confirmation = False
+                  st.session_state.symptom_options_for_ui = {}
+
+
+            elif action_flag == "none":
+                 # No action needed, do not add to messages
+                 pass # generate_response already logged why it skipped
+
+            # Force a rerun to update the UI based on state/messages
+            st.rerun()
+
+
+        # --- Reset Conversation Button ---
+        st.divider() # Add a visual separator
+        if st.button("Reset Conversation"):
+            st.session_state.chatbot.reset_conversation() # Resets internal history and followup_context
+            st.session_state.messages = [] # Clear UI messages
+            # Also reset UI state variables
+            st.session_state.awaiting_symptom_confirmation = False
+            st.session_state.symptom_options_for_ui = {}
+            st.session_state.confirmed_symptoms_from_ui = None
+            st.session_state.original_query_for_followup = ""
+            st.session_state.current_input_to_process = None # Clear any pending input
+            st.session_state.form_timestamp = datetime.now().timestamp() # Reset form timestamp
+            logger.info("Conversation reset triggered by user.")
+            st.rerun()
 
 
         # Physician feedback section (keep as is, uses chatbot's internal chat_history)
