@@ -588,186 +588,129 @@ class DocumentChatBot:
 
 
     def identify_missing_info(self, user_query: str, generated_answer: str, conversation_history: List[Tuple[str, str]]) -> Tuple[bool, List[str]]:
-        """
-        Identifies what CRITICAL medical information is still missing from the GENERATED ANSWER
-        relative to the USER QUERY, using conversation context.
-        This is used for the FINAL completeness check in Path 2.
-        """
-        logger.info("🕵️ Identifying missing info from generated answer (Final Check)...")
-    
-        if self.llm is None:
-            logger.warning("LLM not initialized. Cannot perform final completeness check.")
-            return (False, [])  # Cannot check completeness without LLM
-    
-        # Convert conversation history to a string for context
-        # Include a few recent exchanges for better understanding
-        context = ""
-        history_limit = 6  # Include last 3 exchanges (user+bot)
-        recent_history = conversation_history[-history_limit:]
-        
-        # Track previously asked questions to avoid redundancy
-        previously_asked_questions = []
-        
-        for i, entry in enumerate(recent_history):
-            # Ensure the entry is a tuple of length 2
-            if isinstance(entry, tuple) and len(entry) == 2:
-                user_msg, bot_msg = entry
-    
-                # Safely get string representation of user_msg
-                user_msg_str = str(user_msg) if user_msg is not None else ""
-                context += f"User: {user_msg_str}\n"
-    
-                # Safely get string representation of bot_msg before formatting
-                if isinstance(bot_msg, str):
-                    truncated_bot_msg = bot_msg[:300] + "..." if len(bot_msg) > 300 else bot_msg
-                    context += f"Assistant: {truncated_bot_msg}\n"
-                    
-                    # Check for questions in the bot's message to track previously asked questions
-                    question_patterns = [
-                        r"(?<!\w)how (?:long|much|often|severe|many|would|could|should|do|does|did|is|are|was|were)(?!\w).*\?",
-                        r"(?<!\w)what (?:are|is|was|were|do|does|did|should|would|could|will|might)(?!\w).*\?",
-                        r"(?<!\w)when (?:did|do|does|is|are|was|were|will|would|should|could|might)(?!\w).*\?",
-                        r"(?<!\w)where (?:is|are|was|were|do|does|did|will|would|should|could|might)(?!\w).*\?",
-                        r"(?<!\w)why (?:is|are|was|were|do|does|did|will|would|should|could|might)(?!\w).*\?",
-                        r"(?<!\w)which (?:is|are|was|were|do|does|did|will|would|should|could|might)(?!\w).*\?",
-                        r"(?<!\w)can you (?:tell|describe|explain|clarify|specify|indicate)(?!\w).*\?",
-                        r"(?<!\w)could you (?:tell|describe|explain|clarify|specify|indicate)(?!\w).*\?",
-                        r"(?<!\w)have you (?:ever|had|been|experienced|noticed|observed)(?!\w).*\?",
-                        r"(?<!\w)do you (?:have|feel|experience|notice|observe)(?!\w).*\?",
-                        r"(?<!\w)are you (?:experiencing|feeling|having|noticing|observing)(?!\w).*\?",
-                        r"\?$"  # Catch any remaining questions ending with ?
-                    ]
-                    
-                    for pattern in question_patterns:
-                        matches = re.finditer(pattern, truncated_bot_msg, re.IGNORECASE)
-                        for match in matches:
-                            # Add any questions found to our tracking list
-                            question = match.group(0).strip()
-                            if len(question) > 10:  # Avoid very short fragments
-                                previously_asked_questions.append(question)
-                    
-                elif bot_msg is not None:
-                    # Log if it's not a string but not None (unexpected type)
-                    logger.warning(f"Unexpected type in chat_history bot message at index {i}. Type: {type(bot_msg)}. Value: {bot_msg}. Appending placeholder.")
-                    context += f"Assistant: [Non-string response of type {type(bot_msg)}]\n"
-                # else: bot_msg is None, do not add Assistant line
-            else:
-                # Log if an entry in history is not a tuple of length 2 or not a tuple at all
-                logger.warning(f"Unexpected format in chat_history entry at index {i}. Entry: {entry}. Skipping entry or adding placeholder.")
-                context += f"[Invalid history entry at index {i}]\n"
-    
-        # Enhance the prompt to explicitly highlight previously asked questions
-        previously_asked_str = "\n".join(previously_asked_questions) if previously_asked_questions else "None detected."
-    
-        MISSING_INFO_PROMPT = '''
-        You are a medical AI assistant analyzing a patient's conversation history and the latest generated answer.
-        Your primary goal is to help provide a safe and comprehensive answer to the user's initial medical question.
-        After reviewing the entire conversation history and the most recent generated answer, determine if there is any *absolutely critical* piece of medical information still missing from the *latest generated answer itself* that is essential for providing a safe and minimally helpful response.
-    
-        Conversation history (for context, includes previous turns and the latest generated answer):
-        ---
-        {context}
-        ---
-    
-        PREVIOUSLY ASKED QUESTIONS (DO NOT ASK THESE AGAIN):
-        ---
-        {previously_asked}
-        ---
-    
-        USER'S INITIAL QUESTION: "{user_query}" # Refer to the initial question for the core intent
-        LATEST GENERATED ANSWER: "{generated_answer}" # Evaluate the completeness of this specific answer
-    
-        **CRITICAL EVALUATION:**
-        Based on the ENTIRE CONVERSATION HISTORY and the LATEST GENERATED ANSWER:
-        1.  Does the latest answer directly address the core medical question posed by the user, using all available information in the history?
-        2.  Does the answer include necessary safety disclaimers for personal medical queries?
-        3.  Are there any obvious gaps regarding *critical safety information* (e.g., symptoms requiring urgent care) that are missing from the latest answer, given what the user has described throughout the conversation?
-        4.  **Review the Conversation History Carefully:** Has a similar or the same type of critical follow-up question *already been clearly asked* by the Assistant in a previous turn that the user responded to or did not provide the requested information for?
-        5.  **Considering all information in the history and the latest answer:** Is there *one single most critical piece* of information still needed from the user to proceed safely or provide a meaningfully better answer?
-    
-        STRICT REQUIREMENTS:
-        1. You must ONLY identify absolutely critical missing information that is essential for safety.
-        2. You must NEVER ask a follow-up question that is semantically similar to anything in the "PREVIOUSLY ASKED QUESTIONS" section.
-        3. You must return EXACTLY ONE follow-up question at most - never multiple questions.
-        4. If no critical information is missing or a similar question was already asked, you must set "needs_followup" to false.
-    
-        Return your answer in this exact JSON format:
-        {{
-            "needs_followup": true/false,
-            "reasoning": "brief explanation of why more information is needed from the answer or why the answer is sufficient, referencing the history review and critical gaps",
-            "missing_info_questions": [
-                {{"question": "specific follow-up question 1"}}
-            ]
-        }}
-    
-        Only include the "missing_info_questions" array if "needs_followup" is true, and limit it to exactly 1 question. If "needs_followup" is true but you cannot formulate the *single most critical* specific question based on your evaluation, still return "needs_followup": true but with an empty "missing_info_questions" array (though try hard to formulate one if needed).
-        '''.format(
-            context=context,
-            user_query=user_query,
-            generated_answer=generated_answer,
-            previously_asked=previously_asked_str
-        )
-    
-        try:
-            # Use local_generate for this LLM call
-            response = self.local_generate(MISSING_INFO_PROMPT, max_tokens=500).strip()
-    
-            # Attempt to parse JSON
-            json_match = re.search(r'\{[\s\S]*\}', response)
-            if json_match:
-                json_str = json_match.group(0)
-                try:
-                    data = json.loads(json_str)
-                    needs_followup_llm = data.get("needs_followup", False)  # LLM's opinion
-                    
-                    # IMPORTANT FIX: Strictly enforce the limit of one question
-                    missing_info_questions = []
-                    if needs_followup_llm and "missing_info_questions" in data:
-                        # Only take the first question if any exist
-                        questions_list = data.get("missing_info_questions", [])
-                        if questions_list and len(questions_list) > 0:
-                            if isinstance(questions_list[0], dict) and "question" in questions_list[0]:
-                                question = questions_list[0]["question"]
-                                
-                                # Check if the proposed question is similar to previously asked questions
-                                is_redundant = any(
-                                    self.calculate_similarity(question, prev_q) > 0.7  # Using a hypothetical similarity function
-                                    for prev_q in previously_asked_questions
-                                )
-                                
-                                if not is_redundant:
-                                    missing_info_questions.append(question)
-                                else:
-                                    logger.info("⚠️ Proposed follow-up question is too similar to a previously asked question. Skipping.")
-                                    needs_followup_llm = False  # Override the LLM's decision since the question is redundant
-                    
-                    reasoning = data.get("reasoning", "Answer is missing critical information.")
-    
-                    if needs_followup_llm and missing_info_questions:
-                        logger.info(f"❓ Critical Information Missing from Final Answer (LLM opinion): {missing_info_questions}. Reasoning: {reasoning}")
-                        return (True, missing_info_questions)  # Return True and questions
-    
-                    else:
-                        logger.info("✅ Final Answer appears sufficient (LLM opinion) or no questions provided.")
-                        return (False, [])  # Return False and no questions
-    
-                except json.JSONDecodeError:
-                    logger.warning("Could not parse final missing info JSON from LLM response.")
-                    # Fallback: Assume no critical info is missing if JSON parsing fails
+            """
+            Identifies what CRITICAL medical information is still missing from the GENERATED ANSWER
+            relative to the USER QUERY, using conversation context.
+            This is used for the FINAL completeness check in Path 2.
+            """
+            logger.info("🕵️ Identifying missing info from generated answer (Final Check)...")
+
+            if self.llm is None:
+                 logger.warning("LLM not initialized. Cannot perform final completeness check.")
+                 return (False, []) # Cannot check completeness without LLM
+
+
+            # Convert conversation history to a string for context
+            # Include a few recent exchanges for better understanding
+            context = ""
+            history_limit = 6 # Include last 3 exchanges (user+bot)
+            recent_history = conversation_history[-history_limit:]
+            for i, entry in enumerate(recent_history):
+                # Ensure the entry is a tuple of length 2
+                if isinstance(entry, tuple) and len(entry) == 2:
+                    user_msg, bot_msg = entry
+
+                    # Safely get string representation of user_msg
+                    user_msg_str = str(user_msg) if user_msg is not None else ""
+                    context += f"User: {user_msg_str}\n"
+
+                    # Safely get string representation of bot_msg before formatting
+                    if isinstance(bot_msg, str):
+                        truncated_bot_msg = bot_msg[:300] + "..." if len(bot_msg) > 300 else bot_msg
+                        context += f"Assistant: {truncated_bot_msg}\n"
+                    elif bot_msg is not None:
+                        # Log if it's not a string but not None (unexpected type)
+                        logger.warning(f"Unexpected type in chat_history bot message at index {i}. Type: {type(bot_msg)}. Value: {bot_msg}. Appending placeholder.")
+                        context += f"Assistant: [Non-string response of type {type(bot_msg)}]\n"
+                    # else: bot_msg is None, do not add Assistant line
+                else:
+                    # Log if an entry in history is not a tuple of length 2 or not a tuple at all
+                    logger.warning(f"Unexpected format in chat_history entry at index {i}. Entry: {entry}. Skipping entry or adding placeholder.")
+                    context += f"[Invalid history entry at index {i}]\n"
+
+
+            # The `generate_response` function will check `self.followup_context["round"]`
+            # This function just needs to determine *if* a follow-up is logically required based on completeness.
+
+            MISSING_INFO_PROMPT = '''
+            You are a medical AI assistant analyzing a patient's conversation history and the latest generated answer.
+            Your primary goal is to help provide a safe and comprehensive answer to the user's initial medical question.
+            After reviewing the entire conversation history and the most recent generated answer, determine if there is any *absolutely critical* piece of medical information still missing from the *latest generated answer itself* that is essential for providing a safe and minimally helpful response.
+
+            Conversation history (for context, includes previous turns and the latest generated answer):
+            ---
+            {context}
+            ---
+
+            USER'S INITIAL QUESTION: "{user_query}" # Refer to the initial question for the core intent
+            LATEST GENERATED ANSWER: "{generated_answer}" # Evaluate the completeness of this specific answer
+
+            **CRITICAL EVALUATION:**
+            Based on the ENTIRE CONVERSATION HISTORY and the LATEST GENERATED ANSWER:
+            1.  Does the latest answer directly address the core medical question posed by the user, using all available information in the history?
+            2.  Does the answer include necessary safety disclaimers for personal medical queries?
+            3.  Are there any obvious gaps regarding *critical safety information* (e.g., symptoms requiring urgent care) that are missing from the latest answer, given what the user has described throughout the conversation?
+            4.  **Review the Conversation History Carefully:** Has a similar or the same type of critical follow-up question *already been clearly asked* by the Assistant in a previous turn that the user responded to or did not provide the requested information for?
+            5.  **Considering all information in the history and the latest answer:** Is there *one single most critical piece* of information still needed from the user to proceed safely or provide a meaningfully better answer?
+
+            If information is missing *from the latest generated answer* based on your critical evaluation (especially point 5), and it is *absolutely necessary* to ask the user for input to fill this *single most critical gap*, formulate ONE clear, specific follow-up question. If a similar question was already asked in history (point 4), do NOT ask it again; assume you have already attempted to get that information. If you determine no single critical question is needed, or if the history shows you've already tried to get crucial missing info, indicate no follow-up needed.
+
+            Return your answer in this exact JSON format:
+            {{
+                "needs_followup": true/false,
+                "reasoning": "brief explanation of why more information is needed from the answer or why the answer is sufficient, referencing the history review and critical gaps",
+                "missing_info_questions": [
+                    {{"question": "specific follow-up question 1"}}
+                ]
+            }}
+
+            Only include the "missing_info_questions" array if "needs_followup" is true, and limit it to exactly 1 question. If "needs_followup" is true but you cannot formulate the *single most critical* specific question based on your evaluation, still return "needs_followup": true but with an empty "missing_info_questions" array (though try hard to formulate one if needed).
+            '''.format(
+                context=context,
+                user_query=user_query,
+                generated_answer=generated_answer
+            )
+
+            try:
+                # Use local_generate for this LLM call
+                response = self.local_generate(MISSING_INFO_PROMPT, max_tokens=500).strip()
+                # logger.debug(f"\nRaw Missing Info Evaluation (Final Check):\n{response}")
+
+                # Attempt to parse JSON
+                json_match = re.search(r'\{[\s\S]*\}', response)
+                if json_match:
+                    json_str = json_match.group(0)
+                    try:
+                        data = json.loads(json_str)
+                        needs_followup_llm = data.get("needs_followup", False) # LLM's opinion
+                        missing_info_questions = [item["question"] for item in data.get("missing_info_questions", []) if isinstance(item, dict) and "question" in item] # Safely get questions
+                        reasoning = data.get("reasoning", "Answer is missing critical information.")
+
+                        if needs_followup_llm and missing_info_questions:
+                             logger.info(f"❓ Critical Information Missing from Final Answer (LLM opinion): {missing_info_questions}. Reasoning: {reasoning}")
+                             return (True, missing_info_questions) # Return True and questions
+
+                        else:
+                             logger.info("✅ Final Answer appears sufficient (LLM opinion) or no questions provided.")
+                             return (False, []) # Return False and no questions
+
+                    except json.JSONDecodeError:
+                        logger.warning("Could not parse final missing info JSON from LLM response.")
+                        # Fallback: Assume no critical info is missing if JSON parsing fails
+                        return (False, [])
+                    except Exception as e:
+                         logger.error(f"Error processing LLM response structure in identify_missing_info: {e}", exc_info=True)
+                         return (False, []) # Fallback on structure error
+
+                else:
+                    logger.warning("LLM response did not contain expected JSON format.")
+                    # Fallback: Assume no critical info is missing if no JSON is found
                     return (False, [])
-                except Exception as e:
-                    logger.error(f"Error processing LLM response structure in identify_missing_info: {e}", exc_info=True)
-                    return (False, [])  # Fallback on structure error
-    
-            else:
-                logger.warning("LLM response did not contain expected JSON format.")
-                # Fallback: Assume no critical info is missing if no JSON is found
+
+            except Exception as e:
+                logger.error(f"⚠️ Error during LLM call in identify_missing_info: {e}", exc_info=True)
+                # Fallback: Assume no critical info is missing if LLM call fails
                 return (False, [])
-    
-        except Exception as e:
-            logger.error(f"⚠️ Error during LLM call in identify_missing_info: {e}", exc_info=True)
-            # Fallback: Assume no critical info is missing if LLM call fails
-            return (False, [])
 
 
     def knowledge_graph_agent(self, user_query: str, all_symptoms: List[str]) -> Dict[str, Any]:
@@ -2158,61 +2101,97 @@ def main():
 
 
         # --- Input Area ---
+        # This container helps position the input area
+        input_area_container = st.container()
         st.write("  \n" * 5) # Add space pusher at the end of the tab
 
-        # Determine the input source and relevant state for this rerun
-        current_user_text_input = None
-        confirmed_symps_to_pass = None
-        original_query_context = None # Represents the query being followed up on
 
-        # 1. Check if symptom confirmation form was just submitted
-        # This happens if confirmed_symptoms_from_ui is set and we are NOT currently awaiting confirmation
-        if st.session_state.confirmed_symptoms_from_ui is not None and not st.session_state.awaiting_symptom_confirmation:
-             logger.info("Detected symptom confirmation form submission via state.")
-             # Get the confirmed symptoms and the original query that triggered the UI
-             confirmed_symps_to_pass = st.session_state.confirmed_symptoms_from_ui
-             original_query_context = st.session_state.original_query_for_followup # Use the stored original query as context
+        # --- UI Elements for Input ---
+        # Place the symptom checklist and chat input UI elements within the container.
+        # Their rendering will be conditional based on session state.
 
-             # The text input for the bot's process is the original query text
-             current_user_text_input = original_query_context
+        with input_area_container:
+            # Conditional rendering of symptom checklist vs chat input
+            if st.session_state.init_failed:
+                 st.error("Chat assistant failed to initialize. Please check the logs and configuration.")
+            elif st.session_state.awaiting_symptom_confirmation:
+                # Display the symptom checklist UI
+                # The display_symptom_checklist function includes the form and submit button
+                display_symptom_checklist(st.session_state.symptom_options_for_ui, st.session_state.original_query_for_followup)
+                # Hide the standard chat input while checklist is active
+                st.chat_input("Confirm symptoms above...", disabled=True, key="disabled_chat_input_while_form_active")
 
-             # Clear the UI state variables after capturing them
-             st.session_state.confirmed_symptoms_from_ui = None
-             # original_query_for_followup and awaiting_symptom_confirmation are cleared by generate_response action flags
+            else:
+                # Display the standard chat input
+                # Use a unique key for the chat input
+                user_query = st.chat_input("Ask your medical question...", disabled=st.session_state.init_failed, key="main_chat_input")
 
-        # 2. Check if a new message was submitted in the chat input box
-        # This happens if st.chat_input returns a non-empty string AND we are NOT awaiting symptom confirmation UI
-        elif (prompt := st.chat_input("Ask your medical question...", disabled=st.session_state.init_failed or st.session_state.awaiting_symptom_confirmation, key="main_chat_input")):
-             logger.info(f"Detected chat input submission: '{prompt}'")
-             current_user_text_input = prompt
-             # For a new chat input, confirmed_symps_to_pass remains None
+                # --- Logic to Detect Input and Trigger Processing ---
+                # This runs *after* the chat input widget is rendered and potentially returns a value.
 
-             # Check if this chat input is a response to a previous LLM follow-up prompt
-             # This is true if original_query_for_followup is NOT empty from the previous turn
-             if st.session_state.original_query_for_followup != "":
-                 logger.info("Detected chat input is a response to a prior LLM follow-up prompt.")
-                 original_query_context = st.session_state.original_query_for_followup # Set context to the query that received the prompt
-                 # The user's response text is in current_user_text_input (the 'prompt' variable)
-             else:
-                 # This is a brand new thread start
-                 logger.info("Detected chat input is the start of a new thread.")
-                 # Clear any old follow-up state explicitly for a new thread start
-                 st.session_state.chatbot.followup_context = {"round": 0}
-                 st.session_state.original_query_for_followup = "" # Ensure clear
-                 st.session_state.symptom_options_for_ui = {} # Clear symptom UI options
-                 st.session_state.confirmed_symptoms_from_ui = None # Clear confirmed symptoms
+                # Check if a new message was submitted in the chat input box
+                if user_query:
+                    logger.info(f"Detected chat input submission: '{user_query}'")
+                    # Add user message to state immediately for display
+                    st.session_state.messages.append((user_query, True))
 
-             # Add the user message to the UI messages state immediately
-             st.session_state.messages.append((current_user_text_input, True))
+                    # Clear any previous follow-up state for a brand new query thread
+                    st.session_state.chatbot.followup_context = {"round": 0} # Reset LLM follow-up round
+                    st.session_state.original_query_for_followup = "" # Clear original query for follow-up
+                    st.session_state.confirmed_symptoms_from_ui = None # Ensure this is clear
+                    st.session_state.form_timestamp = datetime.now().timestamp() # Set a new timestamp for forms
+
+                    # Set the input into a specific state variable to signal it's ready for processing
+                    st.session_state.input_ready_for_processing = {
+                        "text": user_query,
+                        "confirmed_symptoms": None, # Not from symptom form
+                        "original_query_context": None # Not a follow-up response
+                    }
+                    st.rerun() # Trigger rerun to process the input
 
 
-        # --- Call generate_response if there is input to process ---
-        # This call happens only if current_user_text_input was set by one of the above blocks
-        if current_user_text_input is not None:
+            # --- Check for Symptom Form Submission ---
+            # This logic runs *after* the form (if displayed) is processed in the rerun.
+            # The display_symptom_checklist function sets st.session_state.confirmed_symptoms_from_ui
+            # and st.session_state.awaiting_symptom_confirmation = False upon form submission.
+
+            if st.session_state.confirmed_symptoms_from_ui is not None and not st.session_state.awaiting_symptom_confirmation:
+                logger.info("Detected symptom confirmation form submission via state.")
+                # Get the confirmed symptoms and the original query that triggered the UI
+                confirmed_symps_to_pass = st.session_state.confirmed_symptoms_from_ui
+                original_query_to_pass = st.session_state.original_query_for_followup # Use the stored original query
+
+                # Clear the UI state variables after capturing them for processing
+                st.session_state.confirmed_symptoms_from_ui = None
+                # original_query_for_followup is cleared by generate_response based on its action flag
+                # awaiting_symptom_confirmation is already False here
+
+                # Set the input into a specific state variable to signal it's ready for processing
+                st.session_state.input_ready_for_processing = {
+                     "text": original_query_to_pass, # Use the original query text as the main input for bot processing
+                     "confirmed_symptoms": confirmed_symps_to_pass,
+                     "original_query_context": original_query_to_pass # The original query is the context for processing the confirmed symptoms
+                }
+                st.rerun() # Trigger rerun to process the input
+
+
+        # --- Call generate_response if input_ready_for_processing is set ---
+        # This is the SINGLE point where generate_response is called based on the state.
+        if 'input_ready_for_processing' in st.session_state and st.session_state.input_ready_for_processing is not None:
+            input_data = st.session_state.input_ready_for_processing
+            # Clear the input_ready flag immediately
+            st.session_state.input_ready_for_processing = None
+
+            prompt = input_data["text"]
+            confirmed_symps = input_data["confirmed_symptoms"]
+            original_query_context = input_data["original_query_context"]
+
+
+            # Call the chatbot's generate_response function
             with st.spinner("Thinking..."):
                  response_text, sources, action_flag, ui_data = st.session_state.chatbot.generate_response(
-                      current_user_text_input, user_type,
-                      confirmed_symptoms=confirmed_symps_to_pass,
+                      prompt, user_type,
+                      confirmed_symptoms=confirmed_symps,
                       original_query_if_followup=original_query_context # Pass the original query context
                  )
 
@@ -2235,9 +2214,8 @@ def main():
                     st.session_state.messages.append((response_text, False))
 
                  # Store the original query so generate_response knows the *next* user input is a response to *this* query thread's prompt
-                 # The 'original_query_for_followup' for the *next* turn should be the 'core_query_for_processing' of *this* turn
-                 # which was passed as 'original_query_context' to generate_response.
-                 st.session_state.original_query_for_followup = current_user_text_input # Store the query that 
+                 st.session_state.original_query_for_followup = prompt # Store the query that *received* the prompt
+
 
             elif action_flag == "final_answer":
                  # Add the final answer message to messages (it's the response_text)
@@ -2259,7 +2237,6 @@ def main():
             # This rerun is necessary to display the *new* message(s) and potentially the symptom form
             st.rerun()
 
-
         # --- Reset Conversation Button ---
         # This button is outside the input area conditional rendering
         st.divider() # Add a visual separator
@@ -2271,12 +2248,12 @@ def main():
             st.session_state.symptom_options_for_ui = {}
             st.session_state.confirmed_symptoms_from_ui = None
             st.session_state.original_query_for_followup = ""
+            st.session_state.current_input_to_process = None # Clear any pending input
+            st.session_state.input_ready_for_processing = None # Clear any pending processing input
             st.session_state.form_timestamp = datetime.now().timestamp() # Reset form timestamp
-            # Clear any pending input that might have been in the chat_input buffer before reset clicked
-            # This might require a custom chat input component or clearing its value via state if possible.
-            # For now, rely on the logic that current_user_text_input will be None on the next rerun if the chat input is empty.
             logger.info("Conversation reset triggered by user.")
             st.rerun()
+
 
         # Physician feedback section (keep as is, uses chatbot's internal chat_history)
         st.divider()
