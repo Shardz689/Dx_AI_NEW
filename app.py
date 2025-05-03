@@ -1525,7 +1525,7 @@ class DocumentChatBot:
             else:
                 reliable_sources_prompt_section_local += "No specific external reliable sources are available in the current context.\n"
             # Add the external reliable sources
-            gap_filling_prompt_parts.append("\n" + reliable_sources_prompt_section) # Use the same section content
+            gap_filling_prompt_parts.append("\n" + reliable_sources_prompt_section_local)) # Use the same section content
 
             gap_filling_prompt_parts.append("\nProvide concise answers to the requested areas using ONLY the provided sources. If information for an area is not in the sources, state that. Attribute information using the specified source formats ([Source:...], clickable link for external sources). Do NOT invent information or sources.")
             gap_filling_prompt_parts.append("Format your answers clearly.")
