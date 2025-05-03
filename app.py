@@ -261,19 +261,19 @@ class DocumentChatBot:
 
 
         # Use local_generate which wraps self.llm
-        medical_relevance_prompt = f"""
+        medical_relevance_prompt = '''
         Analyze the user query. Is it related to health, medical conditions, symptoms, treatments, medication, diagnostics, or any other medical or health science topic?
         Consider both explicit medical terms and implicit health concerns. Answer concisely.
-
-        Query: "{query}"
-
+        
+        Query: "{}"
+        
         Return ONLY a JSON object with this format:
         {{
-            "is_medical": true/false,
-            "confidence": 0.0-1.0,
+            "is_medical": true,
+            "confidence": 0.0,
             "reasoning": "brief explanation"
         }}
-        """
+        '''.format(query)
 
         try:
             response = self.local_generate(medical_relevance_prompt, max_tokens=150) # Reduced max_tokens for speed
@@ -430,7 +430,7 @@ class DocumentChatBot:
             if self.kg_connection_ok: status_parts.append("KG OK")
             else: status_parts.append("KG Failed")
 
-            overall_message = f"Initialization Status: {', '.join(status_parts)}. {message}" # Combine init messages
+            overall_message = f"Initialization Status: {', '.join(status_parts)}." # Combine init messages
 
             # Return success status based on whether critical components are available for basic function
             # Basic function requires LLM. RAG requires LLM+VDB+Chain. KG requires KG driver.
@@ -604,18 +604,20 @@ class DocumentChatBot:
             # The `generate_response` function will check `self.followup_context["round"]`
             # This function just needs to determine *if* a follow-up is logically required based on completeness.
 
-            MISSING_INFO_PROMPT = f"""
+            MISSING_INFO_PROMPT = '''
             You are a medical assistant analyzing a patient query and a generated answer.
             Your task is to determine if any ABSOLUTELY CRITICAL medical information is still missing *from the GENERATED ANSWER ITSELF* to adequately address the USER QUESTION, considering the conversation context.
-
+            
             Conversation history (for context, possibly truncated):
-            ---\n{context}\n---
-
+            ---
+            {context}
+            ---
+            
             USER QUESTION: "{user_query}"
             GENERATED ANSWER (the answer being evaluated): "{generated_answer}"
-
+            
             CRITICALLY EVALUATE the GENERATED ANSWER: Does it provide a safe and reasonably comprehensive response to the USER QUESTION given the context?
-
+            
             Rules for determining if critical information is missing:
             1. Does the answer directly respond to the core medical question asked by the user?
             2. If the query is about personal symptoms, does the answer include appropriate medical disclaimers? (The answer *should* already have this, but assess if its absence makes the answer critically incomplete or unsafe).
@@ -623,20 +625,24 @@ class DocumentChatBot:
             4. ONLY identify missing information if it's ABSOLUTELY NECESSARY to ask the user ONE follow-up question to make the answer minimally helpful or safe. Avoid asking for more detail that is not crucial.
             5. If the GENERATED ANSWER indicates it cannot answer fully (e.g., due to lack of information), is that explanation sufficient, or is a clarifying question still needed from the user?
             6. If the GENERATED ANSWER is very short or generic and the USER QUESTION was specific (e.g., listed symptoms), does it warrant asking for clarification from the user to provide a better response?
-
+            
             If critical information is missing *from the generated answer itself* that requires asking the user for input, formulate ONE clear, specific follow-up question to obtain the MOST critical missing piece.
-
+            
             Return your answer in this exact JSON format:
             {{
-                "needs_followup": true/false,
+                "needs_followup": true,
                 "reasoning": "brief explanation of why more information is needed from the answer or why the answer is sufficient",
                 "missing_info_questions": [
                     {{"question": "specific follow-up question 1"}}
                 ]
             }}
-
+            
             Only include the "missing_info_questions" array if "needs_followup" is true, and limit it to exactly 1 question. If needs_followup is true but you cannot formulate a specific question based on the answer's gaps, still return needs_followup: true but with an empty "missing_info_questions" array (though try hard to formulate one).
-            """
+            '''.format(
+                context=context,
+                user_query=user_query,
+                generated_answer=generated_answer
+            )
 
             try:
                 # Use local_generate for this LLM call
@@ -974,7 +980,7 @@ class DocumentChatBot:
 
         # Use LLM for extraction first
         # Use local_generate which wraps self.llm
-        SYMPTOM_PROMPT = f"""
+        SYMPTOM_PROMPT = '''
         You are a medical assistant.
         Extract all medical symptoms mentioned in the following user query.
         For each symptom, assign a confidence score between 0.0 and 1.0 indicating how certain you are that it is a symptom.
@@ -982,8 +988,8 @@ class DocumentChatBot:
         **Important:** Return your answer in exactly the following format:
         Extracted Symptoms: [{{"symptom": "symptom1", "confidence": 0.9}}, {{"symptom": "symptom2", "confidence": 0.8}}, ...]
 
-        User Query: "{user_query}"
-        """
+        User Query: "{}"
+        '''.format(user_query)
 
         llm_symptoms = []
         llm_avg_confidence = 0.0
