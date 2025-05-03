@@ -633,39 +633,38 @@ class DocumentChatBot:
             # This function just needs to determine *if* a follow-up is logically required based on completeness.
 
             MISSING_INFO_PROMPT = '''
-            You are a medical assistant analyzing a patient query and a generated answer.
-            Your task is to determine if any ABSOLUTELY CRITICAL medical information is still missing *from the GENERATED ANSWER ITSELF* to adequately address the USER QUESTION, considering the conversation context.
-            
-            Conversation history (for context, possibly truncated):
+            You are a medical AI assistant analyzing a patient's conversation history and the latest generated answer.
+            Your primary goal is to help provide a safe and comprehensive answer to the user's initial medical question.
+            After reviewing the entire conversation history and the most recent generated answer, determine if there is any *absolutely critical* piece of medical information still missing from the *latest generated answer itself* that is essential for providing a safe and minimally helpful response.
+
+            Conversation history (for context, includes previous turns and the latest generated answer):
             ---
             {context}
             ---
-            
-            USER QUESTION: "{user_query}"
-            GENERATED ANSWER (the answer being evaluated): "{generated_answer}"
-            
-            CRITICALLY EVALUATE the GENERATED ANSWER: Does it provide a safe and reasonably comprehensive response to the USER QUESTION given the context?
-            
-            Rules for determining if critical information is missing:
-            1. Does the answer directly respond to the core medical question asked by the user?
-            2. If the query is about personal symptoms, does the answer include appropriate medical disclaimers? (The answer *should* already have this, but assess if its absence makes the answer critically incomplete or unsafe).
-            3. Are there obvious critical gaps that make the answer potentially unsafe or unhelpful? (e.g., failing to mention seeking immediate care for red-flag symptoms like severe chest pain if the query implied them, and the answer didn't cover this safety warning).
-            4. ONLY identify missing information if it's ABSOLUTELY NECESSARY to ask the user ONE follow-up question to make the answer minimally helpful or safe. Avoid asking for more detail that is not crucial.
-            5. If the GENERATED ANSWER indicates it cannot answer fully (e.g., due to lack of information), is that explanation sufficient, or is a clarifying question still needed from the user?
-            6. If the GENERATED ANSWER is very short or generic and the USER QUESTION was specific (e.g., listed symptoms), does it warrant asking for clarification from the user to provide a better response?
-            
-            If critical information is missing *from the generated answer itself* that requires asking the user for input, formulate ONE clear, specific follow-up question to obtain the MOST critical missing piece.
-            
+
+            USER'S INITIAL QUESTION: "{user_query}" # Refer to the initial question for the core intent
+            LATEST GENERATED ANSWER: "{generated_answer}" # Evaluate the completeness of this specific answer
+
+            **CRITICAL EVALUATION:**
+            Based on the ENTIRE CONVERSATION HISTORY and the LATEST GENERATED ANSWER:
+            1.  Does the latest answer directly address the core medical question posed by the user, using all available information in the history?
+            2.  Does the answer include necessary safety disclaimers for personal medical queries?
+            3.  Are there any obvious gaps regarding *critical safety information* (e.g., symptoms requiring urgent care) that are missing from the latest answer, given what the user has described throughout the conversation?
+            4.  **Review the Conversation History Carefully:** Has a similar or the same type of critical follow-up question *already been clearly asked* by the Assistant in a previous turn that the user responded to or did not provide the requested information for?
+            5.  **Considering all information in the history and the latest answer:** Is there *one single most critical piece* of information still needed from the user to proceed safely or provide a meaningfully better answer?
+
+            If information is missing *from the latest generated answer* based on your critical evaluation (especially point 5), and it is *absolutely necessary* to ask the user for input to fill this *single most critical gap*, formulate ONE clear, specific follow-up question. If a similar question was already asked in history (point 4), do NOT ask it again; assume you have already attempted to get that information. If you determine no single critical question is needed, or if the history shows you've already tried to get crucial missing info, indicate no follow-up needed.
+
             Return your answer in this exact JSON format:
             {{
-                "needs_followup": true,
-                "reasoning": "brief explanation of why more information is needed from the answer or why the answer is sufficient",
+                "needs_followup": true/false,
+                "reasoning": "brief explanation of why more information is needed from the answer or why the answer is sufficient, referencing the history review and critical gaps",
                 "missing_info_questions": [
                     {{"question": "specific follow-up question 1"}}
                 ]
             }}
-            
-            Only include the "missing_info_questions" array if "needs_followup" is true, and limit it to exactly 1 question. If needs_followup is true but you cannot formulate a specific question based on the answer's gaps, still return needs_followup: true but with an empty "missing_info_questions" array (though try hard to formulate one).
+
+            Only include the "missing_info_questions" array if "needs_followup" is true, and limit it to exactly 1 question. If "needs_followup" is true but you cannot formulate the *single most critical* specific question based on your evaluation, still return "needs_followup": true but with an empty "missing_info_questions" array (though try hard to formulate one if needed).
             '''.format(
                 context=context,
                 user_query=user_query,
