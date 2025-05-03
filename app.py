@@ -2277,7 +2277,7 @@ def main():
             # This might require a custom chat input component or clearing its value via state if possible.
             # For now, rely on the logic that current_user_text_input will be None on the next rerun if the chat input is empty.
             logger.info("Conversation reset triggered by user.")
-            st.experimental_rerun()
+            st.rerun()
 
         # Physician feedback section (keep as is, uses chatbot's internal chat_history)
         st.divider()
