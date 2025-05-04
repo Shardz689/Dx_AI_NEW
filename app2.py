@@ -221,16 +221,19 @@ class DocumentChatBot:
              return
 
         try:
+            # This line seems okay based on the error message you got
             self.kg_driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH, connection_timeout=5.0)
-            # Use a short timeout for the verification query
-            self.kg_driver.verify_connectivity(timeout=2.0)
+            # Corrected: Removed the 'timeout' parameter from verify_connectivity
+            # The error message "Unexpected config keys: timeout" points to this specific key being the issue
+            self.kg_driver.verify_connectivity() # <-- Removed timeout=2.0 here
             logger.info("Successfully connected to Neo4j.")
             self.kg_connection_ok = True
         except Exception as e:
+            # This is where the error you saw was caught and logged
             logger.error(f"Failed to connect to Neo4j at {NEO4J_URI}: {e}. KG features will be unavailable.")
             self.kg_driver = None
             self.kg_connection_ok = False
-
+            
     def create_vectordb(self):
         logger.info("Creating vector database...")
         pdf_files = [Path(pdf_file) for pdf_file in HARDCODED_PDF_FILES if Path(pdf_file).exists()]
