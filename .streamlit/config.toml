@@ -1,3 +1,22 @@
-[runner]
-# disables all watch-based reloads; you’ll need to manually restart on code changes
-fileWatcherType = "none"
+[server]
+# List of directories and files to ignore when watching for source file changes.
+# Streamlit's file watcher can sometimes have issues with complex libraries like torch.
+fileWatcherIgnore = [
+    # Existing ignore patterns (optional, often default anyway)
+    "**/__pycache__/**",
+    "*.py[co]",
+    ".git",
+    ".gitignore",
+    ".env", # Ignore .env file changes from triggering reruns
+    "*.ini",
+    "venv",
+    ".venv",
+    "**/venv/**", # Ignore venv folders recursively
+    "**/.*",     # Ignore dot files/folders recursively
+
+    # *** Crucial: Ignore the torch library ***
+    "torch",
+    "**/torch/**", # Ignore torch directory recursively (depending on install structure)
+    "numpy",      # Sometimes numpy can cause issues too
+    "**/numpy/**",
+]
