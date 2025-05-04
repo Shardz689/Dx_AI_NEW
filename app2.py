@@ -62,7 +62,7 @@ THRESHOLDS = {
     "disease_matching": 0.5, # Base threshold for KG to identify *a* disease
     "disease_symptom_followup_threshold": 0.8, # Below this confidence for a disease query, trigger symptom confirmation UI
     "kg_context_selection": 0.8, # Threshold for KG confidence to be included in context sent to LLM (for symptom queries)
-    "rag_context_selection": 0.7, # Threshold for RAG confidence to be included in context sent to LLM (for both symptom and non-symptom queries)
+    "rag_context_selection": 0.5, # Threshold for RAG confidence to be included in context sent to LLM (for both symptom and non-symptom queries)
     "medical_relevance": 0.6 # Threshold for medical relevance check
 }
 
