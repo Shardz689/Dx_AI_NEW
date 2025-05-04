@@ -43,10 +43,10 @@ except ImportError:
 from dotenv import load_dotenv
 load_dotenv()
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyAifk9Gntw6eYfaZkLOsd9d1-TkfOR1el0")
-NEO4J_URI = os.getenv("NEO4J_URI", "neo4j+s://1b47920f.databases.neo4j.io")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "eCqDfyhDcuGMLzbYfiqL6jsvjH3LIXr86xQGAEKmY8Y") # Ensure this is set in .env
+GEMINI_API_KEY = "AIzaSyAifk9Gntw6eYfaZkLOsd9d1-TkfOR1el0" # Your actual Gemini Key
+NEO4J_URI = "neo4j+s://1b47920f.databases.neo4j.io" # Your actual Neo4j URI
+NEO4J_USER = "neo4j" # Your actual Neo4j User
+NEO4J_PASSWORD = "eCqDfyhDcuGMLzbYfiqL6jsvjH3LIXr86xQGAEKmY8Y" # Your actual Neo4j Password# Ensure this is set in .env
 NEO4J_AUTH = (NEO4J_USER, NEO4J_PASSWORD)
 
 # Provide informative errors if required environment variables are missing
