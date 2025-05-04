@@ -3,7 +3,7 @@ from pathlib import Path
 import csv
 import os
 import re
-import torch
+import torch # Import torch for compatibility, ignore watcher errors
 import json
 import numpy as np
 from datetime import datetime
@@ -24,18 +24,20 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-# Import chain and memory components (Note: ConversationalRetrievalChain itself isn't directly used in this specific workflow logic, but its components are)
-from langchain.chains import ConversationalRetrievalChain
-from langchain.memory import ConversationBufferMemory
+# Import chain and memory components (Note: ConversationalRetrievalChain isn't directly used in this specific workflow logic, but its components are)
+# from langchain.chains import ConversationalRetrievalChain # Not directly used in the core workflow
+# from langchain.memory import ConversationBufferMemory # Not directly used in the core workflow
 
 # Import Neo4j components
 from neo4j import GraphDatabase
 
-# Ensure torch compatibility hint is still handled if needed, but often unnecessary now
+# Attempt basic torch import handling. Note: Streamlit watcher issues with torch
+# might still occur regardless of this block, requiring external configuration (.streamlit/config.toml).
 try:
     import torch
 except ImportError:
-     pass
+     pass # Torch is not strictly required if you only use CPU embeddings and don't use torch directly elsewhere
+
 
 # Configuration
 from dotenv import load_dotenv
@@ -44,8 +46,15 @@ load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBv-I8Ld-k09Lxu9Yi7HPffZHKXIqGSdHU")
 NEO4J_URI = os.getenv("NEO4J_URI", "neo4j+s://1b47920f.databases.neo4j.io")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "eCqDfyhDcuGMLzbYfiqL6jsvjH3LIXr86xQGAEKmY8Y")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "eCqDfyhDcuGMLzbYfiqL6jsvjH3LIXr86xQGAEKmY8Y") # Ensure this is set in .env
 NEO4J_AUTH = (NEO4J_USER, NEO4J_PASSWORD)
+
+# Provide informative errors if required environment variables are missing
+if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY":
+    logger.error("GEMINI_API_KEY environment variable is not set or is the placeholder value.")
+if not NEO4J_URI or not NEO4J_USER or not NEO4J_PASSWORD or NEO4J_URI == "YOUR_NEO4J_URI":
+     logger.error("NEO4J environment variables (URI, USER, PASSWORD) are not fully set or are placeholder values.")
+
 
 # Threshold settings
 THRESHOLDS = {
@@ -170,6 +179,7 @@ class DocumentChatBot:
 
         self.embedding_model: Optional[HuggingFaceEmbeddings] = None
         try:
+            # Check for CUDA availability and set device
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
             logger.info(f"Initializing SentenceTransformer embeddings on device: {device}")
             self.embedding_model = HuggingFaceEmbeddings(
@@ -178,14 +188,21 @@ class DocumentChatBot:
                 model_kwargs={'device': device},
                 encode_kwargs={'normalize_embeddings': True}
             )
-            test_embedding = self.embedding_model.embed_query("test query")
-            if test_embedding is not None and len(test_embedding) > 0:
-                 logger.info("Embedding model initialized and tested successfully.")
-            else:
-                raise ValueError("Test embedding was empty.")
+            # Test the embedding model
+            try:
+                test_embedding = self.embedding_model.embed_query("test query")
+                if test_embedding is not None and len(test_embedding) > 0:
+                     logger.info("Embedding model initialized and tested successfully.")
+                else:
+                    # Even if test returns empty, the model object exists. Log warning but don't fail init yet.
+                    logger.warning("Test embedding was empty, but embedding model object exists.")
+            except Exception as test_e:
+                 logger.warning(f"Embedding model test failed: {test_e}. Setting embedding_model to None.")
+                 self.embedding_model = None # Set to None if test fails
+
         except Exception as e:
             logger.critical(f"CRITICAL ERROR: Could not initialize embedding model: {e}")
-            self.embedding_model = None
+            self.embedding_model = None # Ensure it's None on failure
 
         self.llm: Optional[ChatGoogleGenerativeAI] = None
 
@@ -196,9 +213,17 @@ class DocumentChatBot:
 
     def _init_kg_connection(self):
         logger.info("Attempting to connect to Neo4j...")
+        # Check if credentials are set before attempting connection
+        if not NEO4J_URI or NEO4J_URI == "YOUR_NEO4J_URI" or not NEO4J_USER or not NEO4J_PASSWORD:
+             logger.error("Neo4j credentials missing or are placeholder values. Cannot connect.")
+             self.kg_driver = None
+             self.kg_connection_ok = False
+             return
+
         try:
             self.kg_driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH, connection_timeout=5.0)
-            self.kg_driver.verify_connectivity()
+            # Use a short timeout for the verification query
+            self.kg_driver.verify_connectivity(timeout=2.0)
             logger.info("Successfully connected to Neo4j.")
             self.kg_connection_ok = True
         except Exception as e:
@@ -217,6 +242,7 @@ class DocumentChatBot:
         for pdf_file in pdf_files:
             try:
                 loaders.append(PyPDFLoader(str(pdf_file)))
+                logger.debug(f"Created loader for {pdf_file}")
             except Exception as e:
                 logger.error(f"Error creating loader for {pdf_file}: {e}")
 
@@ -229,14 +255,17 @@ class DocumentChatBot:
             try:
                 loaded_pages = loader.load()
                 pages.extend(loaded_pages)
-                logger.info(f"Loaded {len(loaded_pages)} pages from {loader.file_path}.") # Use _file_path for PyPDFLoader
+                # Use loader.file_path (public attribute)
+                logger.info(f"Loaded {len(loaded_pages)} pages from {loader.file_path}.")
             except Exception as e:
-                logger.error(f"Error loading pages from PDF {loader.file_path}: {e}") # Use _file_path
+                 # Use loader.file_path
+                logger.error(f"Error loading pages from PDF {loader.file_path}: {e}")
 
         if not pages:
              logger.warning("No pages were loaded from the PDFs.")
              return None, "No pages were loaded from the PDFs."
 
+        logger.info(f"Total pages loaded: {len(pages)}")
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=100
@@ -278,23 +307,40 @@ class DocumentChatBot:
                     top_k=40,
                     convert_system_message_to_human=True
                 )
-                test_response = self.llm.invoke("Hello, are you ready?")
-                if test_response.content:
-                    logger.info("Successfully connected to Gemini Flash 1.5")
-                    llm_init_message = "Gemini Flash 1.5 initialized."
-                else:
-                   raise ValueError("LLM test response was empty.")
+                # Attempt a quick test invoke
+                try:
+                    test_response = self.llm.invoke("Hello, are you ready?")
+                    if test_response and test_response.content: # Check for None response and content
+                        logger.info("Successfully connected to Gemini Flash 1.5")
+                        llm_init_message = "Gemini Flash 1.5 initialized."
+                    else:
+                       # Even if test returns empty, the LLM object exists. Log warning but don't fail init yet.
+                       logger.warning("Initial LLM test response was empty or None.")
+                       llm_init_message = "Gemini Flash 1.5 initialized, but test response was empty." # Keep LLM object
+
+
+                except Exception as test_e:
+                     logger.warning(f"Initial Gemini test failed: {test_e}. Setting LLM to None.")
+                     self.llm = None # Set back to None if test fails
+                     llm_init_message = f"Gemini LLM test failed: {test_e}"
+
             except Exception as e:
                 logger.error(f"Failed to initialize Gemini Flash 1.5: {e}")
                 self.llm = None
                 llm_init_message = f"Failed to initialize Gemini Flash 1.5: {str(e)}"
 
         vdb_message = "Vector database initialization skipped."
+        # Only create VDB if embedding model is initialized
         if self.embedding_model is None:
              vdb_message = "Embedding model not initialized."
              self.vectordb = None
         else:
              self.vectordb, vdb_message = self.create_vectordb()
+             if self.vectordb is not None:
+                  logger.info("Vector DB successfully created/loaded.")
+             else:
+                  logger.warning(f"Vector DB creation failed: {vdb_message}")
+
 
         status_parts = []
         if self.llm is not None: status_parts.append("LLM OK")
@@ -314,25 +360,27 @@ class DocumentChatBot:
 
     def local_generate(self, prompt, max_tokens=500):
         logger.debug(f"Attempting LLM generation with prompt (first 100 chars): {prompt[:100]}...")
+        # Ensure LLM is accessible, raise informative error if not
         if self.llm is None:
-            logger.error("LLM is not initialized. Cannot generate.")
-            raise ValueError("LLM is not initialized")
+             logger.critical("LLM is not initialized. Generation failed.")
+             raise ValueError("LLM is not initialized. Cannot generate response.")
+
         try:
             response = self.llm.invoke(prompt)
             logger.debug("LLM generation successful.")
-            return response.content
+            if response and response.content:
+                 return response.content
+            else:
+                 logger.warning("LLM invoke returned empty or None response.")
+                 # Treat empty response as failure to trigger error handling downstream
+                 raise ValueError("LLM returned empty response.")
+
         except Exception as e:
-            logger.error(f"Error generating with Gemini (configured LLM): {e}")
-            # Fallback direct generation using genai library if configured LLM fails
-            try:
-                logger.warning("Attempting fallback LLM generation with genai.")
-                model = genai.GenerativeModel('gemini-1.5-flash')
-                result = model.generate_content(prompt)
-                logger.debug("Fallback LLM generation successful.")
-                return result.text
-            except Exception as inner_e:
-                logger.critical(f"CRITICAL ERROR: Error in fallback generation: {inner_e}")
-                return "Error generating response. Please try again."
+            logger.error(f"Error during Gemini LLM generation: {e}. Generation failed.")
+            # Re-raise the exception to be caught by the caller (e.g., process_user_query)
+            # which can then handle it gracefully.
+            raise ValueError(f"LLM generation failed: {e}") from e
+
 
     def is_medical_query(self, query: str) -> Tuple[bool, str]:
         logger.debug(f"Checking medical relevance for query: {query}")
@@ -342,10 +390,11 @@ class DocumentChatBot:
             logger.debug("Medical relevance check from cache.")
             return cached
 
+        # Fallback if LLM is not available
         if self.llm is None:
              logger.warning("LLM not initialized. Falling back to keyword medical relevance check.")
              medical_keywords = ["symptom", "disease", "health", "medical", "pain", "cough", "fever", "treatment", "diagnose"]
-             result = (any(keyword in query.lower() for keyword in medical_keywords), "Fallback heuristic match")
+             result = (any(keyword in query.lower() for keyword in medical_keywords), "Fallback heuristic match (LLM unavailable)")
              logger.debug(f"Medical relevance fallback result: {result}")
              return set_cached(cache_key, result)
 
@@ -372,8 +421,8 @@ class DocumentChatBot:
             else:
                 logger.warning("No JSON found in medical relevance response.")
 
-        except Exception as e:
-            logger.error(f"Error during medical relevance LLM call: {e}")
+        except ValueError as e: # Catch ValueError from local_generate if LLM fails
+             logger.error(f"Error during medical relevance LLM call: {e}")
 
         # Fallback if LLM call/parsing fails
         medical_keywords = ["symptom", "disease", "health", "medical", "pain", "cough", "fever", "treatment", "diagnose"]
@@ -394,6 +443,7 @@ class DocumentChatBot:
         query_lower = user_query.lower()
         fallback_symptoms = [s.capitalize() for s in common_symptom_keywords if s in query_lower]
 
+        # Fallback if LLM is not available
         if self.llm is None:
              logger.warning("LLM not initialized. Falling back to keyword symptom extraction.")
              result = (fallback_symptoms, 0.4)
@@ -422,11 +472,18 @@ class DocumentChatBot:
                     llm_symptoms = llm_symptoms_confident
                     logger.debug(f"LLM extracted {len(llm_symptoms)} confident symptoms.")
                 except json.JSONDecodeError:
-                    logger.warning("Could not parse symptom JSON from LLM response.")
+                    logger.warning("Could not parse symptom JSON from LLM response")
             else:
                  logger.warning("Could not find 'Extracted Symptoms: [...]: in LLM response.")
-        except Exception as e:
+        except ValueError as e: # Catch ValueError from local_generate if LLM fails
             logger.error(f"Error during symptom extraction LLM call: {e}")
+            # If LLM call fails, combine only fallback symptoms
+            combined_symptoms = list(set(fallback_symptoms))
+            final_confidence = 0.4 if combined_symptoms else 0.0 # Low confidence
+            logger.info(f"Final extracted symptoms (LLM failed): {combined_symptoms} (Confidence: {final_confidence:.4f})")
+            result = (combined_symptoms, final_confidence)
+            return set_cached(cache_key, result)
+
 
         combined_symptoms = list(set(llm_symptoms + fallback_symptoms))
         final_confidence = llm_avg_confidence if llm_symptoms else (0.4 if combined_symptoms else 0.0)
@@ -447,11 +504,15 @@ class DocumentChatBot:
             logger.debug("Symptom query detection from cache.")
             return cached
 
+        # is_symptom_related_query uses extract_symptoms internally, call it first for initial symptoms
         extracted_symptoms, symptom_confidence = self.extract_symptoms(query)
+
+        # Primary check based on confidence of symptom extraction
         if extracted_symptoms and symptom_confidence >= THRESHOLDS.get("symptom_extraction", 0.6):
             logger.debug("Query determined symptom-related based on confident extraction.")
-            return set_cached(cache_key, True)
+            return set_cached(cache_key, True) # Cache and return True
 
+        # Fallback to LLM intent analysis if LLM is available and extraction confidence is low
         if self.llm is None:
             logger.warning("LLM not initialized. Falling back to keyword symptom query detection.")
             health_keywords = ["symptom", "pain", "sick", "health", "disease", "condition", "diagnosis"]
@@ -470,15 +531,10 @@ class DocumentChatBot:
             is_symptom_query = "YES" in response
             logger.info(f"Symptom query detection result: {is_symptom_query}")
             return set_cached(cache_key, is_symptom_query)
-        except Exception as e:
+        except ValueError as e: # Catch ValueError from local_generate if LLM fails
             logger.error(f"Error during symptom query detection LLM call: {e}")
 
-        # Fallback to symptom extraction result if LLM analysis fails
-        if extracted_symptoms:
-             logger.debug("Falling back to symptom extraction result for symptom query detection.")
-             return set_cached(cache_key, True)
-
-        # Ultimate fallback to keyword matching
+        # Ultimate fallback to keyword matching if LLM call/parsing fails
         basic_health_terms = ["symptom", "pain", "sick", "fever", "headache"]
         result = any(term in query.lower() for term in basic_health_terms)
         logger.debug(f"Symptom query detection final fallback result: {result}")
@@ -498,7 +554,7 @@ class DocumentChatBot:
             "kg_remedy_confidence": 0.0,
             "kg_content_diagnosis_data_for_llm": {
                  "disease_name": "an unidentifiable condition",
-                 "symptoms_list": all_symptoms,
+                 "symptoms_list": all_symptoms, # Keep this key name for consistency with old LLM prompt format
                  "confidence": 0.0
             },
             "kg_content_other": "Medical Knowledge Graph information is unavailable.",
@@ -531,16 +587,18 @@ class DocumentChatBot:
                             logger.info(f"✔️ Treatments found: {kg_results['kg_treatments']} (Confidence: {kg_results['kg_treatment_confidence']:.4f})")
                             logger.info(f"✔️ Home Remedies found: {kg_results['kg_remedies']} (Confidence: {kg_results['kg_remedy_confidence']:.4f})")
                         else:
-                            logger.info("📚 KG Tasks: Treatments/Remedies skipped - Top disease confidence below threshold.")
+                            logger.info("📚 KG Tasks: Treatments/Remedies skipped - Top disease confidence below basic matching threshold.")
                 else:
                      logger.info("📚 KG Task: Identify Diseases skipped - No symptoms provided.")
 
+                # Prepare data for LLM phrasing, even if confidence is low
                 kg_results["kg_content_diagnosis_data_for_llm"] = {
                       "disease_name": kg_results["identified_diseases_data"][0]["Disease"] if kg_results["identified_diseases_data"] else "an unidentifiable condition",
-                      "symptoms_list": all_symptoms,
+                      "symptoms_list": all_symptoms, # Keep this key name for consistency with old LLM prompt format
                       "confidence": kg_results["top_disease_confidence"]
                 }
 
+                # Format other KG content (treatments/remedies)
                 other_parts: List[str] = []
                 if kg_results["kg_treatments"]:
                      other_parts.append("## Recommended Treatments (from KG)")
@@ -562,11 +620,11 @@ class DocumentChatBot:
             logger.error(f"⚠️ Error within KG Agent: {e}", exc_info=True)
             kg_results["kg_content_diagnosis_data_for_llm"] = {
                  "disease_name": "an unidentifiable condition",
-                 "symptoms_list": all_symptoms,
+                 "symptom_list": all_symptoms, # Corrected key name for consistency
                  "confidence": 0.0
             }
             kg_results["kg_content_other"] = f"An error occurred while querying the Medical Knowledge Graph: {str(e)}"
-            kg_results["top_disease_confidence"] = 0.0
+            kg_results["top_disease_confidence"] = 0.0 # Ensure confidence is 0 on failure
             return kg_results
 
     def _query_disease_from_symptoms_with_session(self, session, symptoms: List[str]) -> List[Dict[str, Any]]:
@@ -663,7 +721,7 @@ class DocumentChatBot:
              return [], 0.0
 
     def retrieve_rag_context(self, query: str) -> Tuple[List[str], float]:
-        logger.info("📄 RAG Retrieval Initiated")
+        logger.info(f"📄 RAG Retrieval Initiated for query: {query[:50]}")
         RAG_RELEVANCE_THRESHOLD = THRESHOLDS.get("rag_context_selection", 0.7)
         logger.debug(f"RAG retrieval threshold: {RAG_RELEVANCE_THRESHOLD}")
         cache_key = {"type": "rag_retrieval", "query": query, "threshold": RAG_RELEVANCE_THRESHOLD}
@@ -679,6 +737,12 @@ class DocumentChatBot:
         try:
             k = 10
             logger.debug(f"Performing vector search for query: {query[:50]}... (k={k})")
+            # Ensure vectordb.similarity_search_with_score exists and works as expected
+            # It should return a list of (Document, score) tuples
+            if not hasattr(self.vectordb, 'similarity_search_with_score'):
+                 logger.error("Vector database object does not have 'similarity_search_with_score' method.")
+                 return [], 0.0 # Indicate failure if the expected method is missing
+
             retrieved_docs_with_scores = self.vectordb.similarity_search_with_score(query, k=k)
             logger.debug(f"📄 RAG: Retrieved {len(retrieved_docs_with_scores)} initial documents from vector DB.")
 
@@ -686,6 +750,13 @@ class DocumentChatBot:
             relevant_scores: List[float] = []
 
             for doc, score in retrieved_docs_with_scores:
+                # Ensure score is a number
+                if not isinstance(score, (int, float)):
+                     logger.warning(f"Received non-numeric score ({score}) from vector DB. Skipping chunk.")
+                     continue # Skip this chunk if score is not numeric
+
+                # Cosine distance typically ranges from 0 (identical) to 2 (opposite) for non-normalized,
+                # or 0 to 1 for normalized vectors. similarity = 1 - distance.
                 similarity_score = max(0.0, 1 - score)
                 logger.debug(f"📄 RAG: Chunk (Sim: {similarity_score:.4f}, Dist: {score:.4f}) from {doc.metadata.get('source', 'N/A')} Page {doc.metadata.get('page', 'N/A')}")
                 if similarity_score >= RAG_RELEVANCE_THRESHOLD:
@@ -766,12 +837,14 @@ class DocumentChatBot:
                 kg_data = selected_context.get("kg", {})
                 kg_info_str = "Knowledge Graph Information:\n"
                 diag_data = kg_data.get("kg_content_diagnosis_data_for_llm")
-                if diag_data and diag_data.get("disease_name"):
+                # Use disease_matching threshold for basic phrasing inclusion, kg_context_selection for 'Identified'
+                if diag_data and diag_data.get("confidence", 0) > THRESHOLDS.get("disease_matching", 0.5):
+                     disease_name = diag_data.get("disease_name", "an unidentifiable condition")
                      confidence = diag_data.get("confidence", 0)
                      if confidence > THRESHOLDS.get("kg_context_selection", 0.8):
-                          kg_info_str += f"- Identified Condition: {diag_data['disease_name']} (KG Confidence: {confidence:.2f})\n"
+                          kg_info_str += f"- Identified Condition: {disease_name} (KG Confidence: {confidence:.2f})\n"
                      else:
-                          kg_info_str += f"- Potential Condition: {diag_data['disease_name']} (KG Confidence: {confidence:.2f})\n"
+                          kg_info_str += f"- Potential Condition: {disease_name} (KG Confidence: {confidence:.2f})\n"
                 other_kg_content = kg_data.get("kg_content_other")
                 if other_kg_content and other_kg_content.strip() and "Medical Knowledge Graph did not find" not in other_kg_content:
                       kg_info_str += "\n" + other_kg_content
@@ -786,12 +859,12 @@ class DocumentChatBot:
                 else:
                     context_info_for_prompt += rag_info_str
                     context_type_description = "Based on the following relevant passages from medical documents, answer the user query. Only use the information provided here. Do not refer to a knowledge graph."
-            elif "kg" in selected_context: # Only KG was selected
+            elif "kg" in selected_context:
                  context_type_description = "Based on the following information from a medical knowledge graph, answer the user query. Only use the information provided here. Do not refer to external documents."
 
-        if not context_info_for_prompt.strip() and selected_context is not None: # Check if context was passed but formatted into empty string
+        # Fallback if context was technically selected but resulted in empty formatted info string
+        if not context_info_for_prompt.strip() and selected_context is not None:
              logger.warning("Selected context was passed but formatted into an empty string for the prompt.")
-             # Fallback to general knowledge prompt even if context was technically selected
              context_info_for_prompt = "No specific relevant information was effectively utilized from external knowledge sources."
              context_type_description = "Relying only on your vast general knowledge, answer the user query."
 
@@ -810,7 +883,7 @@ Answer:
             initial_answer = self.local_generate(prompt, max_tokens=1000)
             logger.info("🧠 Initial Answer Generated successfully.")
             return initial_answer
-        except Exception as e:
+        except ValueError as e: # Catch ValueError from local_generate if LLM fails
             logger.error(f"⚠️ Error during initial answer generation: {e}", exc_info=True)
             return "Sorry, I encountered an error while trying to generate an initial answer."
 
@@ -837,6 +910,7 @@ Answer:
                 context_for_prompt += kg_info_str + "\n"
             if "rag" in selected_context:
                 rag_chunks = selected_context.get("rag", [])
+                # Limit RAG chunks for reflection prompt brevity
                 rag_info_str = "Relevant Passages:\n" + "\n---\n".join(rag_chunks[:3]) + "\n---"
                 context_for_prompt += rag_info_str
 
@@ -846,6 +920,7 @@ Answer:
              logger.debug("Reflection from cache.")
              return cached
 
+        # Fallback if LLM is not available
         if self.llm is None:
              logger.warning("LLM not initialized. Cannot perform reflection.")
              return ('incomplete', 'Reflection LLM is unavailable.')
@@ -884,18 +959,20 @@ Answer:
                 logger.warning("⚠️ Reflection: No JSON object found in LLM response.")
             result = (evaluation_result, missing_info_description)
             return set_cached(cache_key, result)
-        except Exception as e:
+        except ValueError as e: # Catch ValueError from local_generate if LLM fails
             logger.error(f"⚠️ Error during reflection process: {e}", exc_info=True)
             return ('incomplete', f"An error occurred during reflection: {str(e)}")
 
     def get_supplementary_answer(self, query: str, missing_info_description: str) -> str:
         logger.info(f"🌐 External Agent (Gap Filling) Initiated. Missing Info: {missing_info_description[:100]}...")
+        # Cache key based on the hash of the combination
         cache_key = {"type": "supplementary_answer", "missing_info_hash": abs(hash(missing_info_description)), "query_context_hash": abs(hash(query))}
         cached = get_cached(cache_key)
         if cached:
              logger.debug("Supplementary answer from cache.")
              return cached
 
+        # Fallback if LLM is not available
         if self.llm is None:
              logger.warning("LLM not initialized. Cannot perform supplementary generation.")
              return "Supplementary information could not be generated because the AI model is unavailable."
@@ -912,18 +989,20 @@ Answer:
             supplementary_answer = self.local_generate(supplementary_prompt, max_tokens=750)
             logger.info("🌐 Supplementary Answer Generated successfully.")
             return set_cached(cache_key, supplementary_answer)
-        except Exception as e:
+        except ValueError as e: # Catch ValueError from local_generate if LLM fails
             logger.error(f"⚠️ Error during supplementary answer generation: {e}", exc_info=True)
             return f"Sorry, an error occurred while trying to find additional information about: '{missing_info_description[:50]}...'"
 
     def collate_answers(self, initial_answer: str, supplementary_answer: str) -> str:
         logger.info("✨ Final Answer Collation Initiated")
+        # Cache key based on hash of inputs
         cache_key = {"type": "final_collation", "initial_answer_hash": abs(hash(initial_answer)), "supplementary_answer_hash": abs(hash(supplementary_answer))}
         cached = get_cached(cache_key)
         if cached:
              logger.debug("Final collation from cache.")
              return cached
 
+        # Fallback if LLM is not available
         if self.llm is None:
              logger.warning("LLM not initialized. Cannot perform final answer collation.")
              return f"{initial_answer}\n\n-- Additional Information --\n{supplementary_answer}"
@@ -942,7 +1021,7 @@ Answer:
             final_answer = self.local_generate(collation_prompt, max_tokens=1200)
             logger.info("✨ Final Answer Collated successfully.")
             return set_cached(cache_key, final_answer)
-        except Exception as e:
+        except ValueError as e: # Catch ValueError from local_generate if LLM fails
             logger.error(f"⚠️ Error during final answer collation: {e}", exc_info=True)
             return f"Sorry, an error occurred while finalizing the answer. Parts:\n\nInitial: {initial_answer}\n\nSupplementary: {supplementary_answer}"
 
@@ -959,8 +1038,8 @@ Answer:
                            confirmed_symptoms: Optional[List[str]] = None,
                            original_query_if_followup: Optional[str] = None
                            ) -> Tuple[str, str, Optional[Dict[str, Any]]]:
-        logger.info(f"--- Processing User Query: '{user_query}' ---")
-        logger.info(f"User Type: {user_type}, Confirmed Symptoms Received: {len(confirmed_symptoms) if confirmed_symptoms is not None else 'None'}")
+        logger.info("--- Processing User Query: '%s' ---", user_query[:100])
+        logger.info("User Type: %s, Confirmed Symptoms Received: %s", user_type, len(confirmed_symptoms) if confirmed_symptoms is not None else 'None')
 
         processed_query = user_query # Query text used for retrieval and generation
         current_symptoms_for_retrieval: List[str] = [] # Symptoms used for KG
@@ -969,14 +1048,17 @@ Answer:
         # --- Handle Symptom Confirmation Rerun Logic ---
         if confirmed_symptoms is not None:
              logger.info("--- Step 6 (Rerun): Handling Symptom Confirmation Rerun ---")
-             processed_query = original_query_if_followup # Use original query for processing
+             # Use the original query text that triggered the UI
+             processed_query = original_query_if_followup
+             if not processed_query: # Sanity check
+                  logger.error("original_query_if_followup is None during symptom rerun.")
+                  return "An error occurred during symptom confirmation processing.", "display_final_answer", None
+
              is_symptom_query = True # Assume symptom path for UI follow-up
-             current_symptoms_for_retrieval = confirmed_symptoms # Use the confirmed symptoms as the list for KG
-             logger.info(f"Reprocessing '{processed_query[:50]}...' with confirmed symptoms: {current_symptoms_for_retrieval}")
+             # Use the confirmed symptoms as the list for KG in this rerun
+             current_symptoms_for_retrieval = confirmed_symptoms
+             logger.info("Reprocessing '%s...' with confirmed symptoms: %s", processed_query[:50], current_symptoms_for_retrieval)
              medical_check_ok = True # Assume valid as we were in a medical flow
-             # Note: If you needed to combine original extracted symptoms with confirmed_symptoms,
-             # you'd store original_extracted_symptoms in session state during the initial run
-             # and combine them here. Using confirmed_symptoms directly for simplicity now.
 
         else: # Standard initial query processing
              logger.info("--- Initial Query Processing ---")
@@ -984,7 +1066,7 @@ Answer:
              logger.info("--- Step 2: Guardrail Check ---")
              is_medical, medical_reason = self.is_medical_query(processed_query)
              if not is_medical:
-                 logger.warning(f"Query flagged as non-medical: {medical_reason}. Workflow terminates.")
+                 logger.warning("Query flagged as non-medical: %s. Workflow terminates.", medical_reason)
                  response = f"I can only answer medical-related questions. Please rephrase your query. ({medical_reason})"
                  return response, "display_final_answer", None
              logger.info("Query passed medical guardrail.")
@@ -998,8 +1080,8 @@ Answer:
                   extracted_symptoms, symptom_extraction_confidence = self.extract_symptoms(processed_query)
                   current_symptoms_for_retrieval = extracted_symptoms
                   is_symptom_query = self.is_symptom_related_query(processed_query)
-                  logger.info(f"Initial Symptom Extraction: {current_symptoms_for_retrieval} (Confidence: {symptom_extraction_confidence:.4f})")
-                  logger.info(f"Is Symptom Query: {is_symptom_query}")
+                  logger.info("Initial Symptom Extraction: %s (Confidence: %.4f)", current_symptoms_for_retrieval, symptom_extraction_confidence)
+                  logger.info("Is Symptom Query: %s", is_symptom_query)
                   # Note: If combining original + confirmed later, store extracted_symptoms here in state
 
              # --- Step 4: Context Retrieval (KG & RAG) ---
@@ -1015,12 +1097,12 @@ Answer:
                   # Pass the *current* list of symptoms (initial extracted OR confirmed UI list)
                   kg_results = self.knowledge_graph_agent(processed_query, current_symptoms_for_retrieval)
                   s_kg = kg_results.get("top_disease_confidence", 0.0)
-                  logger.info(f"KG Pipeline finished. S_KG: {s_kg:.4f}")
+                  logger.info("KG Pipeline finished. S_KG: %.4f", s_kg)
 
              # RAG Retrieval (for all medical queries)
              logger.info("Triggering RAG Pipeline.")
              rag_chunks, s_rag = self.retrieve_rag_context(processed_query)
-             logger.info(f"RAG Pipeline finished. S_RAG: {s_rag:.4f}")
+             logger.info("RAG Pipeline finished. S_RAG: %.4f", s_rag)
 
              # --- Step 5: Symptom Confirmation UI Decision Point (only after initial symptom retrieval) ---
              # Check if this is the *initial* query processing (not a rerun after UI) AND it's a symptom query
@@ -1031,7 +1113,7 @@ Answer:
 
                   # Condition: Query is symptom-related AND KG found diseases AND KG confidence < threshold
                   if kg_found_diseases and s_kg < ui_trigger_threshold:
-                       logger.info(f"KG confidence ({s_kg:.4f}) below UI trigger threshold ({ui_trigger_threshold:.4f}) and diseases found ({len(kg_results['identified_diseases_data'])}). Preparing symptom UI.")
+                       logger.info(f"KG confidence (%.4f) below UI trigger threshold (%.4f) and diseases found (%d). Preparing symptom UI.", s_kg, ui_trigger_threshold, len(kg_results['identified_diseases_data']))
                        symptom_options_for_ui = {}
                        if kg_results.get("identified_diseases_data"):
                             top_diseases_data = kg_results["identified_diseases_data"][:3]
@@ -1056,7 +1138,7 @@ Answer:
                                  ui_payload = {
                                       "symptom_options": filtered_symptom_options_for_ui,
                                       "original_query": processed_query # Store the query that triggered this UI
-                                 }
+                                  }
                                  logger.info("Returning UI action: show_symptom_ui")
                                  return prompt_text, "show_symptom_ui", ui_payload
 
@@ -1104,6 +1186,7 @@ Answer:
                   logger.info("--- Workflow Finished (Incomplete path, collated) ---")
                   return final_answer, "display_final_answer", None
         else:
+             # This case should ideally not be reachable due to the initial medical_check_ok guard
              logger.error("Reached unexpected state: medical_check_ok was False but processing continued.")
              return "An internal error occurred during processing.", "display_final_answer", None
 
@@ -1112,11 +1195,13 @@ Answer:
 def display_symptom_checklist(symptom_options: Dict[str, List[str]], original_query: str):
     logger.debug("Rendering symptom checklist UI.")
     st.subheader("Confirm Your Symptoms")
-    st.info(f"Based on your query: '{original_query}' and initial analysis, please confirm the symptoms you are experiencing from the list below to help narrow down possibilities.")
+    st.info(f"Based on your query: '{original_query}' and initial analysis, please confirm any additional symptoms you are experiencing from the list below:")
 
     form_key = f"symptom_confirmation_form_{abs(hash(original_query))}_{st.session_state.get('form_timestamp', datetime.now().timestamp())}"
     local_confirmed_symptoms_key = f'{form_key}_confirmed_symptoms_local'
 
+    # Initialize the local set if it's not in session state for this form key
+    # This ensures symptoms selected on one form don't carry over to another if keys change unexpectedly
     if local_confirmed_symptoms_key not in st.session_state:
         logger.debug(f"Initializing local symptom set for form {form_key}")
         st.session_state[local_confirmed_symptoms_key] = set()
@@ -1125,56 +1210,69 @@ def display_symptom_checklist(symptom_options: Dict[str, List[str]], original_qu
 
 
     all_unique_symptoms = set()
-    for disease_label, symptoms_list in symptom_options.items():
+    # Iterate through diseases/symptom lists provided for the UI
+    for symptoms_list in symptom_options.values():
         if isinstance(symptoms_list, list):
             for symptom in symptoms_list:
                  if isinstance(symptom, str):
-                      all_unique_symptoms.add(symptom.strip())
+                      all_unique_symptoms.add(symptom.strip()) # Add stripped symptom, keep original case for display initially
 
     sorted_all_symptoms = sorted(list(all_unique_symptoms))
-    logger.debug(f"Total unique symptoms to suggest: {len(sorted_all_symptoms)}")
+    logger.debug(f"Total unique symptoms suggested in UI: {len(sorted_all_symptoms)}")
 
     with st.form(form_key):
         st.markdown("Please check all symptoms that apply to you from the list below:")
         if not sorted_all_symptoms:
-            st.info("No specific symptoms were found for potential conditions. Use the box below to add symptoms.")
+            st.info("No specific additional symptoms were found for potential conditions to suggest. Use the box below to add symptoms you are experiencing.")
         else:
             cols = st.columns(4)
             for i, symptom in enumerate(sorted_all_symptoms):
                 col = cols[i % 4]
                 checkbox_key = f"{form_key}_checkbox_{symptom}"
-                initial_state = symptom.strip().lower() in st.session_state[local_confirmed_symptoms_key]
-                # Note: Streamlit's checkbox `value` is the default, it reads the current state.
-                # We update the session state in the if/else block below based on the *return* of checkbox.
+                # Check the initial state from the local set
+                initial_state = symptom.strip().lower() in st.session_state.get(local_confirmed_symptoms_key, set())
                 # Checkbox returns True if checked, False if unchecked.
                 is_checked = col.checkbox(symptom, key=checkbox_key, value=initial_state)
 
+                # Update the local set based on the current state of the checkbox
+                symptom_lower = symptom.strip().lower()
                 if is_checked:
-                     st.session_state[local_confirmed_symptoms_key].add(symptom.strip().lower())
+                     st.session_state[local_confirmed_symptoms_key].add(symptom_lower)
                 else:
                      # Only discard if it was previously in the set and is now unchecked
-                     if symptom.strip().lower() in st.session_state[local_confirmed_symptoms_key]:
-                         st.session_state[local_confirmed_symptoms_key].discard(symptom.strip().lower())
+                     if symptom_lower in st.session_state.get(local_confirmed_symptoms_key, set()):
+                         st.session_state[local_confirmed_symptoms_key].discard(symptom_lower)
 
 
         st.markdown("**Other Symptoms (if any):**")
-        other_symptoms_text = st.text_input("Enter additional symptoms here (comma-separated)", key=f"{form_key}_other_symptoms_input")
+        # Use a unique key for the text input as well
+        other_symptoms_text_key = f"{form_key}_other_symptoms_input"
+        other_symptoms_text = st.text_input("Enter additional symptoms here (comma-separated)", key=other_symptoms_text_key)
         if other_symptoms_text:
              other_symptoms_list = [s.strip().lower() for s in other_symptoms_text.split(',') if s.strip()]
              if other_symptoms_list:
                  logger.debug(f"Adding other symptoms from input: {other_symptoms_list}")
+                 # Add these to the local set as well
                  st.session_state[local_confirmed_symptoms_key].update(other_symptoms_list)
 
         submit_button = st.form_submit_button("Confirm and Continue")
         if submit_button:
-            logger.info(f"Symptom confirmation form submitted. Final confirmed symptoms: {st.session_state[local_confirmed_symptoms_key]}")
+            logger.info(f"Symptom confirmation form submitted for query: '{original_query[:50]}...'. Final confirmed symptoms count: {len(st.session_state[local_confirmed_symptoms_key])}")
             # Store the final confirmed symptoms in a session state variable the main loop looks for
+            # Ensure we are getting the list from the *local* set state variable
             st.session_state.confirmed_symptoms_from_ui = sorted(list(st.session_state[local_confirmed_symptoms_key]))
+            logger.debug(f"Set st.session_state.confirmed_symptoms_from_ui.")
+
             # Reset the UI state to 'input' so the chat input appears on the next rerun
             st.session_state.ui_state = {"step": "input", "payload": None}
+            logger.debug("Set ui_state back to 'input' after form submission.")
+
             # Set a new timestamp for the next potential form display
             st.session_state.form_timestamp = datetime.now().timestamp()
+            logger.debug(f"Reset form_timestamp.")
+
             # The main loop will detect confirmed_symptoms_from_ui and trigger processing
+            # No need to set processing_input_payload here; main() does that based on detecting confirmed_symptoms_from_ui
 
 
 # --- Main Streamlit App Function ---
@@ -1191,7 +1289,6 @@ def main():
         logger.error(f"Error setting page config: {e}")
         st.set_page_config(page_title="DxAI-Agent", layout="wide")
         logger.warning("Using fallback page config.")
-
 
     try:
         # Assumes image_path is defined globally or accessible
@@ -1215,8 +1312,9 @@ def main():
         # Initialization happens implicitly the first time we check init_status
 
     # Store init status separately
+    # Perform initialization check/run only once per session unless reset
     if 'init_status' not in st.session_state:
-         logger.info("Checking chatbot initialization status.")
+         logger.info("Checking/Performing chatbot initialization.")
          with st.spinner("Initializing chat assistant..."):
               success, init_message = st.session_state.chatbot.initialize_qa_chain()
               st.session_state.init_status = (success, init_message)
@@ -1224,20 +1322,33 @@ def main():
 
 
     # --- UI State Variables ---
-    # Use a single state variable to control what the main input/action area shows
+    # Controls what the main input/action area shows: "input" or "confirm_symptoms"
     if 'ui_state' not in st.session_state:
         logger.info("Initializing ui_state.")
-        st.session_state.ui_state = {"step": "input", "payload": None} # step: "input", "confirm_symptoms"
+        st.session_state.ui_state = {"step": "input", "payload": None}
 
     # Messages for display
     if 'messages' not in st.session_state:
         logger.info("Initializing messages state.")
         st.session_state.messages = [] # List of (content, is_user) tuples for UI display
 
-    # Variable to hold the user query or confirmed symptoms that needs processing
+    # Variable to hold the input data that needs processing by process_user_query
+    # Set by user input or form submission. Cleared before calling process_user_query.
     if 'processing_input_payload' not in st.session_state:
          logger.info("Initializing processing_input_payload state.")
          st.session_state.processing_input_payload = None # Dict like {"query": ..., "confirmed_symptoms": ..., "original_query_context": ...}
+
+    # Variable to store the symptoms confirmed by the UI form, detected by the main loop
+    # Set by display_symptom_checklist on form submit. Cleared by the main loop after detection.
+    if 'confirmed_symptoms_from_ui' not in st.session_state:
+         logger.info("Initializing confirmed_symptoms_from_ui state.")
+         st.session_state.confirmed_symptoms_from_ui = None
+
+    # Variable to store the original query text that triggered the symptom UI, needed for rerun
+    # Set by main() when process_user_query returns "show_symptom_ui". Cleared after the rerun processing completes.
+    if 'original_query_for_symptom_rerun' not in st.session_state:
+         logger.info("Initializing original_query_for_symptom_rerun state.")
+         st.session_state.original_query_for_symptom_rerun = None
 
     # Add a timestamp for the symptom confirmation form key to ensure uniqueness across reruns
     if 'form_timestamp' not in st.session_state:
@@ -1258,9 +1369,12 @@ def main():
     if not init_success:
          st.sidebar.error(f"Initialization Failed: {init_msg}")
          logger.error(f"Initialization failed. Message: {init_msg}")
+         # If initialization failed, disable interaction
+         is_interaction_enabled = False
     else:
          st.sidebar.success(f"Initialization Status: {init_msg}")
          logger.info("Chatbot initialized successfully.")
+         is_interaction_enabled = True
 
 
     tab1, tab2 = st.tabs(["Chat", "About"])
@@ -1274,21 +1388,28 @@ def main():
             "I have chest pain and shortness of breath. What could i do?"
         ]
 
-        examples_disabled = not init_success or st.session_state.ui_state["step"] != "input"
+        # Examples disabled if init failed OR if UI is not in the main 'input' state (e.g., showing symptom form)
+        examples_disabled = not is_interaction_enabled or st.session_state.ui_state["step"] != "input"
         cols = st.columns(len(examples))
         for i, col in enumerate(cols):
             if col.button(examples[i], key=f"example_{i}", disabled=examples_disabled):
-                logger.info(f"Example '{examples[i]}' clicked. Triggering processing.")
-                # On example click, reset UI state and set processing_input_payload
-                st.session_state.messages = [] # Clear previous conversation for example
-                st.session_state.ui_state = {"step": "input", "payload": None} # Reset UI state
-                st.session_state.chatbot.reset_conversation() # Reset backend state
+                logger.info(f"Example '{examples[i][:50]}...' clicked. Triggering processing.")
+                # Reset conversation history for a new example thread
+                st.session_state.messages = []
+                # Ensure UI state is back to input
+                st.session_state.ui_state = {"step": "input", "payload": None}
+                # Reset backend state
+                st.session_state.chatbot.reset_conversation()
+                # Reset UI form/symptom state variables
                 st.session_state.form_timestamp = datetime.now().timestamp() # New timestamp for any potential forms
-                if 'confirmed_symptoms_from_ui' in st.session_state: del st.session_state.confirmed_symptoms_from_ui # Ensure cleared
+                if 'confirmed_symptoms_from_ui' in st.session_state: del st.session_state.confirmed_symptoms_from_ui
+                if 'original_query_for_symptom_rerun' in st.session_state: del st.session_state.original_query_for_symptom_rerun
 
+                # Set the input to be processed in the next rerun
                 st.session_state.processing_input_payload = {
                     "query": examples[i], "confirmed_symptoms": None, "original_query_context": None
                 }
+                logger.debug("Set processing_input_payload for example click.")
                 st.rerun()
 
         # --- Chat Messages Display ---
@@ -1299,10 +1420,13 @@ def main():
                 with st.chat_message("assistant"):
                     st.write(msg_content)
                     # Add feedback buttons only to final answers (when input is enabled again)
+                    # A message is considered a final answer display if it's the last message AND the UI is back to the 'input' state.
                     is_final_answer_display = (i == len(st.session_state.messages) - 1) and (st.session_state.ui_state["step"] == "input")
+
                     if is_final_answer_display:
                         col = st.container()
                         with col:
+                            # Ensure unique keys for feedback buttons
                             feedback_key_up = f"thumbs_up_{i}_{abs(hash(msg_content))}"
                             feedback_key_down = f"thumbs_down_{i}_{abs(hash(msg_content))}"
                             b1, b2 = st.columns([0.05, 0.95])
@@ -1310,11 +1434,13 @@ def main():
                                 if st.button("👍", key=feedback_key_up):
                                      # Find the preceding user message for context
                                      user_msg_content = next((st.session_state.messages[j][0] for j in range(i - 1, -1, -1) if st.session_state.messages[j][1] is True), "")
+                                     logger.info(f"Thumbs Up feedback for user query: '{user_msg_content[:50]}...'")
                                      vote_message(user_msg_content, msg_content, "thumbs_up", user_type)
                                      st.toast("Feedback recorded: Thumbs Up!")
                             with b2:
                                 if st.button("👎", key=feedback_key_down):
                                     user_msg_content = next((st.session_state.messages[j][0] for j in range(i - 1, -1, -1) if st.session_state.messages[j][1] is True), "")
+                                    logger.info(f"Thumbs Down feedback for user query: '{user_msg_content[:50]}...'")
                                     vote_message(user_msg_content, msg_content, "thumbs_down", user_type)
                                     st.toast("Feedback recorded: Thumbs Down!")
 
@@ -1322,45 +1448,77 @@ def main():
         st.write("  \n" * 5) # Add space at the end of the tab
 
         with input_area_container:
-            if not init_success:
+            # Disable input area completely if initialization failed
+            if not is_interaction_enabled:
                  st.error("Chat assistant failed to initialize. Please check the logs and configuration.")
             elif st.session_state.ui_state["step"] == "confirm_symptoms":
                 logger.debug("UI state is 'confirm_symptoms', displaying checklist.")
-                ui_payload = st.session_state.ui_state.get("payload", {})
+                # Ensure payload is a dictionary before accessing its contents
+                ui_payload = st.session_state.ui_state.get("payload")
+                if ui_payload is None:
+                     logger.error("ui_state is 'confirm_symptoms' but payload is None! Resetting UI state.")
+                     st.session_state.ui_state = {"step": "input", "payload": None}
+                     st.error("An error occurred displaying the symptom checklist.")
+                     st.rerun() # Trigger rerun to fix state
+                     return # Stop processing this rerun
+
                 display_symptom_checklist(
                      ui_payload.get("symptom_options", {}),
-                     ui_payload.get("original_query", "")
+                     ui_payload.get("original_query", "") # Provide a default empty string just in case
                 )
+                # Chat input is disabled while symptom form is active
                 st.chat_input("Confirm symptoms above...", disabled=True, key="disabled_chat_input")
 
             elif st.session_state.ui_state["step"] == "input":
                 logger.debug("UI state is 'input', displaying chat input.")
-                user_query = st.chat_input("Ask your medical question...", disabled=not init_success, key="main_chat_input")
+                # Chat input is enabled only if initialization was successful
+                user_query = st.chat_input("Ask your medical question...", disabled=not is_interaction_enabled, key="main_chat_input")
                 if user_query:
                     logger.info(f"Detected new chat input: '{user_query[:50]}...'. Triggering processing.")
+                    # Add user message to state immediately for display
                     st.session_state.messages.append((user_query, True))
                     # Reset backend state for a brand new conversation thread starting with this query
                     st.session_state.chatbot.reset_conversation()
-                    st.session_state.form_timestamp = datetime.now().timestamp() # New timestamp for any potential forms
-                    if 'confirmed_symptoms_from_ui' in st.session_state: del st.session_state.confirmed_symptoms_from_ui # Ensure cleared
+                    # Reset UI form/symptom state variables for a new thread
+                    st.session_state.form_timestamp = datetime.now().timestamp()
+                    if 'confirmed_symptoms_from_ui' in st.session_state: del st.session_state.confirmed_symptoms_from_ui
+                    if 'original_query_for_symptom_rerun' in st.session_state: del st.session_state.original_query_for_symptom_rerun
 
+                    # Set the input to be processed in the next rerun
                     st.session_state.processing_input_payload = {
                         "query": user_query, "confirmed_symptoms": None, "original_query_context": None
                     }
-                    st.rerun()
+                    logger.debug("Set processing_input_payload for new chat input.")
+                    st.rerun() # Trigger rerun to process the input
 
         # --- Check for Symptom Form Submission and Trigger Processing ---
-        # This runs after the symptom form (if active) has processed its input in the current rerun.
-        # The display_symptom_checklist function sets st.session_state.confirmed_symptoms_from_ui and updates ui_state on submit.
+        # This block runs *after* the symptom form (if active) might have been submitted in this rerun.
+        # The display_symptom_checklist function sets st.session_state.confirmed_symptoms_from_ui
+        # and updates ui_state on submit.
         if 'confirmed_symptoms_from_ui' in st.session_state and st.session_state.confirmed_symptoms_from_ui is not None:
              logger.info("Detected symptom confirmation form submission via state. Preparing processing payload.")
              confirmed_symps_to_pass = st.session_state.confirmed_symptoms_from_ui
-             # original_query is stored in the ui_state payload *before* the form was displayed
-             original_query_to_pass = st.session_state.ui_state.get("payload", {}).get("original_query", "")
+
+             # --- NEW: Retrieve original query from the dedicated state variable ---
+             # This variable was set when process_user_query returned "show_symptom_ui"
+             original_query_to_pass = st.session_state.get('original_query_for_symptom_rerun')
+             if original_query_to_pass is None:
+                  logger.error("confirmed_symptoms_from_ui set, but original_query_for_symptom_rerun is None! Cannot re-process.")
+                  # Clean up state and return an error message
+                  del st.session_state.confirmed_symptoms_from_ui
+                  if 'original_query_for_symptom_rerun' in st.session_state: del st.session_state.original_query_for_symptom_rerun
+                  st.session_state.ui_state = {"step": "input", "payload": None}
+                  st.session_state.messages.append(("Sorry, an internal error occurred during symptom confirmation.", False))
+                  st.rerun() # Trigger rerun to display error and clear state
+                  return # Stop processing this rerun
+
 
              # Clear the temporary state variable used by the form submission
              del st.session_state.confirmed_symptoms_from_ui
              logger.debug("Cleared confirmed_symptoms_from_ui state.")
+
+             # Note: We DO NOT clear original_query_for_symptom_rerun here yet.
+             # It will be cleared after the rerun process is finished (in the processing_input_payload block).
 
              # Set the input into processing_input_payload to trigger the backend call
              st.session_state.processing_input_payload = {
@@ -1376,9 +1534,7 @@ def main():
         if st.session_state.processing_input_payload is not None:
             logger.info("Detected processing_input_payload. Calling chatbot.process_user_query.")
             input_data = st.session_state.processing_input_payload
-            # Clear the processing flag immediately to avoid infinite loops on subsequent reruns
-            # if process_user_query itself causes a rerun (which it shouldn't explicitly unless needed for UI change).
-            # The UI state update and subsequent rerun is how the flow is managed.
+            # Clear the processing flag immediately
             st.session_state.processing_input_payload = None
             logger.debug("Cleared processing_input_payload state.")
 
@@ -1395,46 +1551,66 @@ def main():
                           original_query_if_followup=original_query_context
                      )
 
-                     # --- Update UI state based on the action flag returned ---
-                     logger.info(f"process_user_query returned ui_action: {ui_action}")
+                     logger.info("process_user_query returned ui_action: %s", ui_action)
 
                      if ui_action == "display_final_answer":
-                          logger.info("UI Action: display_final_answer.")
+                          logger.info("UI Action: display_final_answer. Adding message.")
                           st.session_state.messages.append((response_text, False))
                           # Reset UI state back to input, clearing symptom UI if it was active
                           st.session_state.ui_state = {"step": "input", "payload": None}
                           logger.debug("UI state set to 'input'.")
+                          # --- NEW: Clear original_query_for_symptom_rerun if this rerun came from symptom UI ---
+                          # Check if the input payload that triggered *this* process_user_query call had confirmed_symptoms
+                          if input_data.get("confirmed_symptoms") is not None:
+                              st.session_state.original_query_for_symptom_rerun = None
+                              logger.debug("Cleared original_query_for_symptom_rerun after symptom rerun finished.")
+
 
                      elif ui_action == "show_symptom_ui":
-                          logger.info("UI Action: show_symptom_ui.")
+                          logger.info("UI Action: show_symptom_ui. Adding prompt message.")
                           st.session_state.messages.append((response_text, False)) # Add the prompt message
-                          # Update UI state to show the symptom checklist next rerun
                           st.session_state.ui_state = {"step": "confirm_symptoms", "payload": ui_payload}
-                          st.session_state.form_timestamp = datetime.now().timestamp() # New timestamp for form key
+                          st.session_state.form_timestamp = datetime.now().timestamp()
                           logger.debug("UI state set to 'confirm_symptoms'.")
+                          # --- NEW: Store original query for the symptom rerun ---
+                          st.session_state.original_query_for_symptom_rerun = ui_payload.get("original_query")
+                          logger.debug(f"Stored original_query_for_symptom_rerun: {st.session_state.original_query_for_symptom_rerun}")
 
 
                      elif ui_action == "none":
                           logger.info("UI Action: none. No message added.")
-                          pass # No response text to add, state change might have happened internally
+                          pass
 
                      else:
-                          logger.error(f"Unknown ui_action returned: {ui_action}. Defaulting to input state.")
-                          st.session_state.messages.append((f"An internal error occurred (Unknown UI action: {ui_action}).", False))
+                          logger.error("Unknown ui_action returned: %s. Defaulting to input state.", ui_action)
+                          st.session_state.messages.append((f"An internal error occurred (Unknown UI action).", False))
                           st.session_state.ui_state = {"step": "input", "payload": None}
 
-                 except Exception as e:
-                     logger.error(f"Error during chatbot process_user_query execution: {e}", exc_info=True)
-                     st.session_state.messages.append((f"Sorry, an error occurred while processing your request: {e}", False))
+                 except ValueError as e: # Catch ValueErrors raised by local_generate and its callers
+                     logger.error(f"LLM/Processing Error during chatbot execution: {e}", exc_info=True)
+                     st.session_state.messages.append((f"Sorry, an AI processing error occurred: {e}", False))
                      # Reset UI state to input on error
                      st.session_state.ui_state = {"step": "input", "payload": None}
+                     # Also clear symptom rerun state if it was active
+                     if input_data.get("confirmed_symptoms") is not None:
+                          st.session_state.original_query_for_symptom_rerun = None
+                          logger.debug("Cleared original_query_for_symptom_rerun after error.")
 
-            # Force a rerun to update the UI based on state/messages
+
+                 except Exception as e: # Catch any other unexpected errors
+                     logger.error(f"Unexpected Error during chatbot process_user_query execution: {e}", exc_info=True)
+                     st.session_state.messages.append((f"Sorry, an unexpected error occurred: {e}", False))
+                     # Reset UI state to input on error
+                     st.session_state.ui_state = {"step": "input", "payload": None}
+                     # Also clear symptom rerun state if it was active
+                     if input_data.get("confirmed_symptoms") is not None:
+                          st.session_state.original_query_for_symptom_rerun = None
+                          logger.debug("Cleared original_query_for_symptom_rerun after error.")
+
+
             logger.debug("Triggering rerun after processing_input_payload.")
             st.rerun()
 
-
-        # --- Reset Conversation Button ---
         st.divider()
         if st.button("Reset Conversation", key="reset_conversation_button_main"):
             logger.info("Conversation reset triggered by user.")
@@ -1443,16 +1619,18 @@ def main():
             st.session_state.ui_state = {"step": "input", "payload": None}
             st.session_state.processing_input_payload = None
             st.session_state.form_timestamp = datetime.now().timestamp()
-            # Clear symptom form specific state variable if it exists
+            # Clear symptom specific state variables on reset
             if 'confirmed_symptoms_from_ui' in st.session_state:
                 del st.session_state.confirmed_symptoms_from_ui
                 logger.debug("Cleared confirmed_symptoms_from_ui state.")
+            if 'original_query_for_symptom_rerun' in st.session_state:
+                del st.session_state.original_query_for_symptom_rerun
+                logger.debug("Cleared original_query_for_symptom_rerun state.")
+
 
             logger.debug("Triggering rerun after reset.")
             st.rerun()
 
-
-        # Physician feedback section
         st.divider()
         st.subheader("🩺 Detailed Feedback")
         with st.form("feedback_form"):
@@ -1462,7 +1640,7 @@ def main():
             submit_feedback_btn = st.form_submit_button("Submit Feedback")
             if submit_feedback_btn and feedback_text:
                 logger.info("Detailed feedback submitted.")
-                submit_feedback(feedback_text, st.session_state.messages, user_type)
+                submit_feedback(feedback_text, st.session_state.messages, user_type) # Pass UI messages
                 st.success("Thank you for your feedback!")
 
     with tab2:
