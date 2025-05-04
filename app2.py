@@ -577,11 +577,11 @@ class DocumentChatBot:
                     if disease_data_from_kg:
                         kg_results["identified_diseases_data"] = disease_data_from_kg
                         top_disease_record = disease_data_from_kg[0]
-                        top_disease_name = top_disease_record.get("Disease")
+                        top_disease_name = top_disease_record.get("disease")
                         top_disease_conf = float(top_disease_record.get("Confidence", 0.0))
                         kg_results["top_disease_confidence"] = top_disease_conf
                         kg_results["kg_matched_symptoms"] = top_disease_record.get("MatchedSymptoms", [])
-                        logger.info(f"✔️ Diseases Identified: {[(d.get('Disease'), d.get('Confidence')) for d in disease_data_from_kg]} (Top Confidence: {top_disease_conf:.4f})")
+                        logger.info(f"✔️ Diseases Identified: {[(d.get('disease'), d.get('Confidence')) for d in disease_data_from_kg]} (Top Confidence: {top_disease_conf:.4f})")
 
                         if top_disease_conf >= THRESHOLDS.get("disease_matching", 0.5):
                             logger.info(f"📚 KG Tasks: Find Treatments & Remedies for {top_disease_name}")
