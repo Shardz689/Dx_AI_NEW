@@ -545,7 +545,9 @@ class DocumentChatBot:
 
 
     def knowledge_graph_agent(self, user_query: str, all_symptoms: List[str]) -> Dict[str, Any]:
-        logger.info("📚 Knowledge Graph Agent Initiated")
+        logger.info("📚 Knowledge Graph Agent Initiated for query: %s...", user_query[:50])
+        logger.debug("Input symptoms for KG: %s", all_symptoms)
+
         kg_results: Dict[str, Any] = {
             "extracted_symptoms": all_symptoms,
             "identified_diseases_data": [],
@@ -553,11 +555,10 @@ class DocumentChatBot:
             "kg_matched_symptoms": [],
             "kg_treatments": [],
             "kg_treatment_confidence": 0.0,
-            "kg_home_remedies": [],
-            "kg_remedy_confidence": 0.0,
+            # Removed kg_home_remedies and kg_remedy_confidence
             "kg_content_diagnosis_data_for_llm": {
                  "disease_name": "an unidentifiable condition",
-                 "symptoms_list": all_symptoms, # Keep this key name for consistency with old LLM prompt format
+                 "symptoms_list": all_symptoms,
                  "confidence": 0.0
             },
             "kg_content_other": "Medical Knowledge Graph information is unavailable.",
@@ -566,72 +567,82 @@ class DocumentChatBot:
         if not self.kg_connection_ok or self.kg_driver is None:
              logger.warning("📚 KG Agent: Connection not OK. Skipping KG queries.")
              kg_results["kg_content_other"] = "Medical Knowledge Graph is currently unavailable."
+             logger.info("📚 Knowledge Graph Agent Finished (Connection Error).")
              return kg_results
 
         try:
+            logger.debug("Attempting to acquire Neo4j session.")
             with self.kg_driver.session() as session:
+                logger.debug("Neo4j session acquired.")
                 if all_symptoms:
-                    logger.info(f"📚 KG Task: Identify Diseases from symptoms: {all_symptoms}")
+                    logger.info("📚 KG Task: Identify Diseases from symptoms: %s", all_symptoms)
+                    # Call the helper to query diseases
                     disease_data_from_kg: List[Dict[str, Any]] = self._query_disease_from_symptoms_with_session(session, all_symptoms)
+                    logger.debug("KG disease query returned %d results.", len(disease_data_from_kg))
 
                     if disease_data_from_kg:
                         kg_results["identified_diseases_data"] = disease_data_from_kg
                         top_disease_record = disease_data_from_kg[0]
-                        top_disease_name = top_disease_record.get("disease")
+                        # Ensure keys match what _query_disease_from_symptoms_with_session returns ('Disease', 'Confidence')
+                        top_disease_name = top_disease_record.get("Disease")
                         top_disease_conf = float(top_disease_record.get("Confidence", 0.0))
                         kg_results["top_disease_confidence"] = top_disease_conf
                         kg_results["kg_matched_symptoms"] = top_disease_record.get("MatchedSymptoms", [])
-                        logger.info(f"✔️ Diseases Identified: {[(d.get('disease'), d.get('Confidence')) for d in disease_data_from_kg]} (Top Confidence: {top_disease_conf:.4f})")
+                        logger.info("✔️ Diseases Identified: %s (Top Confidence: %s)", [(d.get('Disease'), d.get('Confidence')) for d in disease_data_from_kg], top_disease_conf)
 
                         if top_disease_conf >= THRESHOLDS.get("disease_matching", 0.5):
-                            logger.info(f"📚 KG Tasks: Find Treatments & Remedies for {top_disease_name}")
+                            logger.info("📚 KG Task: Find Treatments for %s", top_disease_name)
+                            # Call the helper to query treatments
                             kg_results["kg_treatments"], kg_results["kg_treatment_confidence"] = self._query_treatments_with_session(session, top_disease_name)
-                            kg_results["kg_home_remedies"], kg_results["kg_remedy_confidence"] = self._query_home_remedies_with_session(session, top_disease_name)
-                            logger.info(f"✔️ Treatments found: {kg_results['kg_treatments']} (Confidence: {kg_results['kg_treatment_confidence']:.4f})")
-                            logger.info(f"✔️ Home Remedies found: {kg_results['kg_remedies']} (Confidence: {kg_results['kg_remedy_confidence']:.4f})")
+                            logger.info("✔️ Treatments found: %s (Confidence: %s)", kg_results['kg_treatments'], kg_results['kg_treatment_confidence'])
+                            # Removed call to _query_home_remedies_with_session
                         else:
-                            logger.info("📚 KG Tasks: Treatments/Remedies skipped - Top disease confidence below basic matching threshold.")
+                            logger.info("📚 KG Task: Treatments skipped - Top disease confidence below basic matching threshold (%s < %s).", top_disease_conf, THRESHOLDS.get("disease_matching", 0.5))
                 else:
                      logger.info("📚 KG Task: Identify Diseases skipped - No symptoms provided.")
 
-                # Prepare data for LLM phrasing, even if confidence is low
+                # Prepare data for LLM phrasing, even if confidence is low or no diseases found
+                logger.debug("Preparing KG diagnosis data for LLM.")
                 kg_results["kg_content_diagnosis_data_for_llm"] = {
-                      "disease_name": kg_results["identified_diseases_data"][0]["Disease"] if kg_results["identified_diseases_data"] else "an unidentifiable condition",
-                      "symptoms_list": all_symptoms, # Keep this key name for consistency with old LLM prompt format
+                      "disease_name": kg_results["identified_diseases_data"][0].get("Disease", "an unidentifiable condition") if kg_results["identified_diseases_data"] else "an unidentifiable condition",
+                      "symptoms_list": all_symptoms,
                       "confidence": kg_results["top_disease_confidence"]
                 }
+                logger.debug("KG diagnosis data for LLM: %s", kg_results["kg_content_diagnosis_data_for_llm"])
 
-                # Format other KG content (treatments/remedies)
+
+                # Format other KG content (treatments)
+                logger.debug("Formatting other KG content (treatments).")
                 other_parts: List[str] = []
                 if kg_results["kg_treatments"]:
                      other_parts.append("## Recommended Treatments (from KG)")
                      other_parts.extend([f"- {t}" for t in kg_results["kg_treatments"]])
                      other_parts.append("")
-                if kg_results["kg_home_remedies"]:
-                     other_parts.append("## Home Remedies (from KG)")
-                     other_parts.extend([f"- {h}" for h in kg_results["kg_home_remedies"]])
-                     other_parts.append("")
+                # Removed formatting for home remedies
 
                 kg_results["kg_content_other"] = "\n".join(other_parts).strip()
                 if not kg_results["kg_content_other"]:
                     kg_results["kg_content_other"] = "Medical Knowledge Graph did not find specific relevant information on treatments or remedies."
+                logger.debug("Formatted kg_content_other: %s", kg_results["kg_content_other"][:100])
 
                 logger.info("📚 Knowledge Graph Agent Finished successfully.")
                 return kg_results
 
         except Exception as e:
-            logger.error(f"⚠️ Error within KG Agent: {e}", exc_info=True)
+            logger.error("⚠️ Error within KG Agent: %s", e, exc_info=True)
+            # Ensure fallback data is set on failure
             kg_results["kg_content_diagnosis_data_for_llm"] = {
                  "disease_name": "an unidentifiable condition",
-                 "symptom_list": all_symptoms, # Corrected key name for consistency
+                 "symptoms_list": all_symptoms, # Corrected key name for consistency
                  "confidence": 0.0
             }
             kg_results["kg_content_other"] = f"An error occurred while querying the Medical Knowledge Graph: {str(e)}"
             kg_results["top_disease_confidence"] = 0.0 # Ensure confidence is 0 on failure
+            logger.info("📚 Knowledge Graph Agent Finished (Error).")
             return kg_results
 
     def _query_disease_from_symptoms_with_session(self, session, symptoms: List[str]) -> List[Dict[str, Any]]:
-         logger.debug(f"Querying KG for diseases based on symptoms: {symptoms}")
+         logger.debug("Querying KG for diseases based on symptoms: %s", symptoms)
          if not symptoms:
               logger.debug("No symptoms provided for KG disease query.")
               return []
@@ -656,17 +667,19 @@ class DocumentChatBot:
          LIMIT 5
          """
          try:
+              logger.debug("Executing Cypher query for diseases with symptoms: %s", symptoms)
               result = session.run(cypher_query, symptomNames=[s.lower() for s in symptoms if s])
               records = list(result)
               disease_data = [{"Disease": rec["Disease"], "Confidence": float(rec["Confidence"]), "MatchedSymptoms": rec["MatchedSymptoms"], "AllDiseaseSymptomsKG": rec["AllDiseaseSymptomsKG"]} for rec in records]
-              logger.debug(f"🦠 Executed KG Disease Query, found {len(disease_data)} results.")
+              logger.debug("🦠 Executed KG Disease Query, found %d results.", len(disease_data))
               return set_cached(cache_key, disease_data)
          except Exception as e:
-              logger.error(f"⚠️ Error executing KG query for diseases: {e}")
+              logger.error("⚠️ Error executing KG query for diseases: %s", e)
               return []
 
+
     def _query_treatments_with_session(self, session, disease: str) -> Tuple[List[str], float]:
-         logger.debug(f"Querying KG for treatments for disease: {disease}")
+         logger.debug("Querying KG for treatments for disease: %s", disease)
          if not disease:
              logger.debug("No disease provided for KG treatments query.")
              return [], 0.0
@@ -683,15 +696,16 @@ class DocumentChatBot:
          ORDER BY Confidence DESC
          """
          try:
+              logger.debug("Executing Cypher query for treatments for disease: %s", disease)
               result = session.run(cypher_query, diseaseName=disease)
               records = list(result)
               treatments = [(rec["Treatment"], float(rec["Confidence"])) for rec in records]
               treatments_list = [t[0] for t in treatments]
               avg_confidence = sum(t[1] for t in treatments) / len(treatments) if treatments else 0.0
-              logger.debug(f"💊 Executed KG Treatment Query for {disease}, found {len(treatments_list)} treatments.")
+              logger.debug("💊 Executed KG Treatment Query for %s, found %d treatments.", disease, len(treatments_list))
               return set_cached(cache_key, (treatments_list, avg_confidence))
          except Exception as e:
-              logger.error(f"⚠️ Error executing KG query for treatments: {e}")
+              logger.error("⚠️ Error executing KG query for treatments: %s", e)
               return [], 0.0
 
     
@@ -713,7 +727,6 @@ class DocumentChatBot:
         try:
             k = 10
             logger.debug(f"Performing vector search for query: {query[:50]}... (k={k})")
-            # Ensure vectordb.similarity_search_with_score exists and works as expected
             if not hasattr(self.vectordb, 'similarity_search_with_score'):
                  logger.error("Vector database object does not have 'similarity_search_with_score' method.")
                  return [], 0.0
@@ -725,22 +738,19 @@ class DocumentChatBot:
             relevant_scores: List[float] = []
 
             for doc, score in retrieved_docs_with_scores:
-                # --- EDIT STARTS HERE ---
-                # Add debug logging to inspect the score object type and value
+                # Log the type and value before the check
                 logger.debug(f"Processing retrieved chunk. Received score type: {type(score)}, value: {score}")
 
-                # Ensure score is a number - Keep this check
-                # This check uses isinstance(score, (int, float)) which should cover standard Python ints/floats and most numpy numeric types.
-                # If the type shown in the debug log is a numpy type (like numpy.float64), this check should pass unless there's a very unusual environment issue.
-                # If it's failing, the error might be happening *after* this check or the type is something truly unexpected.
-                if not isinstance(score, (int, float)):
+                # Corrected check: Use numbers.Real to include standard floats, ints, and numpy floats.
+                if not isinstance(score, (int, float, np.floating)): # Added np.floating for clarity, numbers.Real is also good
                      logger.warning(f"Received unexpected non-numeric score type ({type(score)}) from vector DB. Skipping chunk.")
-                     continue# Skip this chunk if score is not numeric
-                # --- EDIT ENDS HERE ---
+                     continue
 
+                logger.debug("Score is a valid numeric type.")
 
                 # Cosine distance typically ranges from 0 (identical) to 2 (opposite)
-                similarity_score = max(0.0, 1 - score)
+                similarity_score = max(0.0, 1 - float(score))
+
                 logger.debug(f"📄 RAG: Chunk (Sim: {similarity_score:.4f}, Dist: {score:.4f}) from {doc.metadata.get('source', 'N/A')} Page {doc.metadata.get('page', 'N/A')}")
                 if similarity_score >= RAG_RELEVANCE_THRESHOLD:
                     relevant_chunks.append(doc.page_content)
@@ -765,14 +775,15 @@ class DocumentChatBot:
                        s_rag: float,
                        is_symptom_query: bool
                       ) -> Optional[Dict[str, Any]]:
-        logger.info(f"📦 Context Selection Initiated. Symptom Query: {is_symptom_query}, S_KG: {s_kg:.4f}, S_RAG: {s_rag:.4f}")
+        logger.info("📦 Context Selection Initiated. Symptom Query: %s, S_KG: %.4f, S_RAG: %.4f", is_symptom_query, s_kg, s_rag)
         kg_threshold = THRESHOLDS.get("kg_context_selection", 0.8)
         rag_threshold = THRESHOLDS.get("rag_context_selection", 0.7)
-        logger.debug(f"Context selection thresholds: KG > {kg_threshold}, RAG > {rag_threshold}")
+        logger.debug("Context selection thresholds: KG > %s, RAG > %s", kg_threshold, rag_threshold)
         selected_context: Optional[Dict[str, Any]] = None
         context_parts: List[str] = []
 
         if is_symptom_query:
+            logger.debug("Processing symptom query context selection logic.")
             if s_kg > kg_threshold and s_rag > rag_threshold:
                 logger.info("📦 Symptom query, both KG and RAG thresholds met. Selecting KG + RAG.")
                 selected_context = {"kg": kg_results, "rag": rag_chunks}
@@ -789,6 +800,7 @@ class DocumentChatBot:
                 logger.info("📦 Symptom query, neither KG nor RAG met individual thresholds. Selected Context: None.")
                 selected_context = None
         else:
+            logger.debug("Processing non-symptom query context selection logic (RAG only).")
             if s_rag > rag_threshold:
                 logger.info("📦 Non-symptom query, RAG threshold met. Selecting RAG Only.")
                 selected_context = {"rag": rag_chunks}
@@ -798,11 +810,11 @@ class DocumentChatBot:
                  selected_context = None
 
         if selected_context is not None:
-            logger.info(f"📦 Context Selection Final: Includes: {', '.join(context_parts)}.")
+            logger.info("📦 Context Selection Final: Includes: %s.", ', '.join(context_parts))
         else:
              logger.info("📦 Context Selection Final: No context selected.")
         return selected_context
-
+                          
     def generate_initial_answer(self, query: str, selected_context: Optional[Dict[str, Any]]) -> str:
         logger.info("🧠 Initial Answer Generation Initiated")
         base_prompt_instructions = "You are a helpful and knowledgeable medical assistant. Answer the user query to the best of your ability, using the provided information. Be concise, medically accurate, and easy for a general user to understand."
@@ -814,7 +826,11 @@ class DocumentChatBot:
             context_info_for_prompt = "No specific relevant information was found in external knowledge sources."
             context_type_description = "Relying only on your vast general knowledge, answer the user query. Do not mention external documents or knowledge graphs."
         else:
-            logger.debug(f"Generating initial answer with context type: {'KG' if 'kg' in selected_context else ''} {'RAG' if 'rag' in selected_context else ''}".strip())
+            context_types = []
+            if 'kg' in selected_context: context_types.append('KG')
+            if 'rag' in selected_context: context_types.append('RAG')
+            logger.debug("Generating initial answer with context type: %s", " + ".join(context_types))
+
             context_type_description = "Based on the following information,"
             if "kg" in selected_context:
                 kg_data = selected_context.get("kg", {})
@@ -829,7 +845,7 @@ class DocumentChatBot:
                      else:
                           kg_info_str += f"- Potential Condition: {disease_name} (KG Confidence: {confidence:.2f})\n"
                 other_kg_content = kg_data.get("kg_content_other")
-                if other_kg_content and other_kg_content.strip() and "Medical Knowledge Graph did not find" not in other_kg_content:
+                if other_kg_content and other_kg_content.strip() and "Medical Knowledge Graph did not find" not in other_kg_content and "Home Remedies (from KG)" not in other_kg_content: # Added check to exclude remedies if present
                       kg_info_str += "\n" + other_kg_content
                 context_info_for_prompt += kg_info_str
 
@@ -845,7 +861,6 @@ class DocumentChatBot:
             elif "kg" in selected_context:
                  context_type_description = "Based on the following information from a medical knowledge graph, answer the user query. Only use the information provided here. Do not refer to external documents."
 
-        # Fallback if context was technically selected but resulted in empty formatted info string
         if not context_info_for_prompt.strip() and selected_context is not None:
              logger.warning("Selected context was passed but formatted into an empty string for the prompt.")
              context_info_for_prompt = "No specific relevant information was effectively utilized from external knowledge sources."
@@ -862,13 +877,16 @@ User Query: {query}
 
 Answer:
 """
+        logger.debug("Initial Answer Generation Prompt: %s...", prompt[:500])
         try:
             initial_answer = self.local_generate(prompt, max_tokens=1000)
             logger.info("🧠 Initial Answer Generated successfully.")
+            logger.debug("Initial Answer: %s...", initial_answer[:100])
             return initial_answer
-        except ValueError as e: # Catch ValueError from local_generate if LLM fails
-            logger.error(f"⚠️ Error during initial answer generation: {e}", exc_info=True)
+        except ValueError as e:
+            logger.error("⚠️ Error during initial answer generation: %s", e, exc_info=True)
             return "Sorry, I encountered an error while trying to generate an initial answer."
+
 
     def reflect_on_answer(self,
                           query: str,
@@ -878,7 +896,11 @@ Answer:
         logger.info("🔍 Reflection and Evaluation Initiated")
         context_for_prompt = "None"
         if selected_context is not None:
-            logger.debug(f"Reflection using context type: {'KG' if 'kg' in selected_context else ''} {'RAG' if 'rag' in selected_context else ''}".strip())
+            context_types = []
+            if 'kg' in selected_context: context_types.append('KG')
+            if 'rag' in selected_context: context_types.append('RAG')
+            logger.debug("Reflection using context type: %s", " + ".join(context_types))
+
             context_for_prompt = "Provided Context:\n---\n"
             if "kg" in selected_context:
                 kg_data = selected_context.get("kg", {})
@@ -888,8 +910,7 @@ Answer:
                      kg_info_str += f"  Potential Condition: {diag_data['disease_name']} (Confidence: {diag_data.get('confidence', 0):.2f})\n"
                 if kg_data.get("kg_treatments"):
                      kg_info_str += f"  Treatments: {', '.join(kg_data['kg_treatments'])}\n"
-                if kg_data.get("kg_home_remedies"):
-                     kg_info_str += f"  Home Remedies: {', '.join(kg_data['kg_home_remedies'])}\n"
+                # Removed kg_home_remedies formatting
                 context_for_prompt += kg_info_str + "\n"
             if "rag" in selected_context:
                 rag_chunks = selected_context.get("rag", [])
@@ -903,7 +924,6 @@ Answer:
              logger.debug("Reflection from cache.")
              return cached
 
-        # Fallback if LLM is not available
         if self.llm is None:
              logger.warning("LLM not initialized. Cannot perform reflection.")
              return ('incomplete', 'Reflection LLM is unavailable.')
@@ -918,9 +938,10 @@ Answer:
         Initial Answer:
         "{initial_answer}"
         '''
+        logger.debug("Reflection Prompt: %s...", reflection_prompt[:500])
         try:
             response = self.local_generate(reflection_prompt, max_tokens=500)
-            logger.debug(f"Reflection LLM raw response: {response}")
+            logger.debug("Reflection LLM raw response: %s", response)
             json_match = re.search(r'\{[\s\S]*\}', response)
             evaluation_result = 'incomplete'
             missing_info_description = "Could not parse reflection response or missing information was not provided by evaluator."
@@ -935,16 +956,17 @@ Answer:
                     else:
                          if not missing_info_description:
                               missing_info_description = f"Answer incomplete (evaluator provided no details for '{query[:50]}...')"
-                         logger.warning(f"🔍 Reflection Result: Incomplete. Missing Info: {missing_info_description[:100]}...")
+                         logger.warning("🔍 Reflection Result: Incomplete. Missing Info: %s...", missing_info_description[:100])
                 except json.JSONDecodeError:
                     logger.error("⚠️ Reflection: Could not parse JSON from LLM response.")
             else:
                 logger.warning("⚠️ Reflection: No JSON object found in LLM response.")
             result = (evaluation_result, missing_info_description)
             return set_cached(cache_key, result)
-        except ValueError as e: # Catch ValueError from local_generate if LLM fails
-            logger.error(f"⚠️ Error during reflection process: {e}", exc_info=True)
+        except ValueError as e:
+            logger.error("⚠️ Error during reflection process: %s", e, exc_info=True)
             return ('incomplete', f"An error occurred during reflection: {str(e)}")
+
 
     def get_supplementary_answer(self, query: str, missing_info_description: str) -> str:
         logger.info(f"🌐 External Agent (Gap Filling) Initiated. Missing Info: {missing_info_description[:100]}...")
