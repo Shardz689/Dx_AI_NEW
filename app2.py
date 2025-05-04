@@ -759,7 +759,7 @@ class DocumentChatBot:
                 # If it's failing, the error might be happening *after* this check or the type is something truly unexpected.
                 if not isinstance(score, (int, float)):
                      logger.warning(f"Received unexpected non-numeric score type ({type(score)}) from vector DB. Skipping chunk.")
-                     continue # Skip this chunk if score is not numeric
+                     continue# Skip this chunk if score is not numeric
                 # --- EDIT ENDS HERE ---
 
 
