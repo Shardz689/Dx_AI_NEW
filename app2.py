@@ -715,7 +715,7 @@ class DocumentChatBot:
         # The RAG_RELEVANCE_THRESHOLD is now primarily used in select_context,
         # but we still use it in the cache key and might log it here for context.
         # The threshold itself is NOT used to filter chunks *within* this function anymore.
-        RAG_THRESHOLD_FOR_SELECTION = THRESHOLDS.get("rag_context_selection", 0.7)
+        RAG_THRESHOLD_FOR_SELECTION = THRESHOLDS.get("rag_context_selection", 0.6)
         logger.debug(f"Context selection threshold for RAG (used later): {RAG_THRESHOLD_FOR_SELECTION}")
 
         # Cache key includes the query and the selection threshold (since it influences the final decision)
@@ -864,7 +864,7 @@ class DocumentChatBot:
                 if diag_data and diag_data.get("confidence", 0) > THRESHOLDS.get("disease_matching", 0.5):
                      disease_name = diag_data.get("disease_name", "an unidentifiable condition")
                      confidence = diag_data.get("confidence", 0)
-                     if confidence > THRESHOLDS.get("kg_context_selection", 0.8):
+                     if confidence > THRESHOLDS.get("kg_context_selection", 0.6):
                           kg_info_str += f"- Identified Condition: {disease_name} (KG Confidence: {confidence:.2f})\n"
                      else:
                           kg_info_str += f"- Potential Condition: {disease_name} (KG Confidence: {confidence:.2f})\n"
