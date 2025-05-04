@@ -46,10 +46,10 @@ load_dotenv()
 # !!! WARNING: Replace these with your actual credentials or ensure .env is configured correctly !!!
 # It is strongly recommended to use environment variables loaded by dotenv instead of hardcoding.
 # If using environment variables, remove the default "YOUR_..." values.
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY")
-NEO4J_URI = os.getenv("NEO4J_URI", "YOUR_NEO4J_URI")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBv-I8Ld-k09Lxu9Yi7HPffZHKXIqGSdHU")
+NEO4J_URI = os.getenv("NEO4J_URI", "neo4j+s://1b47920f.databases.neo4j.io")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "YOUR_NEO4J_PASSWORD")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "eCqDfyhDcuGMLzbYfiqL6jsvjH3LIXr86xQGAEKmY8Y")
 NEO4J_AUTH = (NEO4J_USER, NEO4J_PASSWORD)
 
 # Configure logging *before* potential errors
