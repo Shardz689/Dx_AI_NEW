@@ -1892,7 +1892,7 @@ def main():
                     # These need to be cleared to ensure previous symptom interactions don't interfere.
                     st.session_state.form_timestamp = datetime.now().timestamp() # Ensures a new form key if UI is triggered again
                     if 'confirmed_symptoms_from_ui' in st.session_state:
-                        del st.session_state.confirmed_symptom_from_ui
+                        del st.session_state.confirmed_symptoms_from_ui
                         logger.debug("Cleared confirmed_symptoms_from_ui state on new input.")
                     # Clear the dedicated rerun variable when starting a *new* input thread.
                     if 'original_query_for_symptom_rerun' in st.session_state:
