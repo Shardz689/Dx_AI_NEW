@@ -183,7 +183,7 @@ class DocumentChatBot:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
             logger.info(f"Initializing SentenceTransformer embeddings on device: {device}")
             self.embedding_model = HuggingFaceEmbeddings(
-                model_name='sentence-transformers/all-MiniLM-L6-v2',
+                model_name='sentence-transformers/all-mpnet-base-v2',
                 cache_folder='./cache',
                 model_kwargs={'device': device},
                 encode_kwargs={'normalize_embeddings': True}
