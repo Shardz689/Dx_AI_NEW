@@ -694,34 +694,7 @@ class DocumentChatBot:
               logger.error(f"⚠️ Error executing KG query for treatments: {e}")
               return [], 0.0
 
-    def _query_home_remedies_with_session(self, session, disease: str) -> Tuple[List[str], float]:
-         logger.debug(f"Querying KG for home remedies for disease: {disease}")
-         if not disease:
-             logger.debug("No disease provided for KG remedies query.")
-             return [], 0.0
-         cache_key = {"type": "remedy_query_kg", "disease": disease.lower()}
-         cached = get_cached(cache_key)
-         if cached:
-             logger.debug("KG home remedies query from cache.")
-             return cached
-         cypher_query = """
-         MATCH (d:disease)-[r:HAS_HOMEREMEDY]->(h:homeremedy)
-         WHERE toLower(d.Name) = toLower($diseaseName)
-         RETURN h.Name as HomeRemedy,
-                CASE WHEN COUNT(r) > 2 THEN 0.85 WHEN COUNT(r) > 1 THEN 0.75 ELSE 0.65 END as Confidence
-         ORDER BY Confidence DESC
-         """
-         try:
-             result = session.run(cypher_query, diseaseName=disease)
-             records = list(result)
-             remedies = [(rec["HomeRemedy"], float(rec["Confidence"])) for rec in records]
-             remedies_list = [r[0] for r in remedies]
-             avg_confidence = sum(r[1] for r in remedies) / len(remedies) if remedies else 0.0
-             logger.debug(f"🏡 Executed KG Remedy Query for {disease}, found {len(remedies_list)} remedies.")
-             return set_cached(cache_key, (remedies_list, avg_confidence))
-         except Exception as e:
-             logger.error(f"⚠️ Error executing KG query for home remedies: {e}")
-             return [], 0.0
+    
 
     def retrieve_rag_context(self, query: str) -> Tuple[List[str], float]:
         logger.info(f"📄 RAG Retrieval Initiated for query: {query[:50]}")
