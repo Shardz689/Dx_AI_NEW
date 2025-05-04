@@ -712,68 +712,94 @@ class DocumentChatBot:
 
     def retrieve_rag_context(self, query: str) -> Tuple[List[str], float]:
         logger.info(f"📄 RAG Retrieval Initiated for query: {query[:50]}")
+        # Retrieve the RAG context selection threshold from THRESHOLDS
         RAG_RELEVANCE_THRESHOLD = THRESHOLDS.get("rag_context_selection", 0.7)
         logger.debug(f"RAG retrieval threshold: {RAG_RELEVANCE_THRESHOLD}")
+
+        # Create a cache key including the query and the threshold
         cache_key = {"type": "rag_retrieval", "query": query, "threshold": RAG_RELEVANCE_THRESHOLD}
         cached = get_cached(cache_key)
         if cached:
              logger.debug("RAG retrieval from cache.")
              return cached
 
+        # Check if the vector database is initialized
         if self.vectordb is None:
-            logger.warning("📄 RAG Retrieval: Vector database not initialized.")
-            return [], 0.0
+            logger.warning("📄 RAG Retrieval: Vector database not initialized. Skipping RAG retrieval.")
+            return [], 0.0 # Return empty results and 0 confidence
 
         try:
+            # Define the number of top results to retrieve initially from the vector store
             k = 10
             logger.debug(f"Performing vector search for query: {query[:50]}... (k={k})")
-            # Ensure vectordb.similarity_search_with_score exists and works as expected
-            if not hasattr(self.vectordb, 'similarity_search_with_score'):
-                 logger.error("Vector database object does not have 'similarity_search_with_score' method.")
-                 return [], 0.0
 
-            # Call the similarity search method - this is where the score comes from
+            # Ensure the vector database object has the expected method
+            if not hasattr(self.vectordb, 'similarity_search_with_score'):
+                 logger.error("Vector database object does not have 'similarity_search_with_score' method. Cannot perform RAG.")
+                 return [], 0.0 # Indicate failure
+
+            # Call the vector database's method to get documents and their scores
+            # This method typically returns a list of tuples: (Document object, score)
             retrieved_docs_with_scores = self.vectordb.similarity_search_with_score(query, k=k)
             logger.debug(f"📄 RAG: Retrieved {len(retrieved_docs_with_scores)} initial documents from vector DB.")
 
-            relevant_chunks: List[str] = []
-            relevant_scores: List[float] = [] # Store the calculated similarity scores
+            relevant_chunks: List[str] = [] # List to store text content of relevant chunks
+            relevant_scores: List[float] = [] # List to store similarity scores of relevant chunks
 
+            # Iterate through the retrieved documents and scores
             for doc, score in retrieved_docs_with_scores:
-                # --- CHANGE APPLIED HERE ---
-                # Log the type and value received from the vector DB
+                # Log the type and value of the score received from the vector DB
                 logger.debug(f"Processing retrieved chunk. Received score type: {type(score)}, value: {score}")
 
-                # Corrected check: Include numpy.floating to correctly identify numpy floats as numeric.
-                # numbers.Real is also a good option, but explicitly including np.floating
-                # is very clear about handling the type seen in your logs.
+                # --- CORRECTED CHECK FOR NUMERIC TYPE ---
+                # Ensure the score is a valid numeric type (int, float, or numpy float).
+                # Use isinstance with a tuple of types to check against multiple types.
+                # np.floating covers numpy float types like float32, float64.
+                # Using numbers.Real is another valid approach, but np.floating is specific to the observed type.
                 if not isinstance(score, (int, float, np.floating)):
                      logger.warning(f"Received unexpected non-numeric score type ({type(score)}) from vector DB. Skipping chunk.")
-                     continue # Skip this chunk if score is not a recognized numeric type
+                     continue # Skip this chunk if the score is not a recognized numeric type
 
                 logger.debug("Score is a valid numeric type.")
-                # --- END CHANGE ---
+                # --- END CORRECTED CHECK ---
 
-                # Cosine distance typically ranges from 0 (identical) to 2 (opposite)
-                # Similarity = 1 - Distance. Ensure calculation uses a float.
+                # Calculate similarity score (assuming cosine distance where lower distance is better)
+                # Similarity = 1 - Distance. Ensure calculation uses a standard float.
+                # Clip the score to be within the 0.0 to 1.0 range for similarity, just in case.
                 similarity_score = max(0.0, 1 - float(score))
 
-                logger.debug(f"📄 RAG: Chunk (Sim: {similarity_score:.4f}, Dist: {score:.4f}) from {doc.metadata.get('source', 'N/A')} Page {doc.metadata.get('page', 'N/A')}")
+                # Log details about the chunk and its calculated similarity
+                logger.debug(f"📄 RAG: Chunk (Sim: {similarity_score:.4f}, Dist: {float(score):.4f}) from {doc.metadata.get('source', 'N/A')} Page {doc.metadata.get('page', 'N/A')}")
+
+                # Apply the relevance threshold
                 if similarity_score >= RAG_RELEVANCE_THRESHOLD:
+                    # If the similarity meets the threshold, add the chunk content and score to the relevant lists
                     relevant_chunks.append(doc.page_content)
-                    relevant_scores.append(similarity_score) # Store the calculated similarity score
+                    relevant_scores.append(similarity_score)
                     logger.debug(f"📄 RAG: Added relevant chunk (Sim: {similarity_score:.4f})")
                 else:
+                    # If the similarity is below the threshold, log that it was skipped
                     logger.debug(f"📄 RAG: Skipped chunk (Sim: {similarity_score:.4f}) - below threshold {RAG_RELEVANCE_THRESHOLD:.4f}")
 
 
-            # Calculate the overall RAG confidence score (S_RAG) using the collected similarity scores
+            # Calculate the overall RAG confidence score (S_RAG)
+            # This is the average of the similarity scores of the chunks that passed the threshold.
+            # If no chunks passed the threshold, the list relevant_scores is empty, so S_RAG is 0.0
             srag = sum(relevant_scores) / len(relevant_scores) if relevant_scores else 0.0
+
             logger.info(f"📄 RAG Retrieval Finished. Found {len(relevant_chunks)} relevant chunks. Overall S_RAG: {srag:.4f}")
-            return set_cached(cache_key, (relevant_chunks, srag))
+
+            # Store the result in the cache before returning
+            result = (relevant_chunks, srag)
+            set_cached(cache_key, result)
+
+            # Return the list of relevant text chunks and the overall RAG confidence score
+            return relevant_chunks, srag
 
         except Exception as e:
+            # Catch any other unexpected errors during retrieval
             logger.error(f"⚠️ Error during RAG retrieval: {e}", exc_info=True)
+            # Return empty results and 0 confidence on error
             return [], 0.0
 
     def select_context(self,
