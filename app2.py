@@ -711,16 +711,18 @@ class DocumentChatBot:
     
 
     def retrieve_rag_context(self, query: str) -> Tuple[List[str], float]:
-        logger.info(f"📄 RAG Retrieval Initiated for query: {query[:50]}")
-        # Retrieve the RAG context selection threshold from THRESHOLDS
-        RAG_RELEVANCE_THRESHOLD = THRESHOLDS.get("rag_context_selection", 0.7)
-        logger.debug(f"RAG retrieval threshold: {RAG_RELEVANCE_THRESHOLD}")
+        logger.info(f"📄 RAG Retrieval Initiated for query: {query[:50]}...")
+        # The RAG_RELEVANCE_THRESHOLD is now primarily used in select_context,
+        # but we still use it in the cache key and might log it here for context.
+        # The threshold itself is NOT used to filter chunks *within* this function anymore.
+        RAG_THRESHOLD_FOR_SELECTION = THRESHOLDS.get("rag_context_selection", 0.7)
+        logger.debug(f"Context selection threshold for RAG (used later): {RAG_THRESHOLD_FOR_SELECTION}")
 
-        # Create a cache key including the query and the threshold
-        cache_key = {"type": "rag_retrieval", "query": query, "threshold": RAG_RELEVANCE_THRESHOLD}
+        # Cache key includes the query and the selection threshold (since it influences the final decision)
+        cache_key = {"type": "rag_retrieval_topk_avg_score", "query": query, "selection_threshold": RAG_THRESHOLD_FOR_SELECTION}
         cached = get_cached(cache_key)
         if cached:
-             logger.debug("RAG retrieval from cache.")
+             logger.debug("RAG retrieval (topk avg score) from cache.")
              return cached
 
         # Check if the vector database is initialized
@@ -729,79 +731,67 @@ class DocumentChatBot:
             return [], 0.0 # Return empty results and 0 confidence
 
         try:
-            # Define the number of top results to retrieve initially from the vector store
+            # Define the number of top results to retrieve, similar to the old k=5 or current k=10
+            # Let's use k=10 as in your current code, but you could change this.
             k = 10
-            logger.debug(f"Performing vector search for query: {query[:50]}... (k={k})")
+            logger.debug(f"Performing vector search for query: {query[:50]}... to retrieve top {k} documents with scores.")
 
-            # Ensure the vector database object has the expected method
-            if not hasattr(self.vectordb, 'similarity_search_with_score'):
-                 logger.error("Vector database object does not have 'similarity_search_with_score' method. Cannot perform RAG.")
-                 return [], 0.0 # Indicate failure
-
-            # Call the vector database's method to get documents and their scores
-            # This method typically returns a list of tuples: (Document object, score)
+            # Call the vector database's method to get the top k documents and their scores.
+            # This does NOT apply a threshold yet.
             retrieved_docs_with_scores = self.vectordb.similarity_search_with_score(query, k=k)
-            logger.debug(f"📄 RAG: Retrieved {len(retrieved_docs_with_scores)} initial documents from vector DB.")
+            logger.debug(f"📄 RAG: Retrieved {len(retrieved_docs_with_scores)} top documents from vector DB.")
 
-            relevant_chunks: List[str] = [] # List to store text content of relevant chunks
-            relevant_scores: List[float] = [] # List to store similarity scores of relevant chunks
+            top_k_chunks: List[str] = [] # List to store text content of the top K chunks
+            top_k_scores: List[float] = [] # List to store calculated similarity scores of the top K chunks
 
-            # Iterate through the retrieved documents and scores
+            # Iterate through the top K retrieved documents and scores
             for doc, score in retrieved_docs_with_scores:
                 # Log the type and value of the score received from the vector DB
-                logger.debug(f"Processing retrieved chunk. Received score type: {type(score)}, value: {score}")
+                logger.debug(f"Processing retrieved chunk {len(top_k_chunks)+1}. Received score type: {type(score)}, value: {score}")
 
-                # --- CORRECTED CHECK FOR NUMERIC TYPE ---
-                # Ensure the score is a valid numeric type (int, float, or numpy float).
-                # Use isinstance with a tuple of types to check against multiple types.
-                # np.floating covers numpy float types like float32, float64.
-                # Using numbers.Real is another valid approach, but np.floating is specific to the observed type.
+                # Ensure the score is a valid numeric type before proceeding
+                # This check is still necessary to prevent errors in calculation (Line 33)
                 if not isinstance(score, (int, float, np.floating)):
-                     logger.warning(f"Received unexpected non-numeric score type ({type(score)}) from vector DB. Skipping chunk.")
-                     continue # Skip this chunk if the score is not a recognized numeric type
+                     logger.warning(f"Received unexpected non-numeric score type ({type(score)}) for a top chunk. Skipping this specific chunk for scoring/context.")
+                     # If a score is invalid, we might still include the chunk but cannot use its score reliably.
+                     # For simplicity, let's skip adding this chunk's content and score if its score is malformed.
+                     continue
 
                 logger.debug("Score is a valid numeric type.")
-                # --- END CORRECTED CHECK ---
 
                 # Calculate similarity score (assuming cosine distance where lower distance is better)
                 # Similarity = 1 - Distance. Ensure calculation uses a standard float.
-                # Clip the score to be within the 0.0 to 1.0 range for similarity, just in case.
+                # Clip the score to be within the 0.0 to 1.0 range for similarity.
                 similarity_score = max(0.0, 1 - float(score))
 
-                # Log details about the chunk and its calculated similarity
-                logger.debug(f"📄 RAG: Chunk (Sim: {similarity_score:.4f}, Dist: {float(score):.4f}) from {doc.metadata.get('source', 'N/A')} Page {doc.metadata.get('page', 'N/A')}")
-
-                # Apply the relevance threshold
-                if similarity_score >= RAG_RELEVANCE_THRESHOLD:
-                    # If the similarity meets the threshold, add the chunk content and score to the relevant lists
-                    relevant_chunks.append(doc.page_content)
-                    relevant_scores.append(similarity_score)
-                    logger.debug(f"📄 RAG: Added relevant chunk (Sim: {similarity_score:.4f})")
-                else:
-                    # If the similarity is below the threshold, log that it was skipped
-                    logger.debug(f"📄 RAG: Skipped chunk (Sim: {similarity_score:.4f}) - below threshold {RAG_RELEVANCE_THRESHOLD:.4f}")
+                # Add the chunk content and its calculated similarity score to the lists
+                # We add ALL top K chunks here, no threshold filtering within this loop.
+                top_k_chunks.append(doc.page_content)
+                top_k_scores.append(similarity_score)
+                logger.debug(f"📄 RAG: Processed top chunk (Sim: {similarity_score:.4f}, Dist: {float(score):.4f}) from {doc.metadata.get('source', 'N/A')} Page {doc.metadata.get('page', 'N/A')}")
 
 
             # Calculate the overall RAG confidence score (S_RAG)
-            # This is the average of the similarity scores of the chunks that passed the threshold.
-            # If no chunks passed the threshold, the list relevant_scores is empty, so S_RAG is 0.0
-            srag = sum(relevant_scores) / len(relevant_scores) if relevant_scores else 0.0
+            # This is the average of the similarity scores of the *top K* chunks that were successfully processed.
+            # If no chunks were processed (e.g., k=0 or all scores were invalid), S_RAG is 0.0
+            srag = sum(top_k_scores) / len(top_k_scores) if top_k_scores else 0.0
 
-            logger.info(f"📄 RAG Retrieval Finished. Found {len(relevant_chunks)} relevant chunks. Overall S_RAG: {srag:.4f}")
+            logger.info(f"📄 RAG Retrieval Finished. Retrieved {len(top_k_chunks)} chunks. Overall S_RAG (Avg of Top K): {srag:.4f}")
 
             # Store the result in the cache before returning
-            result = (relevant_chunks, srag)
+            # Cache stores the content of the top K chunks and their average score
+            result = (top_k_chunks, srag)
             set_cached(cache_key, result)
 
-            # Return the list of relevant text chunks and the overall RAG confidence score
-            return relevant_chunks, srag
+            # Return the list of the top K text chunks and their average similarity score
+            return top_k_chunks, srag
 
         except Exception as e:
             # Catch any other unexpected errors during retrieval
             logger.error(f"⚠️ Error during RAG retrieval: {e}", exc_info=True)
             # Return empty results and 0 confidence on error
             return [], 0.0
-
+            
     def select_context(self,
                        kg_results: Dict[str, Any],
                        s_kg: float,
