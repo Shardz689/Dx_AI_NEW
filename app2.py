@@ -2150,7 +2150,7 @@ def main():
         st.subheader("🩺 Detailed Feedback")
         # Disable feedback form if init failed
         # Added unique key for feedback form
-        with st.form("feedback_form", clear_on_submit=True, key="detailed_feedback_form"):
+        with st.form(key="detailed_feedback_form", clear_on_submit=True):
             feedback_text = st.text_area(
                 "Enter corrections, improvements, or comments here...", height=100, disabled=not is_interaction_enabled
             )
