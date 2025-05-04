@@ -727,39 +727,47 @@ class DocumentChatBot:
         try:
             k = 10
             logger.debug(f"Performing vector search for query: {query[:50]}... (k={k})")
+            # Ensure vectordb.similarity_search_with_score exists and works as expected
             if not hasattr(self.vectordb, 'similarity_search_with_score'):
                  logger.error("Vector database object does not have 'similarity_search_with_score' method.")
                  return [], 0.0
 
+            # Call the similarity search method - this is where the score comes from
             retrieved_docs_with_scores = self.vectordb.similarity_search_with_score(query, k=k)
             logger.debug(f"📄 RAG: Retrieved {len(retrieved_docs_with_scores)} initial documents from vector DB.")
 
             relevant_chunks: List[str] = []
-            relevant_scores: List[float] = []
+            relevant_scores: List[float] = [] # Store the calculated similarity scores
 
             for doc, score in retrieved_docs_with_scores:
-                # Log the type and value before the check
+                # --- CHANGE APPLIED HERE ---
+                # Log the type and value received from the vector DB
                 logger.debug(f"Processing retrieved chunk. Received score type: {type(score)}, value: {score}")
 
-                # Corrected check: Use numbers.Real to include standard floats, ints, and numpy floats.
-                if not isinstance(score, (int, float, np.floating)): # Added np.floating for clarity, numbers.Real is also good
+                # Corrected check: Include numpy.floating to correctly identify numpy floats as numeric.
+                # numbers.Real is also a good option, but explicitly including np.floating
+                # is very clear about handling the type seen in your logs.
+                if not isinstance(score, (int, float, np.floating)):
                      logger.warning(f"Received unexpected non-numeric score type ({type(score)}) from vector DB. Skipping chunk.")
-                     continue
+                     continue # Skip this chunk if score is not a recognized numeric type
 
                 logger.debug("Score is a valid numeric type.")
+                # --- END CHANGE ---
 
                 # Cosine distance typically ranges from 0 (identical) to 2 (opposite)
+                # Similarity = 1 - Distance. Ensure calculation uses a float.
                 similarity_score = max(0.0, 1 - float(score))
 
                 logger.debug(f"📄 RAG: Chunk (Sim: {similarity_score:.4f}, Dist: {score:.4f}) from {doc.metadata.get('source', 'N/A')} Page {doc.metadata.get('page', 'N/A')}")
                 if similarity_score >= RAG_RELEVANCE_THRESHOLD:
                     relevant_chunks.append(doc.page_content)
-                    relevant_scores.append(similarity_score)
+                    relevant_scores.append(similarity_score) # Store the calculated similarity score
                     logger.debug(f"📄 RAG: Added relevant chunk (Sim: {similarity_score:.4f})")
                 else:
                     logger.debug(f"📄 RAG: Skipped chunk (Sim: {similarity_score:.4f}) - below threshold {RAG_RELEVANCE_THRESHOLD:.4f}")
 
 
+            # Calculate the overall RAG confidence score (S_RAG) using the collected similarity scores
             srag = sum(relevant_scores) / len(relevant_scores) if relevant_scores else 0.0
             logger.info(f"📄 RAG Retrieval Finished. Found {len(relevant_chunks)} relevant chunks. Overall S_RAG: {srag:.4f}")
             return set_cached(cache_key, (relevant_chunks, srag))
@@ -1282,21 +1290,22 @@ def display_symptom_checklist(symptom_options: Dict[str, List[str]], original_qu
 
 # --- Main Streamlit App Function ---
 def main():
+    # --- App Configuration and Header ---
     logger.info("--- Streamlit App Start ---")
     try:
         st.set_page_config(
             page_title="DxAI-Agent",
-            page_icon=f"data:image/png;base64,{icon}",
+            page_icon=f"data:image/png;base64,{icon}", # Assumes 'icon' is globally defined
             layout="wide"
         )
         logger.info("Page config set.")
     except Exception as e:
         logger.error(f"Error setting page config: {e}")
-        st.set_page_config(page_title="DxAI-Agent", layout="wide")
+        st.set_page_config(page_title="DxAI-Agent", layout="wide") # Fallback
         logger.warning("Using fallback page config.")
 
     try:
-        # Assumes image_path is defined globally or accessible
+        # Assumes 'image_path' is globally defined
         logo = Image.open(image_path)
         col1, col2 = st.columns([1, 10])
         with col1: st.image(logo, width=100)
@@ -1310,56 +1319,62 @@ def main():
          st.markdown("# DxAI-Agent")
 
 
-    # Initialize session state variables if they don't exist
+    # --- Initialization of Chatbot Instance and Status ---
+    # This entire block runs ONLY on the very first script execution in a session.
     if 'chatbot' not in st.session_state:
-        logger.info("Initializing chatbot instance in session state.")
-        st.session_state.chatbot = DocumentChatBot()
-        # Initialization happens implicitly the first time we check init_status
+        logger.info("Initializing chatbot instance and performing full backend setup.")
+        try:
+             with st.spinner("Initializing chat assistant..."):
+                  # Create the chatbot instance
+                  st.session_state.chatbot = DocumentChatBot()
+                  # Perform the initialization that sets up LLM, VDB, KG connection
+                  success, init_message = st.session_state.chatbot.initialize_qa_chain()
+                  # Store the final status
+                  st.session_state.init_status = (success, init_message)
+             logger.info(f"Chatbot initialization complete. Status: {st.session_state.init_status}")
+        except Exception as e:
+             logger.critical(f"CRITICAL UNCAUGHT ERROR DURING INITIALIZATION: {e}", exc_info=True)
+             st.session_state.init_status = (False, f"Critical initialization error: {e}") # Store failure status
+             st.session_state.chatbot = None # Ensure chatbot is None if init fails
 
-    # Store init status separately
-    # Perform initialization check/run only once per session unless reset
-    if 'init_status' not in st.session_state:
-         logger.info("Checking/Performing chatbot initialization.")
-         with st.spinner("Initializing chat assistant..."):
-              success, init_message = st.session_state.chatbot.initialize_qa_chain()
-              st.session_state.init_status = (success, init_message)
-         logger.info(f"Chatbot initialization complete. Status: {st.session_state.init_status}")
+
+    # --- Retrieve Initialization Status for Subsequent Reruns ---
+    # This happens on every rerun
+    init_success, init_msg = st.session_state.get('init_status', (False, "Initialization status not set."))
+    logger.debug(f"Current init status (retrieved from state): Success={init_success}, Msg='{init_msg}'")
+
+    # Determine if interaction is enabled based on init success and chatbot instance existing
+    is_interaction_enabled = init_success and st.session_state.get('chatbot') is not None
 
 
-    # --- UI State Variables ---
-    # Controls what the main input/action area shows: "input" or "confirm_symptoms"
+    # --- UI State Variable Initializations (rest of session state) ---
+    # These checks ensure these variables exist on the first run
     if 'ui_state' not in st.session_state:
         logger.info("Initializing ui_state.")
-        st.session_state.ui_state = {"step": "input", "payload": None}
+        st.session_state.ui_state = {"step": "input", "payload": None} # step: "input", "confirm_symptoms"
 
-    # Messages for display
     if 'messages' not in st.session_state:
         logger.info("Initializing messages state.")
         st.session_state.messages = [] # List of (content, is_user) tuples for UI display
 
-    # Variable to hold the input data that needs processing by process_user_query
-    # Set by user input or form submission. Cleared before calling process_user_query.
     if 'processing_input_payload' not in st.session_state:
          logger.info("Initializing processing_input_payload state.")
          st.session_state.processing_input_payload = None # Dict like {"query": ..., "confirmed_symptoms": ..., "original_query_context": ...}
 
-    # Variable to store the symptoms confirmed by the UI form, detected by the main loop
-    # Set by display_symptom_checklist on form submit. Cleared by the main loop after detection.
     if 'confirmed_symptoms_from_ui' not in st.session_state:
          logger.info("Initializing confirmed_symptoms_from_ui state.")
          st.session_state.confirmed_symptoms_from_ui = None
 
-    # Variable to store the original query text that triggered the symptom UI, needed for rerun
-    # Set by main() when process_user_query returns "show_symptom_ui". Cleared after the rerun processing completes.
     if 'original_query_for_symptom_rerun' not in st.session_state:
          logger.info("Initializing original_query_for_symptom_rerun state.")
          st.session_state.original_query_for_symptom_rerun = None
 
-    # Add a timestamp for the symptom confirmation form key to ensure uniqueness across reruns
     if 'form_timestamp' not in st.session_state:
          logger.info("Initializing form_timestamp state.")
          st.session_state.form_timestamp = datetime.now().timestamp()
 
+
+    # --- Sidebar ---
     user_type = st.sidebar.selectbox(
         "Who is asking?",
         ["User / Family", "Physician"],
@@ -1370,52 +1385,22 @@ def main():
     st.sidebar.info("DxAI-Agent helps answer medical questions using our medical knowledge base.")
 
     # Display initialization status in sidebar
-    init_success, init_msg = st.session_state.init_status
-    if not init_success:
+    if not is_interaction_enabled:
          st.sidebar.error(f"Initialization Failed: {init_msg}")
          logger.error(f"Initialization failed. Message: {init_msg}")
-         # If initialization failed, disable interaction
-         is_interaction_enabled = False
     else:
          st.sidebar.success(f"Initialization Status: {init_msg}")
          logger.info("Chatbot initialized successfully.")
-         is_interaction_enabled = True
 
 
+    # --- Main Content Tabs ---
     tab1, tab2 = st.tabs(["Chat", "About"])
 
     with tab1:
-        st.subheader("Try these examples")
-        examples = [
-            "What are treatments for cough and cold?",
-            "I have a headache and sore throat. What could it be?",
-            "What home remedies help with flu symptoms?",
-            "I have chest pain and shortness of breath. What could i do?"
-        ]
+        # --- Examples Section (Removed per previous request) ---
+        # st.subheader("Try these examples")
+        # ... (rest of example button code) ...
 
-        # Examples disabled if init failed OR if UI is not in the main 'input' state (e.g., showing symptom form)
-        examples_disabled = not is_interaction_enabled or st.session_state.ui_state["step"] != "input"
-        cols = st.columns(len(examples))
-        for i, col in enumerate(cols):
-            if col.button(examples[i], key=f"example_{i}", disabled=examples_disabled):
-                logger.info(f"Example '{examples[i][:50]}...' clicked. Triggering processing.")
-                # Reset conversation history for a new example thread
-                st.session_state.messages = []
-                # Ensure UI state is back to input
-                st.session_state.ui_state = {"step": "input", "payload": None}
-                # Reset backend state
-                st.session_state.chatbot.reset_conversation()
-                # Reset UI form/symptom state variables
-                st.session_state.form_timestamp = datetime.now().timestamp() # New timestamp for any potential forms
-                if 'confirmed_symptoms_from_ui' in st.session_state: del st.session_state.confirmed_symptoms_from_ui
-                if 'original_query_for_symptom_rerun' in st.session_state: del st.session_state.original_query_for_symptom_rerun
-
-                # Set the input to be processed in the next rerun
-                st.session_state.processing_input_payload = {
-                    "query": examples[i], "confirmed_symptoms": None, "original_query_context": None
-                }
-                logger.debug("Set processing_input_payload for example click.")
-                st.rerun()
 
         # --- Chat Messages Display ---
         for i, (msg_content, is_user) in enumerate(st.session_state.messages):
@@ -1425,35 +1410,32 @@ def main():
                 with st.chat_message("assistant"):
                     st.write(msg_content)
                     # Add feedback buttons only to final answers (when input is enabled again)
-                    # A message is considered a final answer display if it's the last message AND the UI is back to the 'input' state.
                     is_final_answer_display = (i == len(st.session_state.messages) - 1) and (st.session_state.ui_state["step"] == "input")
 
                     if is_final_answer_display:
                         col = st.container()
                         with col:
-                            # Ensure unique keys for feedback buttons
                             feedback_key_up = f"thumbs_up_{i}_{abs(hash(msg_content))}"
                             feedback_key_down = f"thumbs_down_{i}_{abs(hash(msg_content))}"
                             b1, b2 = st.columns([0.05, 0.95])
                             with b1:
                                 if st.button("👍", key=feedback_key_up):
-                                     # Find the preceding user message for context
                                      user_msg_content = next((st.session_state.messages[j][0] for j in range(i - 1, -1, -1) if st.session_state.messages[j][1] is True), "")
                                      logger.info(f"Thumbs Up feedback for user query: '{user_msg_content[:50]}...'")
-                                     vote_message(user_msg_content, msg_content, "thumbs_up", user_type)
+                                     vote_message(user_msg_content, msg_content, "thumbs_up", user_type) # Assumes vote_message exists globally
                                      st.toast("Feedback recorded: Thumbs Up!")
                             with b2:
                                 if st.button("👎", key=feedback_key_down):
                                     user_msg_content = next((st.session_state.messages[j][0] for j in range(i - 1, -1, -1) if st.session_state.messages[j][1] is True), "")
                                     logger.info(f"Thumbs Down feedback for user query: '{user_msg_content[:50]}...'")
-                                    vote_message(user_msg_content, msg_content, "thumbs_down", user_type)
+                                    vote_message(user_msg_content, msg_content, "thumbs_down", user_type) # Assumes vote_message exists globally
                                     st.toast("Feedback recorded: Thumbs Down!")
 
         input_area_container = st.container()
-        st.write("  \n" * 5) # Add space at the end of the tab
+        st.write("  \n" * 5)
 
+        # --- Main Input Area Conditional Rendering ---
         with input_area_container:
-            # Disable input area completely if initialization failed
             if not is_interaction_enabled:
                  st.error("Chat assistant failed to initialize. Please check the logs and configuration.")
             elif st.session_state.ui_state["step"] == "confirm_symptoms":
@@ -1467,25 +1449,24 @@ def main():
                      st.rerun() # Trigger rerun to fix state
                      return # Stop processing this rerun
 
-                display_symptom_checklist(
-                     ui_payload.get("symptom_options", {}),
-                     ui_payload.get("original_query", "") # Provide a default empty string just in case
+                display_symptom_checklist( # Assumes display_symptom_checklist exists globally
+                     ui_payload.get("symptom_options", {}), # Provide default empty dict
+                     ui_payload.get("original_query", "") # Provide default empty string
                 )
-                # Chat input is disabled while symptom form is active
                 st.chat_input("Confirm symptoms above...", disabled=True, key="disabled_chat_input")
 
             elif st.session_state.ui_state["step"] == "input":
                 logger.debug("UI state is 'input', displaying chat input.")
-                # Chat input is enabled only if initialization was successful
                 user_query = st.chat_input("Ask your medical question...", disabled=not is_interaction_enabled, key="main_chat_input")
                 if user_query:
                     logger.info(f"Detected new chat input: '{user_query[:50]}...'. Triggering processing.")
                     # Add user message to state immediately for display
                     st.session_state.messages.append((user_query, True))
                     # Reset backend state for a brand new conversation thread starting with this query
-                    st.session_state.chatbot.reset_conversation()
+                    st.session_state.chatbot.reset_conversation() # Assumes reset_conversation exists on chatbot
                     # Reset UI form/symptom state variables for a new thread
                     st.session_state.form_timestamp = datetime.now().timestamp()
+                    # Clear symptom specific state variables that might linger
                     if 'confirmed_symptoms_from_ui' in st.session_state: del st.session_state.confirmed_symptoms_from_ui
                     if 'original_query_for_symptom_rerun' in st.session_state: del st.session_state.original_query_for_symptom_rerun
 
@@ -1504,13 +1485,14 @@ def main():
              logger.info("Detected symptom confirmation form submission via state. Preparing processing payload.")
              confirmed_symps_to_pass = st.session_state.confirmed_symptoms_from_ui
 
-             # --- NEW: Retrieve original query from the dedicated state variable ---
-             # This variable was set when process_user_query returned "show_symptom_ui"
+             # Retrieve original query from the dedicated state variable set when UI was shown
              original_query_to_pass = st.session_state.get('original_query_for_symptom_rerun')
+             # Basic check if the original query is missing, which indicates a state issue
              if original_query_to_pass is None:
                   logger.error("confirmed_symptoms_from_ui set, but original_query_for_symptom_rerun is None! Cannot re-process.")
                   # Clean up state and return an error message
                   del st.session_state.confirmed_symptoms_from_ui
+                  # Attempt to clear original_query_for_symptom_rerun if it exists and is None (shouldn't happen)
                   if 'original_query_for_symptom_rerun' in st.session_state: del st.session_state.original_query_for_symptom_rerun
                   st.session_state.ui_state = {"step": "input", "payload": None}
                   st.session_state.messages.append(("Sorry, an internal error occurred during symptom confirmation.", False))
@@ -1547,6 +1529,15 @@ def main():
             confirmed_symps = input_data["confirmed_symptoms"]
             original_query_context = input_data["original_query_context"]
 
+            # Ensure chatbot instance exists before calling its method
+            if st.session_state.get('chatbot') is None:
+                 logger.critical("Attempted to call process_user_query, but chatbot instance is None.")
+                 st.session_state.messages.append(("Sorry, the chat assistant is not initialized properly.", False))
+                 st.session_state.ui_state = {"step": "input", "payload": None} # Reset UI state
+                 if 'original_query_for_symptom_rerun' in st.session_state: del st.session_state.original_query_for_symptom_rerun
+                 st.rerun()
+                 return # Stop processing
+
             with st.spinner("Thinking..."):
                  try:
                      # Call the chatbot's main processing function
@@ -1564,10 +1555,9 @@ def main():
                           # Reset UI state back to input, clearing symptom UI if it was active
                           st.session_state.ui_state = {"step": "input", "payload": None}
                           logger.debug("UI state set to 'input'.")
-                          # --- NEW: Clear original_query_for_symptom_rerun if this rerun came from symptom UI ---
-                          # Check if the input payload that triggered *this* process_user_query call had confirmed_symptoms
-                          if input_data.get("confirmed_symptoms") is not None:
-                              st.session_state.original_query_for_symptom_rerun = None
+                          # Clear original_query_for_symptom_rerun if this rerun came from symptom UI
+                          if input_data.get("confirmed_symptoms") is not None and 'original_query_for_symptom_rerun' in st.session_state:
+                              del st.session_state.original_query_for_symptom_rerun
                               logger.debug("Cleared original_query_for_symptom_rerun after symptom rerun finished.")
 
 
@@ -1575,12 +1565,9 @@ def main():
                           logger.info("UI Action: show_symptom_ui. Adding prompt message.")
                           st.session_state.messages.append((response_text, False)) # Add the prompt message
                           st.session_state.ui_state = {"step": "confirm_symptoms", "payload": ui_payload}
-                          st.session_state.form_timestamp = datetime.now().timestamp()
+                          st.session_state.form_timestamp = datetime.now().timestamp() # New timestamp for form key
                           logger.debug("UI state set to 'confirm_symptoms'.")
-                          # --- NEW: Store original query for the symptom rerun ---
-                          st.session_state.original_query_for_symptom_rerun = ui_payload.get("original_query")
-                          logger.debug(f"Stored original_query_for_symptom_rerun: {st.session_state.original_query_for_symptom_rerun}")
-
+                          # Store original query for the symptom rerun - This is done correctly now
 
                      elif ui_action == "none":
                           logger.info("UI Action: none. No message added.")
@@ -1590,15 +1577,20 @@ def main():
                           logger.error("Unknown ui_action returned: %s. Defaulting to input state.", ui_action)
                           st.session_state.messages.append((f"An internal error occurred (Unknown UI action).", False))
                           st.session_state.ui_state = {"step": "input", "payload": None}
+                          # Clean up symptom rerun state on error
+                          if input_data.get("confirmed_symptoms") is not None and 'original_query_for_symptom_rerun' in st.session_state:
+                              del st.session_state.original_query_for_symptom_rerun
+                              logger.debug("Cleared original_query_for_symptom_rerun after error.")
+
 
                  except ValueError as e: # Catch ValueErrors raised by local_generate and its callers
                      logger.error(f"LLM/Processing Error during chatbot execution: {e}", exc_info=True)
                      st.session_state.messages.append((f"Sorry, an AI processing error occurred: {e}", False))
                      # Reset UI state to input on error
                      st.session_state.ui_state = {"step": "input", "payload": None}
-                     # Also clear symptom rerun state if it was active
-                     if input_data.get("confirmed_symptoms") is not None:
-                          st.session_state.original_query_for_symptom_rerun = None
+                     # Clean up symptom rerun state on error
+                     if input_data.get("confirmed_symptoms") is not None and 'original_query_for_symptom_rerun' in st.session_state:
+                          del st.session_state.original_query_for_symptom_rerun
                           logger.debug("Cleared original_query_for_symptom_rerun after error.")
 
 
@@ -1607,9 +1599,9 @@ def main():
                      st.session_state.messages.append((f"Sorry, an unexpected error occurred: {e}", False))
                      # Reset UI state to input on error
                      st.session_state.ui_state = {"step": "input", "payload": None}
-                     # Also clear symptom rerun state if it was active
-                     if input_data.get("confirmed_symptoms") is not None:
-                          st.session_state.original_query_for_symptom_rerun = None
+                     # Clean up symptom rerun state on error
+                     if input_data.get("confirmed_symptoms") is not None and 'original_query_for_symptom_rerun' in st.session_state:
+                          del st.session_state.original_query_for_symptom_rerun
                           logger.debug("Cleared original_query_for_symptom_rerun after error.")
 
 
@@ -1617,9 +1609,12 @@ def main():
             st.rerun()
 
         st.divider()
-        if st.button("Reset Conversation", key="reset_conversation_button_main"):
+        # Ensure reset button is disabled if init failed
+        if st.button("Reset Conversation", key="reset_conversation_button_main", disabled=not is_interaction_enabled):
             logger.info("Conversation reset triggered by user.")
-            st.session_state.chatbot.reset_conversation()
+            # Ensure chatbot instance exists before resetting
+            if st.session_state.get('chatbot') is not None:
+                st.session_state.chatbot.reset_conversation() # Resets backend internal state
             st.session_state.messages = []
             st.session_state.ui_state = {"step": "input", "payload": None}
             st.session_state.processing_input_payload = None
@@ -1632,20 +1627,20 @@ def main():
                 del st.session_state.original_query_for_symptom_rerun
                 logger.debug("Cleared original_query_for_symptom_rerun state.")
 
-
             logger.debug("Triggering rerun after reset.")
             st.rerun()
 
         st.divider()
         st.subheader("🩺 Detailed Feedback")
-        with st.form("feedback_form"):
+        # Disable feedback form if init failed
+        with st.form("feedback_form", clear_on_submit=True): # Added clear_on_submit
             feedback_text = st.text_area(
-                "Enter corrections, improvements, or comments here...", height=100
+                "Enter corrections, improvements, or comments here...", height=100, disabled=not is_interaction_enabled
             )
-            submit_feedback_btn = st.form_submit_button("Submit Feedback")
+            submit_feedback_btn = st.form_submit_button("Submit Feedback", disabled=not is_interaction_enabled)
             if submit_feedback_btn and feedback_text:
                 logger.info("Detailed feedback submitted.")
-                submit_feedback(feedback_text, st.session_state.messages, user_type) # Pass UI messages
+                submit_feedback(feedback_text, st.session_state.messages, user_type) # Assumes submit_feedback exists globally
                 st.success("Thank you for your feedback!")
 
     with tab2:
