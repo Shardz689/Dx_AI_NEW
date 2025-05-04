@@ -738,10 +738,9 @@ class DocumentChatBot:
             k = 10
             logger.debug(f"Performing vector search for query: {query[:50]}... (k={k})")
             # Ensure vectordb.similarity_search_with_score exists and works as expected
-            # It should return a list of (Document, score) tuples
             if not hasattr(self.vectordb, 'similarity_search_with_score'):
                  logger.error("Vector database object does not have 'similarity_search_with_score' method.")
-                 return [], 0.0 # Indicate failure if the expected method is missing
+                 return [], 0.0
 
             retrieved_docs_with_scores = self.vectordb.similarity_search_with_score(query, k=k)
             logger.debug(f"📄 RAG: Retrieved {len(retrieved_docs_with_scores)} initial documents from vector DB.")
@@ -750,13 +749,21 @@ class DocumentChatBot:
             relevant_scores: List[float] = []
 
             for doc, score in retrieved_docs_with_scores:
-                # Ensure score is a number
-                if not isinstance(score, (int, float)):
-                     logger.warning(f"Received non-numeric score ({score}) from vector DB. Skipping chunk.")
-                     continue # Skip this chunk if score is not numeric
+                # --- EDIT STARTS HERE ---
+                # Add debug logging to inspect the score object type and value
+                logger.debug(f"Processing retrieved chunk. Received score type: {type(score)}, value: {score}")
 
-                # Cosine distance typically ranges from 0 (identical) to 2 (opposite) for non-normalized,
-                # or 0 to 1 for normalized vectors. similarity = 1 - distance.
+                # Ensure score is a number - Keep this check
+                # This check uses isinstance(score, (int, float)) which should cover standard Python ints/floats and most numpy numeric types.
+                # If the type shown in the debug log is a numpy type (like numpy.float64), this check should pass unless there's a very unusual environment issue.
+                # If it's failing, the error might be happening *after* this check or the type is something truly unexpected.
+                if not isinstance(score, (int, float)):
+                     logger.warning(f"Received unexpected non-numeric score type ({type(score)}) from vector DB. Skipping chunk.")
+                     continue # Skip this chunk if score is not numeric
+                # --- EDIT ENDS HERE ---
+
+
+                # Cosine distance typically ranges from 0 (identical) to 2 (opposite)
                 similarity_score = max(0.0, 1 - score)
                 logger.debug(f"📄 RAG: Chunk (Sim: {similarity_score:.4f}, Dist: {score:.4f}) from {doc.metadata.get('source', 'N/A')} Page {doc.metadata.get('page', 'N/A')}")
                 if similarity_score >= RAG_RELEVANCE_THRESHOLD:
