@@ -229,9 +229,9 @@ class DocumentChatBot:
             try:
                 loaded_pages = loader.load()
                 pages.extend(loaded_pages)
-                logger.info(f"Loaded {len(loaded_pages)} pages from {loader._file_path}.") # Use _file_path for PyPDFLoader
+                logger.info(f"Loaded {len(loaded_pages)} pages from {loader.file_path}.") # Use _file_path for PyPDFLoader
             except Exception as e:
-                logger.error(f"Error loading pages from PDF {loader._file_path}: {e}") # Use _file_path
+                logger.error(f"Error loading pages from PDF {loader.file_path}: {e}") # Use _file_path
 
         if not pages:
              logger.warning("No pages were loaded from the PDFs.")
