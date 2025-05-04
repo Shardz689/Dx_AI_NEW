@@ -800,8 +800,8 @@ class DocumentChatBot:
                        is_symptom_query: bool
                       ) -> Optional[Dict[str, Any]]:
         logger.info("📦 Context Selection Initiated. Symptom Query: %s, S_KG: %.4f, S_RAG: %.4f", is_symptom_query, s_kg, s_rag)
-        kg_threshold = THRESHOLDS.get("kg_context_selection", 0.8)
-        rag_threshold = THRESHOLDS.get("rag_context_selection", 0.7)
+        kg_threshold = THRESHOLDS.get("kg_context_selection", 0.6)
+        rag_threshold = THRESHOLDS.get("rag_context_selection", 0.6)
         logger.debug("Context selection thresholds: KG > %s, RAG > %s", kg_threshold, rag_threshold)
         selected_context: Optional[Dict[str, Any]] = None
         context_parts: List[str] = []
