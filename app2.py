@@ -1012,13 +1012,22 @@ class DocumentChatBot:
              return cached
 
         base_prompt_instructions = "You are a helpful and knowledgeable medical assistant. Answer the user query to the best of your ability, using the provided information. Be concise, medically accurate, and easy for a general user to understand."
-        context_info_for_prompt = ""
-        context_type_description = ""
+        context_info_for_prompt = "" # Initialize empty
+        context_type_description = "" # Initialize empty
 
         if selected_context is None or not selected_context:
-            logger.info("🧠 Generating initial answer WITHOUT context.")
-            context_info_for_prompt = "No specific relevant information was found in external knowledge sources."
-            context_type_description = "Relying only on your vast general knowledge, answer the user query. Do not mention external documents or knowledge graphs."
+            logger.info("🧠 Generating initial answer WITHOUT external context.")
+            # --- MODIFICATION START ---
+            # Remove the "No specific relevant information..." line as it might confuse the LLM
+            # Make the instruction to use general knowledge very clear
+            context_info_for_prompt = "" # No external context information is provided
+            context_type_description = """
+            IMPORTANT: No relevant information was found in external knowledge sources (Knowledge Graph or Documents).
+            You MUST rely ONLY on your vast general knowledge to answer the user query.
+            Do NOT mention external documents or knowledge graphs in your answer.
+            Answer the query directly using your built-in medical knowledge.
+            """
+            # --- MODIFICATION END ---
         else:
             context_types = []
             if 'kg' in selected_context: context_types.append('KG')
@@ -1032,33 +1041,27 @@ class DocumentChatBot:
                 kg_data = selected_context.get("kg", {})
                 kg_info_str = "Knowledge Graph Information:\n"
                 diag_data = kg_data.get("kg_content_diagnosis_data_for_llm")
-                # Use disease_matching threshold for basic phrasing inclusion, kg_context_selection for 'Identified'
-                if diag_data and diag_data.get("confidence", 0) > 0.0: # Include KG diagnosis info if any disease was matched
+                if diag_data and diag_data.get("confidence", 0) > 0.0:
                      disease_name = diag_data.get("disease_name", "an unidentifiable condition")
                      confidence = diag_data.get("confidence", 0)
                      if confidence > THRESHOLDS.get("kg_context_selection", 0.6):
                           kg_info_str += f"- Identified Potential Condition: {disease_name} (KG Confidence: {confidence:.2f})\n"
-                     elif confidence > THRESHOLDS.get("disease_matching", 0.5): # Use basic matching threshold for 'Potential'
+                     elif confidence > THRESHOLDS.get("disease_matching", 0.5):
                           kg_info_str += f"- Potential Condition: {disease_name} (KG Confidence: {confidence:.2f})\n"
-                     else: # If disease matched but confidence is very low
+                     else:
                           kg_info_str += f"- Possible Condition based on limited info: {disease_name} (KG Confidence: {confidence:.2f})\n"
 
-                     # Only list symptoms if there are any provided in the input/confirmed list
                      if diag_data.get('symptoms_list'):
                          kg_info_str += f"- Reported Symptoms: {', '.join(diag_data.get('symptoms_list', []))}\n"
                          if kg_data.get('kg_matched_symptoms'):
-                              # Show symptoms from input that actually matched KG nodes for the top disease
                               kg_info_str += f"- Matching KG Symptoms for this condition: {', '.join(kg_data.get('kg_matched_symptoms', []))}\n"
                          else:
                               kg_info_str += "- No matching symptoms found in KG for this condition from your input.\n"
 
-
                 other_kg_content = kg_data.get("kg_content_other")
-                # Check if other_kg_content is meaningful (not just default failure message or empty)
                 if other_kg_content and other_kg_content.strip() and "Medical Knowledge Graph did not find" not in other_kg_content:
                       kg_info_str += "\n" + other_kg_content
 
-                # Only add KG section if it contains something meaningful beyond the initial header
                 if len(kg_info_str.splitlines()) > 1 or kg_info_str.strip() != "Knowledge Graph Information:":
                      context_parts_for_prompt.append(kg_info_str)
                      logger.debug("Added KG context to prompt.")
@@ -1085,10 +1088,16 @@ class DocumentChatBot:
                  elif "rag" in selected_context:
                       context_type_description = "Based on the following relevant passages from medical documents, answer the user query. Only use the information provided here where possible. Do not refer to a knowledge graph unless absolutely necessary for general medical facts."
             else:
-                 # This case happens if selected_context was not None but contained empty lists/dicts (e.g., KG had no diseases, RAG had no chunks after filtering)
+                 # This case happens if selected_context was not None but contained empty lists/dicts
                  logger.warning("Selected context was passed but resulted in empty context_parts_for_prompt.")
-                 context_info_for_prompt = "No specific relevant information was effectively utilized from external knowledge sources."
-                 context_type_description = "Relying only on your vast general knowledge, answer the user query."
+                 # Fallback instruction even if context was technically "selected" but empty
+                 context_info_for_prompt = ""
+                 context_type_description = """
+                 No effectively usable information was found in external knowledge sources.
+                 You MUST rely ONLY on your vast general knowledge to answer the user query.
+                 Do NOT mention external documents or knowledge graphs in your answer.
+                 Answer the query directly using your built-in medical knowledge.
+                 """
 
 
         prompt = f"""
