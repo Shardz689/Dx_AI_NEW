@@ -866,13 +866,28 @@ class DocumentChatBot:
             retrieved_docs_with_scores = self.vectordb.similarity_search_with_score(query, k=k)
             logger.debug(f"📄 RAG: Retrieved {len(retrieved_docs_with_scores)} potential documents from vector DB.")
 
+            # --- ADD THE DEBUGGING LOGGING SNIPPET HERE ---
+            # This loop iterates through the retrieved scores/docs to log them BEFORE calculating the average s_rag
+            logger.debug(f"--- Retrieved Chunks for Query: {query[:50]}... ---")
+            for i, (doc, score) in enumerate(retrieved_docs_with_scores):
+                 # Calculate similarity score from distance (assuming cosine distance where lower is better)
+                 similarity_score = max(0.0, min(1.0, 1 - float(score))) # Clamp to [0, 1]
+                 logger.debug(f"Chunk {i+1}: Score = {similarity_score:.4f} (Raw Score: {float(score):.4f})")
+                 # Make sure doc and doc.page_content are not None before attempting to slice
+                 content_snippet = doc.page_content[:200] if doc and doc.page_content else "Empty/None Content"
+                 logger.debug(f"Chunk Content (first 200 chars):\n{content_snippet}...")
+                 logger.debug("-" * 20) # Separator
+            logger.debug(f"--- End Retrieved Chunks ---")
+            # --- END DEBUGGING LOGGING SNIPPET ---
+
+
             top_k_chunks_content: List[str] = [] # List to store text content of the top K chunks
             top_k_similarity_scores: List[float] = [] # List to store calculated similarity scores of the top K chunks
 
-            # Process the retrieved documents
+            # Process the retrieved documents (this loop should come AFTER the debug loop above)
+            # We iterate through retrieved_docs_with_scores *again* to correctly populate the lists
+            # that will be returned and used for srag calculation.
             for doc, score in retrieved_docs_with_scores:
-                # logger.debug(f"Processing retrieved chunk. Raw score type: {type(score)}, value: {score}") # Suppress spam
-
                 # Ensure the score is a valid numeric type. Skip if not.
                 if not isinstance(score, (int, float, np.floating)):
                      logger.warning(f"Received unexpected non-numeric raw score type ({type(score)}) for a retrieved chunk. Skipping this chunk for scoring/context.")
