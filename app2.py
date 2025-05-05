@@ -725,26 +725,28 @@ class DocumentChatBot:
          # Confidence is the ratio of matching input symptoms to the total number of symptoms for the disease in the KG.
          # Corrected the placement of the WHERE clause.
          cypher_query = """
-         UNWIND $symptomNamesLower AS input_symptom_name_lower
-         MATCH (s:symptom)
-         WHERE toLower(s.Name) = input_symptom_name_lower
-         MATCH (s)-[:INDICATES]->(d:disease)
-         // Collect the original-cased names of matching symptoms from the KG node
-         WITH d, COLLECT(DISTINCT s.Name) AS matched_symptoms_from_input_in_kg_case
-         OPTIONAL MATCH (d)<-[:INDICATES]-(all_s:symptom)
-         WITH d, matched_symptoms_from_input_in_kg_case,
-              COLLECT(DISTINCT all_s.Name) AS all_disease_symptoms_in_kg, // All symptoms linked to the disease in KG
-              size(COLLECT(DISTINCT all_s)) AS total_disease_symptoms_count, // Total symptoms for the disease in KG
-              size(matched_symptoms_from_input_in_kg_case) AS matching_symptoms_count // Count of input symptoms found linked to the disease
-         // The WHERE clause must come after the WITH clause that defines 'matching_symptoms_count'
-         WHERE matching_symptoms_count > 0 // <-- Corrected placement
-         // Calculate confidence: ratio of matched symptoms (from input) to total symptoms for the disease (in KG)
-         WITH d.Name AS Disease,
-              CASE WHEN total_disease_symptoms_count = 0 THEN 0.0 ELSE matching_symptoms_count * 1.0 / total_disease_symptoms_count END AS confidence_score,
-              matched_symptoms_from_input_in_kg_case AS MatchedSymptoms,
-              all_disease_symptoms_in_kg AS AllDiseaseSymptomsKG
-         ORDER BY confidence_score DESC
-         LIMIT 5
+         
+UNWIND $symptomNamesLower AS input_symptom_name_lower
+MATCH (s:symptom)
+WHERE toLower(s.Name) = input_symptom_name_lower
+MATCH (s)-[:INDICATES]->(d:disease)
+// Collect the original-cased names of matching symptoms from the KG node
+WITH d, COLLECT(DISTINCT s.Name) AS matched_symptoms_from_input_in_kg_case
+OPTIONAL MATCH (d)<-[:INDICATES]-(all_s:symptom)
+WITH d, matched_symptoms_from_input_in_kg_case,
+     COLLECT(DISTINCT all_s.Name) AS all_disease_symptoms_in_kg, // All symptoms linked to the disease in KG
+     size(COLLECT(DISTINCT all_s)) AS total_disease_symptoms_count, // Total symptoms for the disease in KG
+     size(matched_symptoms_from_input_in_kg_case) AS matching_symptoms_count // Count of input symptoms found linked to the disease
+// The WHERE clause must come after the WITH clause that defines 'matching_symptoms_count'
+WHERE matching_symptoms_count > 0 // <-- Corrected placement
+// Calculate confidence: ratio of matched symptoms (from input) to total symptoms for the disease (in KG)
+WITH d.Name AS Disease,
+     CASE WHEN total_disease_symptoms_count = 0 THEN 0.0 ELSE matching_symptoms_count * 1.0 / total_disease_symptoms_count END AS confidence_score,
+     matched_symptoms_from_input_in_kg_case AS MatchedSymptoms,
+     all_disease_symptoms_in_kg AS AllDiseaseSymptomsKG
+ORDER BY confidence_score DESC
+LIMIT 5
+RETURN Disease, confidence_score, MatchedSymptoms, AllDiseaseSymptomsKG
          """
          try:
               logger.debug("Executing Cypher query for diseases with symptoms: %s", symptom_names_lower)
