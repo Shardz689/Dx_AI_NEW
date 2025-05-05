@@ -80,7 +80,7 @@ THRESHOLDS = {
     "disease_matching": 0.5, # Base threshold for KG to identify *a* disease
     "disease_symptom_followup_threshold": 0.8, # Below this confidence for a disease query, trigger symptom confirmation UI
     "kg_context_selection": 0.6, # Threshold for KG confidence to be included in context sent to LLM (for symptom queries)
-    "rag_context_selection": 0.6, # Threshold for RAG confidence to be included in context sent to LLM (for both symptom and non-symptom queries)
+    "rag_context_selection": 0.7, # Threshold for RAG confidence to be included in context sent to LLM (for both symptom and non-symptom queries)
     "medical_relevance": 0.6 # Threshold for medical relevance check
 }
 
@@ -826,7 +826,7 @@ class DocumentChatBot:
 
     def retrieve_rag_context(self, query: str) -> Tuple[List[str], float]:
         logger.info(f"📄 RAG Retrieval Initiated for query: {query[:50]}...")
-        # RAG_THRESHOLD_FOR_SELECTION = THRESHOLDS.get("rag_context_selection", 0.6) # Not used to filter here
+        # RAG_THRESHOLD_FOR_SELECTION = THRESHOLDS.get("rag_context_selection", 0.7) # Not used to filter here
 
         # Cache key includes the query. We retrieve top K always, filtering comes later.
         cache_key = {"type": "rag_retrieval_topk_chunks_and_scores", "query": query}
@@ -917,7 +917,7 @@ class DocumentChatBot:
         """
         logger.info("📦 Context Selection Initiated. Symptom Query: %s, S_KG: %.4f, S_RAG: %.4f", is_symptom_query, s_kg, s_rag)
         kg_threshold = THRESHOLDS.get("kg_context_selection", 0.6)
-        rag_threshold = THRESHOLDS.get("rag_context_selection", 0.6)
+        rag_threshold = THRESHOLDS.get("rag_context_selection", 0.7)
         logger.debug("Context selection thresholds: KG > %s, RAG > %s", kg_threshold, rag_threshold)
 
         selected_context: Dict[str, Any] = {} # Start with an empty dict
