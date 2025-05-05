@@ -1026,12 +1026,12 @@ class DocumentChatBot:
                 "Do NOT attempt to answer the user query using your general knowledge in this step.\n"
                 "Do NOT mention external documents or knowledge graphs.\n"
             )
-           prompt_for_initial_answer = (
-    f"{base_prompt_instructions.strip()}.\n"
-    f"{context_type_description.strip()}.\n\n"
-    f"User Query: \"{query}\"\n\n"
-    "Minimal Placeholder Answer:\n"
-)
+            prompt_for_initial_answer = (
+                f"{base_prompt_instructions.strip()}.\n"
+                f"{context_type_description.strip()}.\n\n"
+                f"User Query: \"{query}\"\n\n"
+                "Minimal Placeholder Answer:\n"
+                )
             # --- MODIFICATION END --- #
         else:
             context_types = []
