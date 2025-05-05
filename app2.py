@@ -1472,19 +1472,15 @@ Answer:
              selected_context = self.select_context(kg_results, s_kg, rag_chunks, s_rag, is_symptom_query)
 
              # --- Determine Pathway Information ---
-             pathway_info = "LLM (General Knowledge)" # Default pathway if no external context was selected
+             # Determine which external sources were SELECTED
              context_sources_used: List[str] = []
-
              if selected_context is not None:
                  if "kg" in selected_context:
                      context_sources_used.append("Knowledge Graph")
                  if "rag" in selected_context:
                      context_sources_used.append("Documents (RAG)")
 
-                 if context_sources_used:
-                     pathway_info = ", ".join(context_sources_used) + " + LLM"
-
-             logger.info(f"Determined Pathway: {pathway_info}")
+             initial_pathway_parts = context_sources_used if context_sources_used else ["LLM (General Knowledge for Initial Phrasing)"] # Indicate LLM is used even if no external context
 
 
              # --- Step 7: Initial Answer Generation ---
@@ -1494,13 +1490,15 @@ Answer:
              except ValueError as e: # Catch specific LLM generation errors
                  logger.error(f"Initial answer generation failed: {e}")
                  # Return error message directly, bypass reflection etc.
-                 # Add pathway info even on error, as it shows what was *attempted*
+                 # Indicate the sources attempted for initial generation
+                 pathway_info = ", ".join(initial_pathway_parts) + " (Initial Generation Failed)"
                  error_response = f"Sorry, I could not generate an initial answer due to an error: {e}\n\n<span style='font-size: 0.8em; color: grey;'>*Sources attempted for this response: {pathway_info}*</span>"
                  return error_response, "display_final_answer", None
 
 
              # --- Step 8: Reflection and Evaluation ---
              logger.info("--- Step 8: Reflection and Evaluation ---")
+             reflection_failed = False
              try:
                  evaluation_result, missing_info_description = self.reflect_on_answer(
                       processed_query, initial_answer, selected_context
@@ -1508,9 +1506,8 @@ Answer:
                  logger.info(f"Reflection Result: {evaluation_result}")
              except ValueError as e: # Catch specific LLM reflection errors
                   logger.error(f"Reflection step failed: {e}")
-                  # If reflection fails, assume incomplete and try to get supplementary,
-                  # but indicate reflection failed in missing_info_description
-                  evaluation_result = 'incomplete'
+                  reflection_failed = True
+                  evaluation_result = 'incomplete' # Assume incomplete if reflection fails
                   missing_info_description = f"Reflection failed ({e}). Attempting to find general supplementary information."
                   logger.warning(f"Proceeding with supplementary step despite reflection failure.")
 
@@ -1518,10 +1515,12 @@ Answer:
              # --- Step 9: Conditional External Agent & Collation ---
              # This combines steps 9, 10, 11 from the previous numbering
              final_answer_content = initial_answer # Start with the initial answer
+             supplementary_step_triggered = False
 
              if evaluation_result == 'incomplete':
                   logger.warning("--- Step 9: Reflection Incomplete. Triggering supplementary pipeline. ---")
                   logger.debug(f"Missing Info Description: {missing_info_description[:100]}...")
+                  supplementary_step_triggered = True # Flag that supplementary step is happening
 
                   # --- Step 10: External Agent (Gap Filling) ---
                   logger.info("--- Step 10: External Agent (Gap Filling) ---")
@@ -1555,7 +1554,24 @@ Answer:
                       final_answer_content = initial_answer.strip() # Use initial answer as final content
 
 
-             # --- Final Assembly: Add Medical Disclaimer and Pathway Info ---
+             # --- Final Assembly: Determine Final Pathway Info, Add Disclaimer and Pathway Note ---
+
+             final_pathway_parts = context_sources_used # Start with the external sources used for initial context
+
+             # Add 'LLM' to the pathway if the supplementary step was triggered OR if no external context was used at all
+             # (indicating the initial phrasing relied solely on the LLM's general knowledge)
+             if supplementary_step_triggered or not context_sources_used:
+                  final_pathway_parts.append("LLM (General Knowledge)") # Indicate LLM was used beyond just context phrasing if it filled gaps or was the sole source
+
+             # Ensure uniqueness and order
+             final_pathway_parts = sorted(list(set(final_pathway_parts)))
+
+             if not final_pathway_parts: # Should not happen if logic is correct, but defensive
+                 pathway_info = "Unknown Pathway"
+             else:
+                 pathway_info = ", ".join(final_pathway_parts)
+
+
              # Add the medical disclaimer consistently at the end of the main content
              disclaimer = "\n\nIMPORTANT MEDICAL DISCLAIMER: This information is for informational purposes only and is not a substitute for professional medical advice, diagnosis, or treatment. Always seek the advice of your physician or other qualified health provider with any questions you may have regarding a medical condition. Never disregard professional medical advice or delay in seeking it because of something you have read here."
 
