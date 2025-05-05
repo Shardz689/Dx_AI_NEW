@@ -1175,10 +1175,15 @@ Answer:
              logger.warning("LLM not initialized. Cannot perform reflection.")
              return ('incomplete', 'Reflection LLM is unavailable.')
 
+        # --- MODIFICATION START: Updated reflection prompt ---
         reflection_prompt = f'''
-        You are an evaluation agent. Review the 'Initial Answer' for its completeness and correctness in fully addressing the 'User Query', *considering the provided 'Context' (if any)*.
-        Specifically, assess if the 'Initial Answer' answered all parts of the 'User Query' and effectively used the *relevant* information from the 'Context'.
-        If incomplete, identify *exactly* what specific information is missing or incomplete *from the perspective of the User Query*. Be precise about the gap.
+        You are an evaluation agent. Review the 'Initial Answer' for its completeness in fully addressing the 'User Query', *considering the provided 'Context' (if any)*.
+
+        First, check if the 'Initial Answer' is a minimal placeholder response indicating a lack of specific external information (it might contain phrases like "no specific relevant information was found" or "lack of specific information").
+        If the 'Initial Answer' is a minimal placeholder, the evaluation is **incomplete**. In this case, the 'missing_information' is the topic of the original 'User Query'.
+
+        If the 'Initial Answer' is NOT a minimal placeholder, then evaluate its completeness using the provided 'Context'. Assess if it answered all parts of the 'User Query' and effectively used the relevant information from the 'Context'. If incomplete, identify *exactly* what specific information is missing or incomplete *from the perspective of the User Query*.
+
         Return ONLY a JSON object: {{"evaluation": "complete" or "incomplete", "missing_information": "Description of what is missing or empty string if complete"}}
         User Query: "{query}"
         Context:
@@ -1186,6 +1191,8 @@ Answer:
         Initial Answer:
         "{initial_answer}"
         '''
+        # --- MODIFICATION END ---
+
         # logger.debug("Reflection Prompt: %s...", reflection_prompt[:min(len(reflection_prompt), 1500)]) # Suppress spam
         try:
             response = self.local_generate(reflection_prompt, max_tokens=500)
@@ -1222,7 +1229,12 @@ Answer:
             return set_cached(cache_key, result) # Cache and return
         except ValueError as e: # Catch ValueError from local_generate if LLM fails
             logger.error(f"⚠️ Error during reflection process: {e}", exc_info=True)
-            raise ValueError(f"An error occurred during reflection process: {e}") from e # Re-raise
+            # Re-raise the exception to be caught by process_user_query
+            raise ValueError(f"An error occurred during reflection process: {e}") from e
+        except Exception as e: # Catch any other unexpected errors in reflection
+            logger.error(f"Unexpected error during reflection: {e}", exc_info=True)
+            # Re-raise other exceptions to be caught by process_user_query
+            raise RuntimeError(f"An unexpected error occurred during reflection: {e}") from e
 
 
     def _format_context_for_reflection(self, selected_context: Optional[Dict[str, Any]]) -> str:
