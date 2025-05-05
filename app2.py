@@ -697,93 +697,91 @@ class DocumentChatBot:
             return kg_results
 
     def _query_disease_from_symptoms_with_session(self, session, symptoms: List[str]) -> List[Dict[str, Any]]:
-         logger.debug("Querying KG for diseases based on symptoms: %s", symptoms)
-         # Ensure symptoms are valid strings and not empty
-         valid_symptom_names = [s.strip() for s in symptoms if isinstance(s, str) and s.strip()]
-         if not valid_symptom_names:
-              logger.debug("No valid symptoms provided for KG disease query.")
-              return []
-
-         # Use a tuple of sorted lowercase symptoms for consistent cache key
-         cache_key = {"type": "disease_matching_v2", "symptoms": tuple(sorted([s.lower() for s in valid_symptom_names]))}
-         cached = get_cached(cache_key)
-         if cached:
-             logger.debug("Disease match query from cache.")
-             # Cache stores lowercase symptoms, ensure we return list of strings for symptoms
-             cached_data = list(cached) # Ensure it's a mutable list copy
-             for item in cached_data:
-                 if 'MatchedSymptoms' in item:
-                     item['MatchedSymptoms'] = list(item['MatchedSymptoms'])
-                 if 'AllDiseaseSymptomsKG' in item:
-                     item['AllDiseaseSymptomsKG'] = list(item['AllDiseaseSymptomsKG'])
-             return cached_data
-
-         # Ensure symptom names are lowercase for the Cypher query parameter
-         symptom_names_lower = [s.lower() for s in valid_symptom_names]
-
-         # Cypher query to find diseases based on input symptoms and calculate confidence
-         # Confidence is the ratio of matching input symptoms to the total number of symptoms for the disease in the KG.
-         # Corrected the placement of the WHERE clause.
-         cypher_query = """
-         
-UNWIND $symptomNamesLower AS input_symptom_name_lower
-MATCH (s:symptom)
-WHERE toLower(s.Name) = input_symptom_name_lower
-MATCH (s)-[:INDICATES]->(d:disease)
-// Collect the original-cased names of matching symptoms from the KG node
-WITH d, COLLECT(DISTINCT s.Name) AS matched_symptoms_from_input_in_kg_case
-OPTIONAL MATCH (d)<-[:INDICATES]-(all_s:symptom)
-WITH d, matched_symptoms_from_input_in_kg_case,
-     COLLECT(DISTINCT all_s.Name) AS all_disease_symptoms_in_kg, // All symptoms linked to the disease in KG
-     size(COLLECT(DISTINCT all_s)) AS total_disease_symptoms_count, // Total symptoms for the disease in KG
-     size(matched_symptoms_from_input_in_kg_case) AS matching_symptoms_count // Count of input symptoms found linked to the disease
-// The WHERE clause must come after the WITH clause that defines 'matching_symptoms_count'
-WHERE matching_symptoms_count > 0 // <-- Corrected placement
-// Calculate confidence: ratio of matched symptoms (from input) to total symptoms for the disease (in KG)
-WITH d.Name AS Disease,
-     CASE WHEN total_disease_symptoms_count = 0 THEN 0.0 ELSE matching_symptoms_count * 1.0 / total_disease_symptoms_count END AS confidence_score,
-     matched_symptoms_from_input_in_kg_case AS MatchedSymptoms,
-     all_disease_symptoms_in_kg AS AllDiseaseSymptomsKG
-ORDER BY confidence_score DESC
-LIMIT 5
-RETURN Disease, confidence_score, MatchedSymptoms, AllDiseaseSymptomsKG
-         """
-         try:
-              logger.debug("Executing Cypher query for diseases with symptoms: %s", symptom_names_lower)
-              # Pass the lowercase symptom names to the query parameter
-              result = session.run(cypher_query, symptomNamesLower=symptom_names_lower)
-              records = list(result)
-              # Ensure records are dictionaries before accessing keys
-              disease_data = []
-              for rec in records:
-                   if isinstance(rec, dict):
-                        disease_data.append({
-                             "Disease": rec.get("Disease"),
-                             "Confidence": float(rec.get("Confidence", 0.0)),
-                             "MatchedSymptoms": rec.get("MatchedSymptoms", []), # Symptoms from KG that matched input
-                             "AllDiseaseSymptomsKG": rec.get("AllDiseaseSymptomsKG", []) # All symptoms for this disease in KG
-                        })
-                   else:
-                        logger.warning(f"Received non-dict record from KG disease query: {rec}")
-
-              # Filter out any records with None or empty Disease name resulting from get()
-              disease_data = [d for d in disease_data if d.get("Disease")]
-
-              logger.debug("🦠 Executed KG Disease Query, found %d results.", len(disease_data))
-              # Cache the result before returning. Ensure symptoms lists are tuples for cache key consistency
-              cache_data = []
-              for d in disease_data:
-                  cache_data.append({
-                      "Disease": d["Disease"],
-                      "Confidence": d["Confidence"],
-                      "MatchedSymptoms": tuple(d["MatchedSymptoms"]), # Store as tuple
-                      "AllDiseaseSymptomsKG": tuple(d["AllDiseaseSymptomsKG"]) # Store as tuple
-                  })
-              return set_cached(cache_key, cache_data)
-
-         except Exception as e:
-              logger.error("⚠️ Error executing KG query for diseases: %s", e, exc_info=True)
-              return []
+        logger.debug("Querying KG for diseases based on symptoms: %s", symptoms)
+        # Ensure symptoms are valid strings and not empty
+        valid_symptom_names = [s.strip() for s in symptoms if isinstance(s, str) and s.strip()]
+        if not valid_symptom_names:
+            logger.debug("No valid symptoms provided for KG disease query.")
+            return []
+    
+        # Use a tuple of sorted lowercase symptoms for consistent cache key
+        cache_key = {"type": "disease_matching_v2", "symptoms": tuple(sorted([s.lower() for s in valid_symptom_names]))}
+        cached = get_cached(cache_key)
+        if cached:
+            logger.debug("Disease match query from cache.")
+            # Cache stores lowercase symptoms, ensure we return list of strings for symptoms
+            cached_data = list(cached) # Ensure it's a mutable list copy
+            for item in cached_data:
+                if 'MatchedSymptoms' in item:
+                    item['MatchedSymptoms'] = list(item['MatchedSymptoms'])
+                if 'AllDiseaseSymptomsKG' in item:
+                    item['AllDiseaseSymptomsKG'] = list(item['AllDiseaseSymptomsKG'])
+            return cached_data
+    
+        # Ensure symptom names are lowercase for the Cypher query parameter
+        symptom_names_lower = [s.lower() for s in valid_symptom_names]
+    
+        # Cypher query to find diseases based on input symptoms and calculate confidence
+        # Confidence is the ratio of matching input symptoms to the total number of symptoms for the disease in the KG.
+        cypher_query = """
+        UNWIND $symptomNamesLower AS input_symptom_name_lower
+        MATCH (s:symptom)
+        WHERE toLower(s.Name) = input_symptom_name_lower
+        MATCH (s)-[:INDICATES]->(d:disease)
+        // Collect the original-cased names of matching symptoms from the KG node
+        WITH d, COLLECT(DISTINCT s.Name) AS matched_symptoms_from_input_in_kg_case
+        OPTIONAL MATCH (d)<-[:INDICATES]-(all_s:symptom)
+        WITH d, matched_symptoms_from_input_in_kg_case,
+             COLLECT(DISTINCT all_s.Name) AS all_disease_symptoms_in_kg, // All symptoms linked to the disease in KG
+             size(COLLECT(DISTINCT all_s)) AS total_disease_symptoms_count, // Total symptoms for the disease in KG
+             size(matched_symptoms_from_input_in_kg_case) AS matching_symptoms_count // Count of input symptoms found linked to the disease
+        // The WHERE clause must come after the WITH clause that defines 'matching_symptoms_count'
+        WHERE matching_symptoms_count > 0 // <-- Corrected placement
+        // Calculate confidence: ratio of matched symptoms (from input) to total symptoms for the disease (in KG)
+        WITH d.Name AS Disease,
+             CASE WHEN total_disease_symptoms_count = 0 THEN 0.0 ELSE matching_symptoms_count * 1.0 / total_disease_symptoms_count END AS confidence_score,
+             matched_symptoms_from_input_in_kg_case AS MatchedSymptoms,
+             all_disease_symptoms_in_kg AS AllDiseaseSymptomsKG
+        ORDER BY confidence_score DESC
+        LIMIT 5
+        RETURN Disease, confidence_score, MatchedSymptoms, AllDiseaseSymptomsKG
+        """
+        try:
+            logger.debug("Executing Cypher query for diseases with symptoms: %s", symptom_names_lower)
+            # Pass the lowercase symptom names to the query parameter
+            result = session.run(cypher_query, symptomNamesLower=symptom_names_lower)
+            records = list(result)
+            
+            # Process Neo4j Record objects into dictionaries
+            disease_data = []
+            for rec in records:
+                # Convert Neo4j Record to dictionary (records are NOT dict instances)
+                disease_data.append({
+                    "Disease": rec["Disease"],
+                    "Confidence": float(rec["confidence_score"]),  # Field name matches Cypher query
+                    "MatchedSymptoms": list(rec["MatchedSymptoms"]),  # Convert to list to ensure it's mutable
+                    "AllDiseaseSymptomsKG": list(rec["AllDiseaseSymptomsKG"])  # Convert to list
+                })
+    
+            # Filter out any records with None or empty Disease name
+            disease_data = [d for d in disease_data if d.get("Disease")]
+    
+            logger.debug("🦠 Executed KG Disease Query, found %d results.", len(disease_data))
+            # Cache the result before returning. Ensure symptoms lists are tuples for cache key consistency
+            cache_data = []
+            for d in disease_data:
+                cache_data.append({
+                    "Disease": d["Disease"],
+                    "Confidence": d["Confidence"],
+                    "MatchedSymptoms": tuple(d["MatchedSymptoms"]),  # Store as tuple
+                    "AllDiseaseSymptomsKG": tuple(d["AllDiseaseSymptomsKG"])  # Store as tuple
+                })
+            set_cached(cache_key, cache_data)
+            return disease_data
+            
+        except Exception as e:
+            logger.error(f"Error querying diseases from symptoms: {e}")
+            return []
 
 
 
