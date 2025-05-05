@@ -1018,12 +1018,12 @@ class DocumentChatBot:
         if selected_context is None or not selected_context:
             logger.info("🧠 Generating initial answer WITHOUT external context.")
             # --- MODIFICATION START ---
-            # Remove the "No specific relevant information..." line as it might confuse the LLM
-            # Make the instruction to use general knowledge very clear
+            # Simplify the instructions for the LLM when no external context is found.
+            # Be direct about using internal knowledge.
             context_info_for_prompt = "" # No external context information is provided
             context_type_description = """
-            IMPORTANT: No relevant information was found in external knowledge sources (Knowledge Graph or Documents).
-            You MUST rely ONLY on your vast general knowledge to answer the user query.
+            You have not been provided with any specific external medical knowledge or document snippets for this query.
+            Therefore, you MUST rely ONLY on your vast general knowledge to answer the user query.
             Do NOT mention external documents or knowledge graphs in your answer.
             Answer the query directly using your built-in medical knowledge.
             """
@@ -1119,7 +1119,6 @@ Answer:
         except ValueError as e:
             logger.error("⚠️ Error during initial answer generation: %s", e, exc_info=True)
             raise ValueError("Sorry, I encountered an error while trying to generate an initial answer.") from e # Re-raise to be caught by caller
-
 
     def reflect_on_answer(self,
                           query: str,
