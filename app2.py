@@ -784,6 +784,7 @@ class DocumentChatBot:
               return []
 
 
+
     def _query_treatments_with_session(self, session, disease: str) -> Tuple[List[str], float]:
          logger.debug("Querying KG for treatments for disease: %s", disease)
          if not disease or not isinstance(disease, str) or not disease.strip():
