@@ -786,43 +786,53 @@ class DocumentChatBot:
 
 
     def _query_treatments_with_session(self, session, disease: str) -> Tuple[List[str], float]:
-         logger.debug("Querying KG for treatments for disease: %s", disease)
-         if not disease or not isinstance(disease, str) or not disease.strip():
-             logger.debug("No valid disease provided for KG treatments query.")
-             return [], 0.0
-         disease_name_lower = disease.strip().lower()
-         cache_key = {"type": "treatment_query_kg", "disease": disease_name_lower}
-         cached = get_cached(cache_key)
-         if cached:
-             logger.debug("KG treatments query from cache.")
-             return cached
-         cypher_query = """
-         MATCH (d:disease)-[r:TREATED_BY]->(t:treatment)
-         WHERE toLower(d.Name) = $diseaseNameLower
-         RETURN t.Name as Treatment,
-                // Simple confidence heuristic based on number of relationships (can be refined)
-                CASE WHEN COUNT(r) >= 3 THEN 0.9 WHEN COUNT(r) >= 1 THEN 0.7 ELSE 0.0 END as Confidence
-         ORDER BY Confidence DESC, Treatment // Order by confidence, then alphabetically by treatment name
-         """
-         try:
-              logger.debug("Executing Cypher query for treatments for disease: %s", disease_name_lower)
-              result = session.run(cypher_query, diseaseNameLower=disease_name_lower)
-              records = list(result)
-              # Ensure records are dictionaries before accessing keys
-              treatments_with_conf = []
-              for rec in records:
-                  if isinstance(rec, dict) and rec.get("Treatment"):
-                      treatments_with_conf.append((rec["Treatment"], float(rec.get("Confidence", 0.0))))
-                  else:
-                       logger.warning(f"Received invalid record from KG treatment query: {rec}")
-
-              treatments_list = [t[0] for t in treatments_with_conf]
-              avg_confidence = sum(t[1] for t in treatments_with_conf) / len(treatments_with_conf) if treatments_with_conf else 0.0
-              logger.debug("💊 Executed KG Treatment Query for %s, found %d treatments.", disease, len(treatments_list))
-              return set_cached(cache_key, (treatments_list, avg_confidence))
-         except Exception as e:
-              logger.error("⚠️ Error executing KG query for treatments: %s", e, exc_info=True)
-              return [], 0.0
+        logger.debug("Querying KG for treatments for disease: %s", disease)
+        if not disease or not isinstance(disease, str) or not disease.strip():
+            logger.debug("No valid disease provided for KG treatments query.")
+            return [], 0.0
+        
+        disease_name_lower = disease.strip().lower()
+        cache_key = {"type": "treatment_query_kg", "disease": disease_name_lower}
+        cached = get_cached(cache_key)
+        if cached:
+            logger.debug("KG treatments query from cache.")
+            return cached
+        
+        cypher_query = """
+        MATCH (d:disease)-[r:TREATED_BY]->(t:treatment)
+        WHERE toLower(d.Name) = $diseaseNameLower
+        RETURN t.Name as Treatment,
+               // Simple confidence heuristic based on number of relationships (can be refined)
+               CASE WHEN COUNT(r) >= 3 THEN 0.9 WHEN COUNT(r) >= 1 THEN 0.7 ELSE 0.0 END as Confidence
+        ORDER BY Confidence DESC, Treatment // Order by confidence, then alphabetically by treatment name
+        """
+        
+        try:
+            logger.debug("Executing Cypher query for treatments for disease: %s", disease_name_lower)
+            result = session.run(cypher_query, diseaseNameLower=disease_name_lower)
+            records = list(result)
+            
+            # Process Neo4j Record objects directly without checking if they're dictionaries
+            treatments_with_conf = []
+            for rec in records:
+                try:
+                    # Access the Record object using dictionary-style notation
+                    treatment_name = rec["Treatment"]
+                    confidence = float(rec["Confidence"])
+                    if treatment_name:  # Ensure treatment name is not empty
+                        treatments_with_conf.append((treatment_name, confidence))
+                except (KeyError, TypeError, ValueError) as e:
+                    logger.warning(f"Error processing treatment record: {rec}, error: {e}")
+    
+            treatments_list = [t[0] for t in treatments_with_conf]
+            avg_confidence = sum(t[1] for t in treatments_with_conf) / len(treatments_with_conf) if treatments_with_conf else 0.0
+            
+            logger.debug("💊 Executed KG Treatment Query for %s, found %d treatments.", disease, len(treatments_list))
+            return set_cached(cache_key, (treatments_list, avg_confidence))
+        
+        except Exception as e:
+            logger.error("⚠️ Error executing KG query for treatments: %s", e, exc_info=True)
+            return [], 0.0
 
     def retrieve_rag_context(self, query: str) -> Tuple[List[str], float]:
         logger.info(f"📄 RAG Retrieval Initiated for query: {query[:50]}...")
