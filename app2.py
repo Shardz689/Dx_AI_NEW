@@ -1011,23 +1011,28 @@ class DocumentChatBot:
              logger.debug("Initial answer from cache.")
              return cached
 
-        base_prompt_instructions = "You are a helpful and knowledgeable medical assistant. Answer the user query to the best of your ability, using the provided information. Be concise, medically accurate, and easy for a general user to understand."
-        context_info_for_prompt = "" # Initialize empty
-        context_type_description = "" # Initialize empty
+        base_prompt_instructions = "You are a medical assistant." # Keep simple
+        context_info_for_prompt = ""
+        context_type_description = ""
+        prompt_for_initial_answer = "" # Initialize here
 
         if selected_context is None or not selected_context:
-            logger.info("🧠 Generating initial answer WITHOUT external context.")
-            # --- MODIFICATION START ---
-            # Simplify the instructions for the LLM when no external context is found.
-            # Be direct about using internal knowledge.
-            context_info_for_prompt = "" # No external context information is provided
-            context_type_description = """
-            You have not been provided with any specific external medical knowledge or document snippets for this query.
-            Therefore, you MUST rely ONLY on your vast general knowledge to answer the user query.
-            Do NOT mention external documents or knowledge graphs in your answer.
-            Answer the query directly using your built-in medical knowledge.
-            """
-            # --- MODIFICATION END ---
+            logger.info("🧠 Initial Answer Generation: No external context available.")
+            # --- MODIFICATION START: Corrected string formatting ---
+            context_info_for_prompt = "" # No external context provided
+            context_type_description = (
+                "You have not been provided with any specific external medical knowledge or document snippets for this query.\n"
+                "Therefore, generate only a minimal placeholder answer that indicates lack of specific information.\n"
+                "Do NOT attempt to answer the user query using your general knowledge in this step.\n"
+                "Do NOT mention external documents or knowledge graphs.\n"
+            )
+           prompt_for_initial_answer = (
+    f"{base_prompt_instructions.strip()}.\n"
+    f"{context_type_description.strip()}.\n\n"
+    f"User Query: \"{query}\"\n\n"
+    "Minimal Placeholder Answer:\n"
+)
+            # --- MODIFICATION END --- #
         else:
             context_types = []
             if 'kg' in selected_context: context_types.append('KG')
@@ -1090,19 +1095,20 @@ class DocumentChatBot:
             else:
                  # This case happens if selected_context was not None but contained empty lists/dicts
                  logger.warning("Selected context was passed but resulted in empty context_parts_for_prompt.")
-                 # Fallback instruction even if context was technically "selected" but empty
+                 # --- MODIFICATION START: Corrected string formatting ---
                  context_info_for_prompt = ""
-                 context_type_description = """
-                 No effectively usable information was found in external knowledge sources.
-                 You MUST rely ONLY on your vast general knowledge to answer the user query.
-                 Do NOT mention external documents or knowledge graphs in your answer.
-                 Answer the query directly using your built-in medical knowledge.
-                 """
+                 context_type_description = (
+                    "No effectively usable information was found in external knowledge sources.\n"
+                    "Therefore, generate only a minimal placeholder answer that indicates lack of specific information.\n"
+                    "Do NOT attempt to answer the user query using your general knowledge in this step.\n"
+                    "Do NOT mention external documents or knowledge graphs.\n"
+                 )
+                 # --- MODIFICATION END ---
 
-
-        prompt = f"""
+            # Use the prompt construction for cases with selected context
+            prompt_for_initial_answer = f"""
 {base_prompt_instructions}
-{context_type_description}
+{context_type_description.strip()}
 
 {context_info_for_prompt}
 
@@ -1110,14 +1116,45 @@ User Query: {query}
 
 Answer:
 """
-        # logger.debug("Initial Answer Generation Prompt: %s...", prompt[:min(len(prompt), 1500)]) # Suppress spam
+
+        # logger.debug("Initial Answer Generation Prompt: %s...", prompt_for_initial_answer[:min(len(prompt_for_initial_answer), 1500)]) # Suppress spam
         try:
-            initial_answer = self.local_generate(prompt, max_tokens=1000)
+            # Use the constructed prompt_for_initial_answer
+            initial_answer = self.local_generate(prompt_for_initial_answer, max_tokens=1000)
             logger.info("🧠 Initial Answer Generated successfully.")
             logger.debug("Initial Answer: %s...", initial_answer[:100])
+            # Ensure the initial answer is never just the placeholder if context was provided
+            # If context was provided but resulted in an empty placeholder, it implies an issue.
+            # In a production system, you might retry or raise an error here.
+            # For now, let's ensure it's not just the placeholder if context was selected.
+            # Refined check for placeholder text to make it less brittle
+            initial_answer_lower = initial_answer.lower()
+            is_placeholder = "placeholder answer" in initial_answer_lower or "lack of specific information" in initial_answer_lower or not initial_answer.strip() # Also treat empty as placeholder
+
+            if (selected_context is not None and (context_parts_for_prompt or (selected_context.get("kg") or selected_context.get("rag")))) and is_placeholder:
+                 logger.warning("Initial answer generated placeholder text despite having selected context. Possible LLM issue.")
+                 # If the LLM failed to use provided context and gave a placeholder,
+                 # maybe force it to be treated as incomplete and trigger supplementary.
+                 # This is defensive programming for LLM failures.
+                 # You could return a specific error, but forcing supplementary might recover.
+                 # Let's return a predefined placeholder here so reflection knows it's incomplete.
+                 initial_answer = "No specific relevant information was found in external knowledge sources." # A consistent placeholder reflection expects
+                 logger.warning(f"Overriding unexpected placeholder answer: {initial_answer}")
+
+            # If context was NONE and the answer is NOT a placeholder, it means the LLM failed to follow instruction.
+            # In this specific scenario, it's better to treat it as an error or force the placeholder.
+            # Given the goal is to *not* answer in the first step when context is None, if it *does* answer,
+            # that's incorrect behavior for this flow. Let's force the placeholder.
+            if (selected_context is None or not selected_context) and not is_placeholder:
+                 logger.warning("Initial answer generated content despite instruction to provide placeholder when no context. LLM instruction following issue.")
+                 # Force the placeholder to ensure reflection triggers supplementary as intended.
+                 initial_answer = "No specific relevant information was found in external knowledge sources."
+                 logger.warning(f"Overriding LLM instruction following error with placeholder: {initial_answer}")
+
+
             return set_cached(cache_key, initial_answer) # Cache and return
         except ValueError as e:
-            logger.error("⚠️ Error during initial answer generation: %s", e, exc_info=True)
+            logger.error(f"⚠️ Error during initial answer generation: %s", e, exc_info=True)
             raise ValueError("Sorry, I encountered an error while trying to generate an initial answer.") from e # Re-raise to be caught by caller
 
     def reflect_on_answer(self,
