@@ -208,7 +208,7 @@ class DocumentChatBot:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
             logger.info(f"Initializing SentenceTransformer embeddings on device: {device}")
             self.embedding_model = HuggingFaceEmbeddings(
-                model_name='pritamdeka/S-PubMedBert-MS-MARCO',
+                model_name='sentence-transformers/all-MiniLM-L6-v2',
                 cache_folder='./cache',
                 model_kwargs={'device': device},
                 encode_kwargs={'normalize_embeddings': True}
@@ -839,11 +839,16 @@ class DocumentChatBot:
         logger.info(f"📄 RAG Retrieval Initiated for query: {query[:50]}...")
         # RAG_THRESHOLD_FOR_SELECTION = THRESHOLDS.get("rag_context_selection", 0.7) # Not used to filter here
 
-        # Cache key includes the query. We retrieve top K always, filtering comes later.
-        cache_key = {"type": "rag_retrieval_topk_chunks_and_scores", "query": query}
+        # Define the number of top results to retrieve
+        k = 3 # --- MODIFICATION: Changed from 10 to 3 ---
+        logger.debug(f"Performing vector search for query: {query[:50]}... to retrieve top {k} documents with scores.")
+
+
+        # Cache key includes the query and the number of results (k).
+        cache_key = {"type": "rag_retrieval_topk_chunks_and_scores", "query": query, "k": k} # --- MODIFICATION: Added k to cache key ---
         cached = get_cached(cache_key)
         if cached:
-             logger.debug("RAG retrieval (topk chunks and scores) from cache.")
+             logger.debug(f"RAG retrieval (top {k} chunks and scores) from cache.")
              # Return the cached data directly
              # Ensure cached chunks are treated as list of strings, score as float
              return list(cached['chunks']), float(cached['avg_score'])
@@ -855,10 +860,6 @@ class DocumentChatBot:
             return [], 0.0 # Return empty results and 0 confidence
 
         try:
-            # Define the number of top results to retrieve
-            k = 10
-            logger.debug(f"Performing vector search for query: {query[:50]}... to retrieve top {k} documents with scores.")
-
             # Call the vector database's method to get the top k documents and their scores.
             # This method typically returns (Document, score) pairs.
             # The score is often distance (like cosine distance), where lower is better.
@@ -884,8 +885,7 @@ class DocumentChatBot:
 
 
                 # Add the chunk content and its calculated similarity score to the lists
-                # We add ALL top K chunks here based on the vector search result, regardless of their individual score relative to the *selection* threshold.
-                # The selection threshold is applied *later* in select_context or implicit in the prompt if all chunks are passed.
+                # We add ALL top K chunks here based on the vector search result.
                 if doc and doc.page_content: # Ensure document and content exist
                     top_k_chunks_content.append(doc.page_content)
                     top_k_similarity_scores.append(similarity_score)
@@ -901,8 +901,6 @@ class DocumentChatBot:
 
             # Store the result in the cache before returning
             # Cache stores the content of the top K chunks and their average score
-            # We only cache the content and the average score, as the individual scores aren't used downstream in the *current* select_context logic.
-            # If select_context were modified to filter chunks by individual score, we'd need to cache (chunk, score) pairs.
             result_data_for_cache = {'chunks': top_k_chunks_content, 'avg_score': srag}
             set_cached(cache_key, result_data_for_cache)
 
@@ -914,7 +912,7 @@ class DocumentChatBot:
             logger.error(f"⚠️ Error during RAG retrieval: {e}", exc_info=True)
             # Return empty results and 0 confidence on error
             return [], 0.0
-
+            
     def select_context(self,
                        kg_results: Dict[str, Any],
                        s_kg: float,
