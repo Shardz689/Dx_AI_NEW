@@ -82,6 +82,7 @@ THRESHOLDS = {
     "kg_context_selection": 0.6, # Threshold for KG confidence to be included in context sent to LLM (for symptom queries)
     "rag_context_selection": 0.7, # Threshold for RAG confidence to be included in context sent to LLM (for both symptom and non-symptom queries)
     "medical_relevance": 0.6 # Threshold for medical relevance check
+    "high_kg_context_only": 0.8
 }
 
 # Load and convert the image to base64 for favicon
@@ -922,48 +923,74 @@ class DocumentChatBot:
                        is_symptom_query: bool
                       ) -> Optional[Dict[str, Any]]:
         """
-        Selects the most relevant context (KG, RAG, or both) to pass to the LLM based on query type and confidence scores.
+        Selects the most relevant context (KG, RAG, or both) to pass to the LLM based on query type, confidence scores,
+        and a special rule to use KG only if its confidence is very high for symptom queries.
         Returns a dictionary containing selected context components or None if no context is selected.
         """
         logger.info("📦 Context Selection Initiated. Symptom Query: %s, S_KG: %.4f, S_RAG: %.4f", is_symptom_query, s_kg, s_rag)
         kg_threshold = THRESHOLDS.get("kg_context_selection", 0.6)
         rag_threshold = THRESHOLDS.get("rag_context_selection", 0.7)
-        logger.debug("Context selection thresholds: KG > %s, RAG > %s", kg_threshold, rag_threshold)
+        high_kg_only_threshold = THRESHOLDS.get("high_kg_context_only", 0.8) # Get the new threshold
 
-        selected_context: Dict[str, Any] = {} # Start with an empty dict
+        logger.debug("Context selection thresholds: Standard KG > %s, RAG > %s. High KG Only Threshold > %s", kg_threshold, rag_threshold, high_kg_only_threshold)
 
-        # Decide based on query type and thresholds
-        if is_symptom_query:
-            logger.debug("Processing symptom query context selection logic.")
-            # For symptom queries, prioritize KG if its confidence is high enough
-            if s_kg >= kg_threshold:
-                selected_context["kg"] = kg_results
-                logger.info("📦 Symptom query, KG threshold met (%.4f). Selecting KG.", s_kg)
+        selected_context: Dict[str, Any] = {} # Start with an empty dictionary
+
+        # --- Apply the NEW Rule: KG Only if s_kg > high_kg_only_threshold for symptom queries ---
+        # This special rule takes precedence if met.
+        if is_symptom_query and s_kg > high_kg_only_threshold:
+            # Check if KG results are actually available before selecting
+            if kg_results:
+                 logger.info("📦 Applying High KG Confidence Rule (%.4f > %.4f). Selecting KG ONLY, ignoring RAG for this turn.", s_kg, high_kg_only_threshold)
+                 # In this scenario, we ONLY select KG
+                 selected_context["kg"] = kg_results
+                 # RAG is explicitly excluded here
             else:
-                 logger.debug("📦 Symptom query, KG threshold (%.4f) NOT met (thresh: %.4f). KG not selected.", s_kg, kg_threshold)
-
-            # RAG is considered regardless for symptom queries if its threshold is met and there are chunks
-            if s_rag >= rag_threshold and rag_chunks:
-                selected_context["rag"] = rag_chunks
-                logger.info("📦 Symptom query, RAG threshold met (%.4f). Selecting RAG.", s_rag)
-            elif not rag_chunks:
-                 logger.debug("📦 Symptom query, RAG chunks empty. RAG not selected.")
-            else:
-                 logger.debug("📦 Symptom query, RAG threshold (%.4f) NOT met (thresh: %.4f). RAG not selected.", s_rag, rag_threshold)
+                 # This case is unlikely if s_kg > 0 but handle defensively
+                 logger.warning("📦 High KG Confidence Rule triggered (%.4f), but kg_results is empty. Falling back to standard selection.", s_kg)
+                 # Fall through to the standard logic
 
 
-        else: # Not a symptom query
-            logger.debug("Processing non-symptom query context selection logic (RAG only).")
-            # For non-symptom queries, only RAG is considered if its threshold is met and there are chunks
-            if s_rag >= rag_threshold and rag_chunks:
-                selected_context["rag"] = rag_chunks
-                logger.info("📦 Non-symptom query, RAG threshold met (%.4f). Selecting RAG.", s_rag)
-            elif not rag_chunks:
-                 logger.debug("📦 Non-symptom query, RAG chunks empty. RAG not selected.")
-            else:
-                 logger.debug("📦 Non-symptom query, RAG threshold (%.4f) NOT met (thresh: %.4f). RAG not selected.", s_rag, rag_threshold)
+        # --- If the NEW Rule was NOT met or KG results were empty, fall back to standard selection logic ---
+        # This 'else' block covers:
+        # 1. Not a symptom query (is_symptom_query is False)
+        # 2. Symptom query, but s_kg is <= high_kg_only_threshold
+        # 3. Symptom query, s_kg > high_kg_only_threshold, BUT kg_results was empty (unlikely, but safe)
 
-        # Return None if no context source was selected
+        if not selected_context: # Only execute standard logic if no context was selected by the high KG rule
+            logger.debug("High KG Confidence Rule NOT applied or resulted in empty context. Applying standard selection logic.")
+            # Decide based on query type and standard thresholds
+            if is_symptom_query:
+                logger.debug("Processing symptom query (standard logic).")
+                # KG is selected if its standard threshold is met
+                if s_kg >= kg_threshold:
+                    selected_context["kg"] = kg_results
+                    logger.debug("KG meets standard threshold (%.4f >= %.4f). KG selected.", s_kg, kg_threshold)
+                else:
+                     logger.debug("KG does NOT meet standard threshold (%.4f < %.4f). KG not selected.", s_kg, kg_threshold)
+
+                # RAG is considered for symptom queries if its threshold is met and chunks exist
+                if s_rag >= rag_threshold and rag_chunks:
+                    selected_context["rag"] = rag_chunks
+                    logger.debug("RAG meets threshold (%.4f >= %.4f) and chunks exist. RAG selected.", s_rag, rag_threshold)
+                elif not rag_chunks:
+                     logger.debug("RAG chunks empty. RAG not selected.")
+                else:
+                     logger.debug("RAG does NOT meet threshold (%.4f < %.4f). RAG not selected.", s_rag, rag_threshold)
+
+            else: # Not a symptom query
+                logger.debug("Processing non-symptom query context selection logic (RAG only).")
+                # For non-symptom queries, only RAG is considered if its threshold is met and there are chunks
+                if s_rag >= rag_threshold and rag_chunks:
+                    selected_context["rag"] = rag_chunks
+                    logger.debug("Non-symptom query, RAG meets threshold (%.4f >= %.4f) and chunks exist. RAG selected.", s_rag, rag_threshold)
+                elif not rag_chunks:
+                     logger.debug("Non-symptom query, RAG chunks empty. RAG not selected.")
+                else:
+                     logger.debug("Non-symptom query, RAG does NOT meet threshold (%.4f < %.4f). RAG not selected.", s_rag, rag_threshold)
+
+
+        # --- Final Check: Return None if no context source was selected ---
         if not selected_context:
              logger.info("📦 Context Selection Final: No context source met thresholds.")
              return None
@@ -973,6 +1000,7 @@ class DocumentChatBot:
         if "rag" in selected_context: context_parts.append("RAG")
         logger.info("📦 Context Selection Final: Includes: %s.", ', '.join(context_parts))
         return selected_context
+
 
     def generate_initial_answer(self, query: str, selected_context: Optional[Dict[str, Any]]) -> str:
         logger.info("🧠 Initial Answer Generation Initiated")
