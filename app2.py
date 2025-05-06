@@ -1227,7 +1227,7 @@ Answer:
                          # If evaluation is 'incomplete' but no description was provided
                          if not missing_info_description:
                               missing_info_description = f"Answer incomplete, but specific missing info not detailed by evaluator for query '{query[:50]}...'"
-                         logger.warning("🔍 Reflection Result: Incomplete. Missing Info: %s...", missing_info_description[:100])
+                         logger.warning("🔍 Reflection Result: Incomplete. Missing Info: %s...", missing_info_description[:500])
                 except json.JSONDecodeError as e:
                     logger.error(f"⚠️ Reflection: Could not parse JSON from LLM response: {e}")
                     missing_info_description = f"Reflection JSON parse error: {e}"
