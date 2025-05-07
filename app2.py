@@ -837,7 +837,7 @@ class DocumentChatBot:
 
     def retrieve_rag_context(self, query: str) -> Tuple[List[str], float]:
         logger.info(f"📄 RAG Retrieval Initiated for query: {query[:50]}...")
-        # RAG_THRESHOLD_FOR_SELECTION = THRESHOLDS.get("rag_context_selection", 0.85) # Not used to filter here
+        # RAG_THRESHOLD_FOR_SELECTION = THRESHOLDS.get("rag_context_selection", 0.7) # Not used to filter here
 
         # Define the number of top results to retrieve
         k = 3 # --- MODIFICATION: Changed from 10 to 3 ---
@@ -942,7 +942,7 @@ class DocumentChatBot:
         """
         logger.info("📦 Context Selection Initiated. Symptom Query: %s, S_KG: %.4f, S_RAG: %.4f", is_symptom_query, s_kg, s_rag)
         kg_threshold = THRESHOLDS.get("kg_context_selection", 0.6)
-        rag_threshold = THRESHOLDS.get("rag_context_selection", 0.85)
+        rag_threshold = THRESHOLDS.get("rag_context_selection", 0.7)
         high_kg_only_threshold = THRESHOLDS.get("high_kg_context_only", 0.8) # Get the new threshold
 
         logger.debug("Context selection thresholds: Standard KG > %s, RAG > %s. High KG Only Threshold > %s", kg_threshold, rag_threshold, high_kg_only_threshold)
