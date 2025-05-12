@@ -1,4 +1,3 @@
---- START OF FILE app3.py ---
 
 import streamlit as st
 from pathlib import Path
