@@ -523,6 +523,7 @@ class DocumentChatBot:
         if (cached_value := get_cached(cache_key)) is not None:
              if isinstance(cached_value, dict) and 'chunks' in cached_value and 'avg_score' in cached_value:
                  try:
+                     # logger.debug(f"RAG from cache. Avg score: {cached_value.get('avg_score')}")
                      return list(cached_value['chunks']), float(cached_value['avg_score'])
                  except (ValueError, TypeError) as e:
                      logger.error(f"Error converting cached RAG 'avg_score' ('{cached_value.get('avg_score')}') to float: {e}. Recalculating.")
@@ -538,23 +539,38 @@ class DocumentChatBot:
             retrieved_docs_with_scores = self.vectordb.similarity_search_with_score(query, k=k)
             top_k_chunks_content: List[str] = []
             top_k_similarity_scores: List[float] = []
-            for doc, score_val in retrieved_docs_with_scores:
-                if isinstance(score_val, (int, float)): 
-                    raw_score_float = float(score_val)
-                    similarity_score = max(0.0, min(1.0, 1.0 - (raw_score_float if raw_score_float >= 0.0 else 0.0) ))
+
+            # logger.debug(f"--- Processing {len(retrieved_docs_with_scores)} Retrieved RAG Chunks ---")
+            for i, (doc, score_val) in enumerate(retrieved_docs_with_scores):
+                try:
+                    # Attempt to convert score_val to a standard Python float
+                    current_score_float = float(score_val) 
+
+                    # FAISS scores are distances (lower is better, assume non-negative)
+                    # Similarity = 1 - Distance. Clamp to [0, 1].
+                    similarity_score = max(0.0, min(1.0, 1.0 - current_score_float))
+                    
+                    # logger.debug(f"RAG Chunk {i+1}: Raw Score='{score_val}', Converted Score={current_score_float:.4f}, Similarity={similarity_score:.4f}")
+
                     if doc and doc.page_content:
                         top_k_chunks_content.append(doc.page_content)
                         top_k_similarity_scores.append(similarity_score)
-                else: logger.warning(f"RAG: Non-numeric score value '{score_val}'. Skipping.")
+                    else:
+                        logger.warning(f"RAG Chunk {i+1}: Document or content is None. Skipping.")
+                except (ValueError, TypeError) as e_conv:
+                    logger.warning(f"RAG Chunk {i+1}: Could not convert score value '{score_val}' (type: {type(score_val)}) to float. Error: {e_conv}. Skipping this document-score pair.")
+                    continue 
+            # logger.debug(f"--- Finished Processing RAG Chunks ---")
 
             srag_calculated = sum(top_k_similarity_scores) / len(top_k_similarity_scores) if top_k_similarity_scores else 0.0
-            srag_float_to_return = float(srag_calculated) 
+            srag_float_to_return = float(srag_calculated) # Ensure final srag is float
             
             data_to_cache = {'chunks': top_k_chunks_content, 'avg_score': srag_float_to_return}
             set_cached(cache_key, data_to_cache) 
             
-            logger.info(f"📄 RAG Finished. {len(top_k_chunks_content)} chunks. S_RAG: {srag_float_to_return:.4f}")
+            logger.info(f"📄 RAG Finished. {len(top_k_chunks_content)} chunks processed. S_RAG: {srag_float_to_return:.4f}")
             return top_k_chunks_content, srag_float_to_return
+        
         except Exception as e_main_logic:
             logger.error(f"⚠️ Error during RAG retrieval main logic: {e_main_logic}", exc_info=True)
             return [], 0.0
