@@ -114,20 +114,30 @@ def set_cached(key: Any, value: Any) -> Any:
 HARDCODED_PDF_FILES = ["rawdata.pdf"]
 
 def get_system_prompt(user_type: str) -> str:
-    internal_user_type = "family" if user_type == "User / Family" else user_type
-    if internal_user_type not in ["physician", "family"]:
-        logger.warning(f"Unknown user type '{user_type}', defaulting to 'family'.")
-        internal_user_type = "family"
+    logger.debug(f"get_system_prompt called with user_type: '{user_type}'")
+    # Normalize user_type for internal logic
+    normalized_user_type = ""
+    if user_type == "User / Family" or user_type == "family":
+        normalized_user_type = "family"
+    elif user_type == "Physician" or user_type == "physician": # Handle both casings
+        normalized_user_type = "physician"
+    else:
+        logger.warning(f"Unknown user type '{user_type}' in get_system_prompt, defaulting to 'family'.")
+        normalized_user_type = "family"
+
     base_prompt = "You are MediAssist, an AI assistant specialized in medical information. "
-    if internal_user_type == "physician":
+    if normalized_user_type == "physician":
+        logger.debug("Using PHYSICIAN system prompt.")
         return base_prompt + (
             "Respond using professional medical terminology and consider offering differential diagnoses "
             "when appropriate. Provide detailed clinical insights and evidence-based recommendations. "
             "Use medical jargon freely, assuming high medical literacy. Cite specific guidelines or studies "
-            "when possible. Structure your responses with clear clinical reasoning."
+            "when possible. Structure your responses with clear clinical reasoning. Avoid addressing the user as if they are the patient; assume you are consulting with a fellow medical professional."
         )
-    else: # family user
+    else:  # family user
+        logger.debug("Using FAMILY system prompt.")
         return base_prompt + (
+            # ... (family prompt as before, including triage instructions) ...
             "Respond using clear, accessible language appropriate for someone without medical training. "
             "Explain medical terms when you use them. If the query describes a potentially urgent medical "
             "situation, explicitly identify it as a triage situation and provide clear guidance on "
@@ -228,16 +238,40 @@ class DocumentChatBot:
                 self.kg_driver = None
     
     def enhance_with_triage_detection(self, query: str, response_content: str, user_type: str) -> str:
-        if user_type not in ["User / Family", "family"]: return response_content
+        logger.debug(f"enhance_with_triage_detection called with user_type: '{user_type}'")
+        
+        normalized_user_type = ""
+        if user_type == "User / Family" or user_type == "family":
+            normalized_user_type = "family"
+        elif user_type == "Physician" or user_type == "physician":
+            normalized_user_type = "physician"
+        else:
+            # Default to family if unsure, but log it
+            logger.warning(f"Unknown user_type '{user_type}' in enhance_with_triage_detection, defaulting behavior to 'family' for safety (though triage should be skipped).")
+            normalized_user_type = "family" 
+    
+        if normalized_user_type != "family":
+            logger.info(f"Triage detection skipped for user type: '{user_type}' (normalized to '{normalized_user_type}')")
+            return response_content
+        
         if "TRIAGE ASSESSMENT:" in response_content.upper() or \
            any(cat in response_content for cat in ["1. Emergency", "2. Urgent Care", "3. Primary Care", "4. Self-care"]):
+             logger.debug("Triage detection skipped, response already contains triage info.")
              return response_content
+    
+        logger.debug(f"Attempting triage detection for family user. Query: {query[:50]}..., Response: {response_content[:100]}...")
         triage_prompt = (
-            f"Analyze if query + response implies triage. QUERY: {query} RESPONSE: {response_content}. "
-            "Classify: 1. Emergency, 2. Urgent Care, 3. Primary Care, 4. Self-care. "
-            "ONLY category # and title + brief reason. Else 'NO_TRIAGE_NEEDED'. Max 50 words."
+            f"You are an AI assistant analyzing a medical conversation. "
+            f"Determine if the user's query, given the assistant's response, represents a triage situation.\n\n"
+            f"QUERY: {query}\n\n"
+            f"ASSISTANT RESPONSE CONTENT: {response_content}\n\n"
+            "If this interaction suggests a need for urgency or specific care steps, classify it according to these categories based on the *most critical* implied level:\n"
+            "1. Emergency (Call 911/Emergency Services immediately)\n2. Urgent Care (See a doctor within 24 hours)\n"
+            "3. Primary Care (Schedule a regular appointment)\n4. Self-care (Can be managed at home)\n\n"
+            "Provide ONLY the triage category number and title (e.g., '1. Emergency') followed by a brief, one-sentence explanation of *why* this category is suggested. "
+            "If it's clearly NOT a triage situation, respond with ONLY 'NO_TRIAGE_NEEDED'. Ensure your response is very concise (max 50 words total)."
         )
-        cache_key = {"type": "triage_detection", "query": query, "response_hash": hash(response_content)} # Hash response
+        cache_key = {"type": "triage_detection", "query": query, "response_hash": hash(response_content)}
         if (cached := get_cached(cache_key)) is not None:
              if cached != "NO_TRIAGE_NEEDED": return f"{response_content}\n\n**TRIAGE ASSESSMENT:**\n{cached}"
              return response_content
@@ -246,7 +280,9 @@ class DocumentChatBot:
             set_cached(cache_key, triage_text)
             if "NO_TRIAGE_NEEDED" not in triage_text: return f"{response_content}\n\n**TRIAGE ASSESSMENT:**\n{triage_text}"
             return response_content
-        except Exception as e: logger.error(f"Error in triage detection: {e}"); return response_content
+        except Exception as e: 
+            logger.error(f"Error in triage detection: {e}", exc_info=True)
+            return response_content # Return original content on any error during triage
 
     def create_vectordb(self) -> Tuple[Optional[FAISS], str]:
         logger.info("Creating vector database...")
@@ -599,59 +635,109 @@ class DocumentChatBot:
         return selected
 
     def generate_initial_answer(self, query: str, selected_context: Optional[Dict[str, Any]], user_type: str) -> str:
+        logger.info(f"🧠 Initial Answer Gen. User Type: '{user_type}'. Query: '{query[:30]}...'")
         cache_key = {"type": "initial_answer", "query": query, "user_type": user_type, 
-                     "context_hash": abs(hash(json.dumps(selected_context, sort_keys=True, default=str)))} # Add default=str
-        if (cached := get_cached(cache_key)) is not None: return cached # type: ignore
-
-        base_prompt_instructions = get_system_prompt(user_type)
-        context_info_for_prompt, context_type_description = "", ""
+                     "context_hash": abs(hash(json.dumps(selected_context, sort_keys=True, default=str)))} # default=str for non-serializable
+        if (cached := get_cached(cache_key)) is not None: 
+            logger.debug("Initial answer from cache.")
+            return cached # type: ignore
+    
+        base_prompt_instructions = self.get_system_prompt(user_type) # Use self.get_system_prompt
+        logger.debug(f"Initial Answer Gen - System Prompt used (start): {base_prompt_instructions[:150]}...")
+        
+        context_info_for_prompt = ""
+        context_type_description = ""
         context_parts_for_prompt: List[str] = []
         
         if selected_context:
             if "kg" in selected_context:
                 kg_data = selected_context["kg"]
-                kg_info_str_parts = ["Knowledge Graph Information:"]
+                kg_info_str_parts = ["Knowledge Graph Information:"] # Start with a header
                 diag_data = kg_data.get("kg_content_diagnosis_data_for_llm")
                 diag_confidence = float(diag_data.get("confidence", 0.0)) if diag_data else 0.0
-
+    
                 if diag_data and diag_confidence > 0.0:
                     disease_name = diag_data.get("disease_name", "an unidentifiable condition")
-                    if diag_confidence > THRESHOLDS["high_kg_context_only"]: kg_info_str_parts.append(f"- **Highly Probable:** {disease_name} (KG Conf: {diag_confidence:.2f})")
-                    # ... (other confidence levels)
-                    elif diag_confidence > THRESHOLDS["disease_matching"]: kg_info_str_parts.append(f"- **Possible Condition:** {disease_name} (KG Conf: {diag_confidence:.2f})")
-
-                    if kg_data.get('kg_matched_symptoms'): kg_info_str_parts.append(f"- Matched Symptoms: {', '.join(kg_data['kg_matched_symptoms'])}")
+                    # Phrasing based on confidence thresholds
+                    if diag_confidence > THRESHOLDS["high_kg_context_only"]: 
+                        kg_info_str_parts.append(f"- **Highly Probable Condition:** {disease_name} (KG Confidence: {diag_confidence:.2f})")
+                    elif diag_confidence > THRESHOLDS["kg_context_selection"]: 
+                        kg_info_str_parts.append(f"- **Potential Condition:** {disease_name} (KG Confidence: {diag_confidence:.2f})")
+                    elif diag_confidence > THRESHOLDS["disease_matching"]: 
+                        kg_info_str_parts.append(f"- **Possible Condition:** {disease_name} (KG Confidence: {diag_confidence:.2f})")
+                    else: 
+                        kg_info_str_parts.append(f"- Possible Condition based on limited match: {disease_name} (KG Confidence: {diag_confidence:.2f})")
+                    
+                    if kg_data.get('kg_matched_symptoms'): 
+                        kg_info_str_parts.append(f"- Relevant Symptoms (matched in KG): {', '.join(kg_data['kg_matched_symptoms'])}")
                 
                 other_kg_content = kg_data.get("kg_content_other", "")
-                if other_kg_content and "did not find" not in other_kg_content: kg_info_str_parts.append(other_kg_content)
-                if len(kg_info_str_parts) > 1 : context_parts_for_prompt.append("\n".join(kg_info_str_parts))
-
+                if other_kg_content and "did not find" not in other_kg_content and other_kg_content.strip(): # Ensure it's meaningful
+                    kg_info_str_parts.append(other_kg_content)
+                
+                if len(kg_info_str_parts) > 1: # Only add if more than just the header
+                    context_parts_for_prompt.append("\n".join(kg_info_str_parts))
+    
             if "rag" in selected_context and selected_context["rag"]:
-                context_parts_for_prompt.append("Relevant Passages:\n---\n" + "\n---\n".join(selected_context["rag"][:3]) + "\n---")
-
-        if not selected_context or not context_parts_for_prompt:
-            context_type_description = "No external medical knowledge. Minimal placeholder (e.g., 'No specific info found'). NO general knowledge."
-            prompt_for_initial_answer = f"{base_prompt_instructions.strip()}\n\n{context_type_description}\n\nQuery: \"{query}\"\n\nPlaceholder Answer:"
+                context_parts_for_prompt.append("Relevant Passages from Documents:\n---\n" + "\n---\n".join(selected_context["rag"][:3]) + "\n---")
+    
+        if not selected_context or not context_parts_for_prompt: # No context or context parts ended up empty
+            context_type_description = ("You have not been provided with any specific external medical knowledge or document snippets for this query, "
+                                        "or the available information did not meet confidence thresholds. "
+                                        "Therefore, generate only a minimal placeholder answer that indicates lack of specific information "
+                                        "(e.g., 'No specific relevant information was found in available knowledge sources.'). "
+                                        "Do NOT attempt to answer the user query using your general knowledge in this step. "
+                                        "Do NOT mention external documents or knowledge graphs unless explicitly told they were empty.")
+            prompt_for_initial_answer = (
+                f"{base_prompt_instructions.strip()}\n\n"
+                f"{context_type_description.strip()}\n\n"
+                f"User Query: \"{query}\"\n\n"
+                "Minimal Placeholder Answer (be very concise):\n"
+            )
         else:
             context_info_for_prompt = "\n\n".join(context_parts_for_prompt)
-            desc_map = {"kg_rag": "Based on KG & RAG...", "kg": "Based on KG...", "rag": "Based on RAG..."}
-            key = "_".join(sorted(k for k,v in selected_context.items() if v)) # Only keys with actual content
-            context_type_description = desc_map.get(key, "Based on available information...")
-            prompt_for_initial_answer = f"{base_prompt_instructions.strip()}\n{context_type_description}\n\n{context_info_for_prompt}\n\nQuery: {query}\n\nAnswer:"
+            # Determine context description based on what parts were actually added
+            active_ctx_keys = []
+            if any("Knowledge Graph Information:" in part for part in context_parts_for_prompt): active_ctx_keys.append("kg")
+            if any("Relevant Passages from Documents:" in part for part in context_parts_for_prompt): active_ctx_keys.append("rag")
+            
+            ctx_desc_key = "_".join(sorted(active_ctx_keys))
+            desc_map = {
+                "kg_rag": "Based on the following structured medical knowledge from a knowledge graph AND relevant passages from medical documents, synthesize a comprehensive answer.",
+                "kg": "Based on the following information from a medical knowledge graph, answer the user query. Focus on the provided KG information.",
+                "rag": "Based on the following relevant passages from medical documents, answer the user query. Focus on the provided document excerpts."
+            }
+            context_type_description = desc_map.get(ctx_desc_key, "Based on the available information...")
+            prompt_for_initial_answer = (
+                f"{base_prompt_instructions.strip()}\n"
+                f"{context_type_description.strip()}\n\n"
+                f"Context Provided:\n{context_info_for_prompt}\n\n"
+                f"User Query: {query}\n\n"
+                "Answer (synthesize from context if provided, otherwise follow instructions for placeholder if no context was usable):\n"
+            )
         
+        logger.debug(f"Initial Answer Prompt (start):\n{prompt_for_initial_answer[:500]}...")
         try:
             initial_answer = self.local_generate(prompt_for_initial_answer, max_tokens=1000)
-            placeholder_frags = ["no specific relevant information was found", "lack of specific information"]
-            is_placeholder = not initial_answer.strip() or any(f in initial_answer.lower() for f in placeholder_frags)
-
+            logger.debug(f"Initial Answer Raw LLM Output (start): {initial_answer[:100]}")
+    
+            placeholder_frags = ["no specific relevant information was found", "lack of specific information", "unable to provide specific information"]
+            initial_answer_lower = initial_answer.lower()
+            is_placeholder = not initial_answer.strip() or any(f in initial_answer_lower for f in placeholder_frags)
+    
             has_provided_context = selected_context and context_parts_for_prompt
             if has_provided_context and is_placeholder:
-                initial_answer = "No specific relevant information was found in external knowledge sources."
+                logger.warning("LLM generated placeholder despite context. Overriding.")
+                initial_answer = "No specific relevant information was found in external knowledge sources that could address the query." 
             elif not has_provided_context and not is_placeholder:
-                initial_answer = "No specific relevant information was found in external knowledge sources."
+                logger.warning("LLM generated content despite no usable context and instruction for placeholder. Overriding.")
+                initial_answer = "No specific relevant information was found in available knowledge sources to address the query."
+            
             return set_cached(cache_key, initial_answer)
-        except ValueError as e:
-            raise ValueError("Error generating initial answer.") from e
+        except ValueError as e: # From local_generate
+            logger.error(f"⚠️ Error during initial answer LLM call: {e}", exc_info=True)
+            # Return a specific error message that can be displayed to the user
+            raise ValueError(f"Sorry, I encountered an AI processing error while generating the initial part of the answer: {e}") from e
 
     def reflect_on_answer(self, query: str, initial_answer: str, selected_context: Optional[Dict[str, Any]]) -> Tuple[str, Optional[str]]:
         context_for_reflection_prompt = self._format_context_for_reflection(selected_context)
@@ -703,48 +789,97 @@ class DocumentChatBot:
         return "\n\n".join(parts) if parts else "None"
 
     def get_supplementary_answer(self, query: str, missing_info_description: str, user_type: str) -> str:
-        cache_key = {"type": "supplementary_answer", "missing_info_hash": abs(hash(missing_info_description)), "query_hash": abs(hash(query)), "user_type": user_type}
-        if (cached := get_cached(cache_key)) is not None: return cached # type: ignore
-        if not self.llm: return "\n\n-- Additional Information --\nSupplementary info unavailable (LLM down)."
-
-        sys_prompt = get_system_prompt(user_type)
-        supp_prompt = f'''{sys_prompt}
-        Provide *only* specific missing details for an incomplete medical answer.
-        Original Query: "{query}"
-        Missing Info: "{missing_info_description}"
-        Supplementary info ONLY. Include evidence/sources (URLs, [Source Name], [General Medical Knowledge]). If none, state concisely.'''
+        logger.info(f"🌐 Gap Filling. User Type: '{user_type}'. Missing: {missing_info_description[:50]}...")
+        cache_key = {"type": "supplementary_answer", "missing_info_hash": abs(hash(missing_info_description)), 
+                     "query_hash": abs(hash(query)), "user_type": user_type}
+        if (cached := get_cached(cache_key)) is not None: 
+            logger.debug("Supplementary answer from cache.")
+            return cached # type: ignore
+        if not self.llm: 
+            return "\n\n-- Additional Information --\nSupplementary information could not be generated because the AI model is unavailable."
+    
+        base_prompt_instructions = self.get_system_prompt(user_type) # Use self.get_system_prompt
+        logger.debug(f"Supplementary Answer Gen - System Prompt used (start): {base_prompt_instructions[:150]}...")
+        
+        supplementary_prompt = f'''{base_prompt_instructions.strip()}
+    You are an AI assistant acting to provide *only* specific missing details to supplement a previous incomplete answer.
+    Your response should be suitable for the specified user type.
+    Original User Query (for context to understand the scope and what was asked): "{query}"
+    Description of Information Missing from Previous Answer (this is what you need to address): "{missing_info_description}"
+    
+    Provide ONLY the supplementary information that directly addresses the 'Missing Information' described above.
+    Do NOT restate the original query or any information already provided in the previous answer.
+    Focus precisely on filling the identified gap.
+    **If you make medical claims, you MUST include evidence or source attribution where possible.** Use formats like [Source Name], [General Medical Knowledge], or provide URLs if appropriate.
+    If you cannot find specific information for the described gap, state this concisely (e.g., "No further specific details could be found regarding X.").
+    Start your response directly with the supplementary information.
+    '''
         try:
-            supp_answer = self.local_generate(supp_prompt, max_tokens=750).strip()
-            if not supp_answer: supp_answer = "The AI could not find specific additional information."
-            final_text = "\n\n-- Additional Information --\n" + supp_answer
-            return set_cached(cache_key, final_text) # type: ignore
-        except ValueError as e:
-            final_text = f"\n\n-- Additional Information --\nError finding supplementary info: {e}"
-            return set_cached(cache_key, final_text) # type: ignore
+            supplementary_answer = self.local_generate(supplementary_prompt, max_tokens=750).strip()
+            if not supplementary_answer: 
+                supplementary_answer = "The AI could not find specific additional information for the identified gap."
+            logger.info("🌐 Supplementary Answer Generated successfully.")
+            final_supplementary_text = "\n\n-- Additional Information --\n" + supplementary_answer
+            return set_cached(cache_key, final_supplementary_text) # type: ignore
+        except ValueError as e: # From local_generate
+            logger.error(f"⚠️ Error during supplementary answer LLM call: {e}", exc_info=True)
+            error_msg = f"Sorry, an AI processing error occurred while trying to find additional information about: '{missing_info_description[:50]}...'"
+            final_supplementary_text = f"\n\n-- Additional Information --\n{error_msg}"
+            return set_cached(cache_key, final_supplementary_text) # type: ignore
 
     def collate_answers(self, initial_answer: str, supplementary_answer: str, user_type: str) -> str:
-        cache_key = {"type": "final_collation", "initial_answer_hash": abs(hash(initial_answer)), 
-                     "supplementary_answer_hash": abs(hash(supplementary_answer)), "user_type": user_type}
-        if (cached := get_cached(cache_key)) is not None: return cached # type: ignore
-        if not self.llm: return f"{initial_answer.strip()}\n\n{supplementary_answer.strip()}"
-
-        supp_content = supplementary_answer.split("-- Additional Information --\n", 1)[-1].strip()
-        if not supp_content or "could not find" in supp_content.lower() or "error occurred" in supp_content.lower():
-            return initial_answer.strip() + supplementary_answer.strip()
-
-        sys_prompt = get_system_prompt(user_type)
-        collate_prompt = f'''{sys_prompt}
-        Combine 'Initial Answer' and 'Supplementary Information' into one coherent response.
-        Remove redundancy. Preserve facts & sources. Format with markdown. NO disclaimer/pathway.
-        Initial Answer:\n"{initial_answer}"
-        Supplementary Info:\n"{supplementary_answer}"
-        Combined Answer:'''
-        try:
-            combined = self.local_generate(collate_prompt, max_tokens=1500)
-            return set_cached(cache_key, combined) # type: ignore
-        except ValueError as e:
-            err_msg = f"\n\n-- Collation Failed --\nError: {e}\n\n"
-            return set_cached(cache_key, initial_answer.strip() + err_msg + supplementary_answer.strip()) # type: ignore
+            logger.info(f"✨ Final Answer Collation. User Type: '{user_type}'.")
+            cache_key = {"type": "final_collation", "initial_answer_hash": abs(hash(initial_answer)), 
+                         "supplementary_answer_hash": abs(hash(supplementary_answer)), "user_type": user_type}
+            if (cached := get_cached(cache_key)) is not None: 
+                logger.debug("Final collation from cache.")
+                return cached # type: ignore
+            if not self.llm: 
+                logger.warning("LLM not available for collation. Concatenating answers.")
+                return f"{initial_answer.strip()}\n\n{supplementary_answer.strip()}"
+        
+            # Check if supplementary answer is just the error/no-info placeholder string structure
+            supp_content_after_header = supplementary_answer.split("-- Additional Information --\n", 1)[-1].strip()
+            if not supp_content_after_header or \
+               "could not find specific additional information" in supp_content_after_header.lower() or \
+               "error occurred while trying to find additional information" in supp_content_after_header.lower() or \
+               "ai model is unavailable" in supp_content_after_header.lower():
+                 logger.debug("Supplementary answer appears to be empty, placeholder, or error. Appending directly without LLM collation.")
+                 return initial_answer.strip() + "\n" + supplementary_answer.strip() # Ensure newline if supp_answer is not just header
+        
+            base_prompt_instructions = self.get_system_prompt(user_type) # Use self.get_system_prompt
+            logger.debug(f"Collate Answers - System Prompt used (start): {base_prompt_instructions[:150]}...")
+            
+            collation_prompt = f'''{base_prompt_instructions.strip()}
+        You are a medical communicator tasked with combining information from two sources into a single, coherent final response, appropriate for the specified user type.
+        Combine the following two parts:
+        1. An 'Initial Answer' to a medical query.
+        2. 'Supplementary Information' that addresses gaps identified in the initial answer.
+        
+        Create a single, fluent, and easy-to-understand final answer. Ensure a natural flow.
+        Remove any redundancy between the two parts. If the supplementary part largely repeats or doesn't add significant new value to the initial answer, prioritize the initial answer or integrate minimally.
+        Preserve all factual medical information and any source attributions or links provided in either part. Do NOT add new sources or make claims not supported by the provided parts.
+        Format the final response clearly using markdown (e.g., headings, lists) if appropriate.
+        Do NOT include the headers "Initial Answer Part:" or "Supplementary Information Part:" in your final output.
+        Do NOT include the medical disclaimer or source pathway note in the answer text itself; these will be added separately.
+        
+        Initial Answer Part:
+        "{initial_answer}"
+        
+        Supplementary Information Part (this part starts with "-- Additional Information --\\n" which you should ignore as a header):
+        "{supplementary_answer}"
+        
+        Provide ONLY the combined, final answer content. Start directly with the answer.
+        '''
+            try:
+                combined_answer_content = self.local_generate(collation_prompt, max_tokens=1500)
+                logger.info("✨ Final Answer Collated successfully.")
+                return set_cached(cache_key, combined_answer_content) # type: ignore
+            except ValueError as e: # From local_generate
+                logger.error(f"⚠️ Error during final answer collation LLM call: {e}", exc_info=True)
+                error_message = f"\n\n-- Collation Failed --\nAn error occurred while finalizing the answer ({e}). The information below is the initial answer followed by supplementary information, presented uncollated.\n\n"
+                final_collated_text = initial_answer.strip() + error_message + supplementary_answer.strip()
+                return set_cached(cache_key, final_collated_text) # type: ignore
 
     def reset_conversation(self) -> None: logger.info("🔄 Resetting chatbot internal state.")
 
