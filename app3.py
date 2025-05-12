@@ -113,43 +113,6 @@ def set_cached(key: Any, value: Any) -> Any:
 
 HARDCODED_PDF_FILES = ["rawdata.pdf"]
 
-def get_system_prompt(user_type: str) -> str:
-    logger.debug(f"get_system_prompt called with user_type: '{user_type}'")
-    # Normalize user_type for internal logic
-    normalized_user_type = ""
-    if user_type == "User / Family" or user_type == "family":
-        normalized_user_type = "family"
-    elif user_type == "Physician" or user_type == "physician": # Handle both casings
-        normalized_user_type = "physician"
-    else:
-        logger.warning(f"Unknown user type '{user_type}' in get_system_prompt, defaulting to 'family'.")
-        normalized_user_type = "family"
-
-    base_prompt = "You are MediAssist, an AI assistant specialized in medical information. "
-    if normalized_user_type == "physician":
-        logger.debug("Using PHYSICIAN system prompt.")
-        return base_prompt + (
-            "Respond using professional medical terminology and consider offering differential diagnoses "
-            "when appropriate. Provide detailed clinical insights and evidence-based recommendations. "
-            "Use medical jargon freely, assuming high medical literacy. Cite specific guidelines or studies "
-            "when possible. Structure your responses with clear clinical reasoning. Avoid addressing the user as if they are the patient; assume you are consulting with a fellow medical professional."
-        )
-    else:  # family user
-        logger.debug("Using FAMILY system prompt.")
-        return base_prompt + (
-            # ... (family prompt as before, including triage instructions) ...
-            "Respond using clear, accessible language appropriate for someone without medical training. "
-            "Explain medical terms when you use them. If the query describes a potentially urgent medical "
-            "situation, explicitly identify it as a triage situation and provide clear guidance on "
-            "appropriate next steps (e.g., 'This situation requires immediate medical attention' or "
-            "'This can be managed at home with the following care steps...').\n\n"
-            "For triage situations, explicitly state the level of urgency using one of these categories:\n"
-            "1. Emergency (Call 911/Emergency Services immediately)\n"
-            "2. Urgent Care (See a doctor within 24 hours)\n"
-            "3. Primary Care (Schedule a regular appointment)\n"
-            "4. Self-care (Can be managed at home with the following steps...)\n\n"
-            "Always prioritize patient safety in your recommendations."
-        )
 
 def vote_message(user_message: str, bot_message: str, vote: str, user_type: str) -> None:
     logger.info(f"Logging vote: {vote} for user_type: {user_type}")
@@ -345,7 +308,46 @@ class DocumentChatBot:
         except Exception as e: 
             logger.error(f"Error during Gemini LLM generation: {e}. Prompt (start): {prompt[:100]}")
             raise ValueError(f"LLM generation failed: {e}") from e
-
+            
+    def get_system_prompt(self, user_type: str) -> str: # Added self as it's a method
+        logger.debug(f"get_system_prompt called with user_type: '{user_type}' (type: {type(user_type)})")
+        
+        normalized_user_type = ""
+        # Explicitly check for the exact strings returned by the selectbox or common variations
+        if user_type == "User / Family" or user_type == "family":
+            normalized_user_type = "family"
+        elif user_type == "Physician" or user_type == "physician": # Handles "Physician" from selectbox
+            normalized_user_type = "physician"
+        else:
+            logger.warning(f"Unknown user_type '{user_type}' in get_system_prompt, defaulting to 'family'.")
+            normalized_user_type = "family"
+    
+        base_prompt = "You are MediAssist, an AI assistant specialized in medical information. "
+        if normalized_user_type == "physician":
+            logger.info("Using PHYSICIAN system prompt.")
+            return base_prompt + (
+                "Respond using professional medical terminology and consider offering differential diagnoses "
+                "when appropriate. Provide detailed clinical insights and evidence-based recommendations. "
+                "Use medical jargon freely, assuming high medical literacy. Cite specific guidelines or studies "
+                "when possible. Structure your responses with clear clinical reasoning. "
+                "Avoid addressing the user as if they are the patient; assume you are consulting with a fellow medical professional about a case. Do not provide basic patient education unless specifically asked."
+            )
+        else:  # family user
+            logger.info("Using FAMILY system prompt.")
+            return base_prompt + (
+                "Respond using clear, accessible language appropriate for someone without medical training. "
+                "Explain medical terms when you use them. If the query describes a potentially urgent medical "
+                "situation, explicitly identify it as a triage situation and provide clear guidance on "
+                "appropriate next steps (e.g., 'This situation requires immediate medical attention' or "
+                "'This can be managed at home with the following care steps...').\n\n"
+                "For triage situations, explicitly state the level of urgency using one of these categories:\n"
+                "1. Emergency (Call 911/Emergency Services immediately)\n"
+                "2. Urgent Care (See a doctor within 24 hours)\n"
+                "3. Primary Care (Schedule a regular appointment)\n"
+                "4. Self-care (Can be managed at home with the following steps...)\n\n"
+                "Always prioritize patient safety in your recommendations."
+            )
+        
     def is_medical_query(self, query: str) -> Tuple[bool, str]:
         cache_key = {"type": "medical_relevance", "query": query}
         if (cached := get_cached(cache_key)) is not None: return cached # type: ignore
