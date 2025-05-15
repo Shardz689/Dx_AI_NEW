@@ -93,9 +93,9 @@ def get_image_as_base64(file_path_str: str) -> str:
         logger.error(f"Error encoding image {file_path}: {e}")
         return "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
 try:
-    ICON_B64 = get_image_as_base64(IMAGE_PATH_STR) 
+    ICON_B64 = get_image_as_base64(image_path_str) 
 except Exception as e_icon: # Catch any unexpected error during this global setup
-    logger.error(f"Failed to load/encode favicon from '{IMAGE_PATH_STR}': {e_icon}")
+    logger.error(f"Failed to load/encode favicon from '{image_path_str}': {e_icon}")
     ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=" 
 
 CACHE: Dict[str, Any] = {}
