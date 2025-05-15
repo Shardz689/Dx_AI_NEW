@@ -326,31 +326,41 @@ class DocumentChatBot:
         else:
             logger.warning(f"Unknown user_type '{user_type}' in get_system_prompt, defaulting to 'family'.")
             normalized_user_type = "family"
-
-        base_prompt = "You are MediAssist, an AI assistant specialized in medical information. "
+    
+        base_prompt = "You are MediAssist, an AI assistant specialized in medical information. Your primary goal is to provide accurate and helpful information. " # Slightly rephrased base
+        
+        common_instructions = (
+            "When answering, prioritize information from the 'Context Provided' (which may include 'Knowledge Graph Information' and 'Relevant Passages from Internal Data').\n"
+            "1. **If context is sufficient:** Base your answer primarily on this context. If the context contains mentions of specific source names (e.g., specific studies, document titles within the internal data), include these attributions. If the context explicitly contains URLs, you may reproduce these URLs as clickable Markdown links (e.g., [Descriptive Link Text from Context](URL_FROM_CONTEXT)) if they are directly relevant and appear reliable.\n"
+            "2. **If context is insufficient or you need to use general knowledge:** You may supplement with your general medical knowledge. When doing so:\n"
+            "   a. If you reference information generally attributable to well-known, reputable medical organizations (like the CDC, WHO, NIH, Mayo Clinic, American Heart Association, American Diabetes Association, etc.), **mention the organization by name.**\n"
+            "   b. For these highly reputable organizations mentioned in point 2a, if you are confident in recalling their main public-facing homepage URL or a very stable, top-level topic URL related to the general subject (e.g., the CDC's main page on 'flu' if discussing flu prevention), you MAY provide it as a clickable Markdown link, like: [CDC General Flu Information](https://www.cdc.gov/flu/index.htm). **Only do this for very common, primary URLs of these major organizations.**\n"
+            "   c. **CRITICALLY: Do NOT invent or guess specific deep URLs, publication URLs, or any URL if you are not highly confident it's a correct, stable, and general public entry point for that organization.** It is better to only mention the organization's name than to provide an incorrect or misleading link.\n"
+            "   d. If you cannot find specific information for a very niche query, state that the information is not available in the provided context or your general knowledge.\n"
+            "3. **Overall:** Be cautious. Prioritize accuracy. Do not present your general knowledge as if it came directly from the provided context unless it aligns. "
+        )
+    
         if normalized_user_type == "physician":
-            logger.info("Using PHYSICIAN system prompt.")
-            return base_prompt + (
-                "Respond using professional medical terminology. Consider differential diagnoses. "
+            logger.info("Using PHYSICIAN system prompt with updated source instructions.")
+            return base_prompt + common_instructions + (
+                "\nRespond using professional medical terminology. Consider differential diagnoses. "
                 "Provide detailed clinical insights and evidence-based recommendations. Assume high medical literacy. "
-                "If specific guidelines or studies are requested and present in your provided context (from internal data or knowledge graph), cite or summarize them accurately. Include any source names or URLs if they are explicitly part of that provided context (format URLs as [Name](URL)). "
-                "If specific guidelines are not in your context, clearly state that the detailed guidelines are not available in the provided information, but you can offer general knowledge if applicable, mentioning general reputable sources by name if appropriate (e.g., 'General guidance from the ADA suggests...'). "
+                "If specific guidelines (e.g., RSSDI, ADA, AHA) are requested: first, check if they are present in your provided context. If so, cite or summarize them accurately, including any source names or URLs explicitly part of that context. "
+                "If specific guidelines are not in your context, clearly state that, but you may offer general knowledge about the topic if applicable, mentioning general reputable sources or guideline bodies by name and potentially their main website if you are confident (as per instruction 2b). "
                 "Structure responses with clear clinical reasoning. Address the user as a fellow medical professional about a case. Do not provide basic patient education unless asked. Do not provide patient-style triage advice."
             )
         else:  # family user
-            logger.info("Using FAMILY system prompt for integrated triage.")
-            return base_prompt + (
-                "Respond using clear, accessible language for someone without medical training. Explain medical terms. "
-                "**If the query describes a potentially urgent medical situation, you MUST assess the urgency and integrate clear guidance on appropriate next steps directly and naturally within your main answer, as part of a helpful paragraph, not as a separate headed section.** "
+            logger.info("Using FAMILY system prompt with integrated triage and updated source instructions.")
+            return base_prompt + common_instructions + (
+                "\nRespond using clear, accessible language for someone without medical training. Explain medical terms. "
+                "If the query describes a potentially urgent medical situation, you MUST assess the urgency and integrate clear guidance on appropriate next steps directly and naturally within your main answer, as part of a helpful paragraph, not as a separate headed section. "
                 "Use one of these urgency levels if applicable, explaining why: \n"
                 "1. **Emergency:** If it's an emergency, strongly advise to 'Call 911 or go to the nearest emergency room immediately because...'.\n"
                 "2. **Urgent Care:** If urgent, advise to 'See a doctor or go to an urgent care clinic within 24 hours because...'.\n"
                 "3. **Primary Care:** If non-urgent but needs medical attention, advise to 'Schedule a regular appointment with your doctor because...'.\n"
                 "4. **Self-care:** If manageable at home, explain 'This can likely be managed at home with the following care steps...'.\n"
                 "If no specific urgency level applies, do not mention them. Always prioritize patient safety. "
-                "If you mention specific sources (like CDC, WHO, Mayo Clinic) from your knowledge or provided context, state their names. If URLs are explicitly in the provided context from internal data, you can include them if relevant and helpful, ensuring they are presented clearly as clickable links in Markdown format (e.g., [Source Name](URL)). Do not invent URLs."
             )
-
         
     def is_medical_query(self, query: str) -> Tuple[bool, str]:
         cache_key = {"type": "medical_relevance", "query": query}
@@ -641,104 +651,146 @@ class DocumentChatBot:
         return selected
 
     def generate_initial_answer(self, query: str, selected_context: Optional[Dict[str, Any]], 
-                                user_type: str, conversation_history: Optional[List[Tuple[str,str]]]) -> str:
-            logger.info(f"🧠 Initial Answer Gen. User Type: '{user_type}'. Query: '{query[:30]}...' History: {len(conversation_history) if conversation_history else 0} turns.")
-            cache_key_obj = {"type": "initial_answer_v3", "query": query, "user_type": user_type, 
-                         "context_hash": abs(hash(json.dumps(selected_context, sort_keys=True, default=str))),
-                         "history_hash": abs(hash(str(conversation_history)))}
-            
-            if (cached := get_cached(cache_key_obj)) is not None: 
-                logger.debug("Initial answer from cache.")
-                return cached
+                            user_type: str, conversation_history: Optional[List[Tuple[str,str]]]) -> str:
+        logger.info(f"🧠 Initial Answer Gen. User Type: '{user_type}'. Query: '{query[:30]}...' History: {len(conversation_history) if conversation_history else 0} turns.")
+        
+        # Construct a comprehensive cache key
+        context_dump_for_hash = json.dumps(selected_context, sort_keys=True, default=str) if selected_context else "None"
+        history_dump_for_hash = str(conversation_history) if conversation_history else "None"
+        
+        cache_key_obj = {
+            "type": "initial_answer_v4", # Increment version if prompt logic changes significantly
+            "query": query, 
+            "user_type": user_type, 
+            "context_hash": abs(hash(context_dump_for_hash)),
+            "history_hash": abs(hash(history_dump_for_hash))
+        }
+        
+        if (cached := get_cached(cache_key_obj)) is not None: 
+            logger.debug(f"Initial answer from cache for query: {query[:30]}...")
+            return cached
     
-            system_prompt_content = self.get_system_prompt(user_type)
-            logger.debug(f"Initial Answer Gen - System Prompt used (start): {system_prompt_content[:150]}...")
-            
-            context_info_for_prompt = ""
-            context_parts_for_prompt: List[str] = []
-            
-            if selected_context:
-                if "kg" in selected_context:
-                    kg_data = selected_context["kg"]
-                    kg_info_str_parts = ["Knowledge Graph Information:"]
-                    diag_data = kg_data.get("kg_content_diagnosis_data_for_llm")
-                    diag_confidence = float(diag_data.get("confidence", 0.0)) if diag_data else 0.0
-                    if diag_data and diag_confidence > 0.0:
-                        disease_name = diag_data.get("disease_name", "an unidentifiable condition")
-                        if diag_confidence > THRESHOLDS["high_kg_context_only"]: kg_info_str_parts.append(f"- **Highly Probable Condition:** {disease_name} (KG Confidence: {diag_confidence:.2f})")
-                        elif diag_confidence > THRESHOLDS["kg_context_selection"]: kg_info_str_parts.append(f"- **Potential Condition:** {disease_name} (KG Confidence: {diag_confidence:.2f})")
-                        elif diag_confidence > THRESHOLDS["disease_matching"]: kg_info_str_parts.append(f"- **Possible Condition:** {disease_name} (KG Confidence: {diag_confidence:.2f})")
-                        else: kg_info_str_parts.append(f"- Possible Condition based on limited match: {disease_name} (KG Confidence: {diag_confidence:.2f})")
-                        if kg_data.get('kg_matched_symptoms'): kg_info_str_parts.append(f"- Relevant Symptoms (matched in KG): {', '.join(kg_data['kg_matched_symptoms'])}")
-                    other_kg_content = kg_data.get("kg_content_other", "")
-                    if other_kg_content and "did not find" not in other_kg_content and other_kg_content.strip(): kg_info_str_parts.append(other_kg_content)
-                    if len(kg_info_str_parts) > 1 : context_parts_for_prompt.append("\n".join(kg_info_str_parts))
+        system_prompt_content = self.get_system_prompt(user_type) # This now has detailed source/link instructions
+        # logger.debug(f"Initial Answer Gen - System Prompt used (start): {system_prompt_content[:200]}...") # Log more of the prompt
+        
+        context_info_for_prompt = ""
+        context_parts_for_prompt: List[str] = []
+        
+        if selected_context:
+            if "kg" in selected_context:
+                kg_data = selected_context["kg"]
+                kg_info_str_parts = ["Knowledge Graph Information:"]
+                diag_data = kg_data.get("kg_content_diagnosis_data_for_llm")
+                diag_confidence = float(diag_data.get("confidence", 0.0)) if diag_data else 0.0
     
-                if "rag" in selected_context and selected_context["rag"]:
-                    context_parts_for_prompt.append("Relevant Passages from Internal Data:\n---\n" + "\n---\n".join(selected_context["rag"][:3]) + "\n---")
+                if diag_data and diag_confidence > 0.0:
+                    disease_name = diag_data.get("disease_name", "an unidentifiable condition")
+                    if diag_confidence > THRESHOLDS["high_kg_context_only"]: 
+                        kg_info_str_parts.append(f"- **Highly Probable Condition:** {disease_name} (KG Confidence: {diag_confidence:.2f})")
+                    elif diag_confidence > THRESHOLDS["kg_context_selection"]: 
+                        kg_info_str_parts.append(f"- **Potential Condition:** {disease_name} (KG Confidence: {diag_confidence:.2f})")
+                    elif diag_confidence > THRESHOLDS["disease_matching"]: 
+                        kg_info_str_parts.append(f"- **Possible Condition:** {disease_name} (KG Confidence: {diag_confidence:.2f})")
+                    else: 
+                        kg_info_str_parts.append(f"- Possible Condition based on limited match: {disease_name} (KG Confidence: {diag_confidence:.2f})")
+                    
+                    if kg_data.get('kg_matched_symptoms'): 
+                        kg_info_str_parts.append(f"- Relevant Symptoms (matched in KG): {', '.join(kg_data['kg_matched_symptoms'])}")
+                
+                other_kg_content = kg_data.get("kg_content_other", "")
+                if other_kg_content and "did not find" not in other_kg_content and other_kg_content.strip():
+                    kg_info_str_parts.append(other_kg_content)
+                
+                if len(kg_info_str_parts) > 1: 
+                    context_parts_for_prompt.append("\n".join(kg_info_str_parts))
     
-            current_turn_user_content = ""
-            if not selected_context or not context_parts_for_prompt:
-                context_type_description = ("You have not been provided with any specific external medical knowledge or document snippets for this query, "
-                                            "or the available information did not meet confidence thresholds. "
-                                            "Therefore, generate only a minimal placeholder answer that indicates lack of specific information "
-                                            "(e.g., 'No specific relevant information was found in available knowledge sources to address this.'). "
-                                            "Do NOT attempt to answer the user query using your general knowledge in this step. ")
-                current_turn_user_content = (
-                f"{context_type_description.strip()}\n\n"
-                f"Context Provided:\n{context_info_for_prompt}\n\n"
-                f"Current User Query: {query}\n\n"
-                "Answer (Synthesize your answer primarily from the 'Context Provided'. " # Emphasize context first
-                "If the context includes source names or URLs, incorporate them relevantly as per system instructions. " # Reinforce source usage
-                "If context is insufficient, especially for very specific requests like latest guidelines not present in context, state that the specific information isn't available in the provided data, then use your general knowledge cautiously, attributing to general reputable source names if possible. "
-                "For family users, integrate triage advice naturally if the situation warrants it, as per system instructions.):\n"
+            if "rag" in selected_context and selected_context["rag"]:
+                # Changed "Documents" to "Internal Data" for user-facing consistency if needed, but prompt uses "Internal Data"
+                context_parts_for_prompt.append("Relevant Passages from Internal Data:\n---\n" + "\n---\n".join(selected_context["rag"][:3]) + "\n---")
+    
+        current_turn_user_content = ""
+        context_type_description_for_prompt = "" # This will be part of current_turn_user_content
+    
+        if not selected_context or not context_parts_for_prompt:
+            context_type_description_for_prompt = (
+                "You have not been provided with any specific external medical knowledge or document snippets from internal data sources or the knowledge graph for this query, "
+                "or the available information did not meet relevance or confidence thresholds. "
+                "Therefore, generate only a minimal placeholder answer that indicates lack of specific information from these provided sources "
+                "(e.g., 'No specific relevant information was found in available knowledge sources to address this query.'). "
+                "Do NOT attempt to answer the user query using your general knowledge in this step, unless explicitly permitted by the broader system instructions for handling insufficient context (e.g., by mentioning general reputable source names if appropriate and confident). "
+                "Focus on the placeholder message."
             )
-            else:
-                context_info_for_prompt = "\n\n".join(context_parts_for_prompt)
-                active_ctx_keys = []
-                if any("Knowledge Graph Information:" in part for part in context_parts_for_prompt): active_ctx_keys.append("kg")
-                if any("Relevant Passages from Internal Data:" in part for part in context_parts_for_prompt): active_ctx_keys.append("rag")
-                
-                ctx_desc_key = "_".join(sorted(active_ctx_keys))
-                desc_map = {
-                    "kg_rag": "Based on the following structured medical knowledge from a knowledge graph AND relevant passages from internal data, synthesize a comprehensive answer.",
-                    "kg": "Based on the following information from a medical knowledge graph, answer the user query. Focus on the provided KG information.",
-                    "rag": "Based on the following relevant passages from internal data, answer the user query. Focus on the provided document excerpts."
-                }
-                context_type_description = desc_map.get(ctx_desc_key, "Based on the available information...")
-                current_turn_user_content = (
-                    f"{context_type_description.strip()}\n\n"
-                    f"Context Provided:\n{context_info_for_prompt}\n\n"
-                    f"Current User Query: {query}\n\n"
-                    "Answer (synthesize from context if provided. If context is insufficient for the query, especially for specific guidelines, state that the specific information is not available in the provided context. Otherwise, follow instructions for placeholder if no context was usable. For family users, integrate triage advice naturally if the situation warrants it, as per system instructions.):\n"
-                )
-    
-            messages_for_llm = [{"role": "system", "content": system_prompt_content}]
-            if conversation_history:
-                for hist_user_msg, hist_bot_msg in conversation_history:
-                    messages_for_llm.append({"role": "user", "content": hist_user_msg})
-                    messages_for_llm.append({"role": "assistant", "content": hist_bot_msg})
-            messages_for_llm.append({"role": "user", "content": current_turn_user_content})
+            current_turn_user_content = (
+                f"{context_type_description_for_prompt.strip()}\n\n"
+                f"Current User Query: \"{query}\"\n\n"
+                "Minimal Placeholder Answer (be very concise and direct, adhering to the instruction above about general knowledge usage if context is truly empty):\n"
+            )
+        else:
+            context_info_for_prompt = "\n\n".join(context_parts_for_prompt)
+            active_ctx_keys = []
+            if any("Knowledge Graph Information:" in part for part in context_parts_for_prompt): active_ctx_keys.append("kg")
+            if any("Relevant Passages from Internal Data:" in part for part in context_parts_for_prompt): active_ctx_keys.append("rag")
             
-            logger.debug(f"Initial Answer - Messages for LLM (last user part shown): {messages_for_llm[-1]['content'][:400]}...")
-            try:
-                initial_answer = self.local_generate(messages_for_llm, max_tokens=1000)
-                
-                placeholder_frags = ["no specific relevant information was found", "lack of specific information", "unable to provide specific information"]
-                initial_answer_lower = initial_answer.lower()
-                is_placeholder = not initial_answer.strip() or any(f in initial_answer_lower for f in placeholder_frags)
+            ctx_desc_key = "_".join(sorted(active_ctx_keys))
+            desc_map = {
+                "kg_rag": "Based on the following structured medical knowledge from a knowledge graph AND relevant passages from internal data, synthesize a comprehensive answer.",
+                "kg": "Based on the following information from a medical knowledge graph, answer the user query. Focus on the provided KG information.",
+                "rag": "Based on the following relevant passages from internal data, answer the user query. Focus on the provided document excerpts."
+            }
+            context_type_description_for_prompt = desc_map.get(ctx_desc_key, "Based on the available information from provided sources...")
+            current_turn_user_content = (
+                f"{context_type_description_for_prompt.strip()}\n\n"
+                f"Context Provided From Internal Sources:\n{context_info_for_prompt}\n\n"
+                f"Current User Query: {query}\n\n"
+                "Answer (Synthesize your answer primarily from the 'Context Provided From Internal Sources'. "
+                "Follow all system instructions regarding source attribution: if the context includes source names or URLs, incorporate them relevantly. "
+                "If context is insufficient for specific requests (like detailed, latest guidelines not present in context), state that the specific information isn't available in the provided data, then use your general knowledge cautiously, attributing to general reputable source names and potentially their main URLs if you are confident and as per system instructions. "
+                "For family users, integrate triage advice naturally into your response if the situation warrants it, following system instructions on urgency levels.):\n"
+            )
     
-                has_provided_context = selected_context and context_parts_for_prompt
-                if has_provided_context and is_placeholder:
-                    logger.warning("LLM generated placeholder despite context. Overriding.")
-                    initial_answer = "No specific relevant information was found in external knowledge sources that could address the query." 
-                elif not has_provided_context and not is_placeholder:
-                    logger.warning("LLM generated content despite no usable context and instruction for placeholder. Overriding.")
-                    initial_answer = "No specific relevant information was found in available knowledge sources to address the query."
+        messages_for_llm = [{"role": "system", "content": system_prompt_content}]
+        if conversation_history:
+            for hist_user_msg, hist_bot_msg in conversation_history:
+                messages_for_llm.append({"role": "user", "content": hist_user_msg})
+                messages_for_llm.append({"role": "assistant", "content": hist_bot_msg})
+        messages_for_llm.append({"role": "user", "content": current_turn_user_content})
+        
+        logger.debug(f"Initial Answer - Final User Message for LLM (start):\n{current_turn_user_content[:500]}...")
+        try:
+            initial_answer = self.local_generate(messages_for_llm, max_tokens=1000) # Pass the full message list
+            logger.debug(f"Initial Answer Raw LLM Output (start): {initial_answer[:100]}")
+        
+            placeholder_frags = [
+                "no specific relevant information was found", 
+                "lack of specific information", 
+                "unable to provide specific information",
+                "cannot provide specific information from the available sources" # More variations
+            ]
+            initial_answer_lower = initial_answer.lower()
+            is_placeholder = not initial_answer.strip() or any(f in initial_answer_lower for f in placeholder_frags)
+    
+            has_provided_context = selected_context and context_parts_for_prompt
+            # If context was provided but LLM still gave a placeholder, it might be because context wasn't relevant enough.
+            # The prompt now guides it to state this. So, we might not need to override as aggressively IF the LLM follows that.
+            # However, if the LLM *fails* to state that context was insufficient and just gives a bare placeholder, that's an issue.
+            
+            if not has_provided_context and not is_placeholder:
+                # This is a clearer case of not following instructions: no context, but generated a full answer instead of placeholder.
+                logger.warning("LLM generated content despite no usable context and instruction for placeholder. Overriding with a standard placeholder.")
+                initial_answer = "No specific relevant information was found in available knowledge sources to address this query."
                 
-                return set_cached(cache_key_obj, initial_answer)
-            except ValueError as e:
-                raise ValueError(f"AI processing error (initial answer): {e}") from e
+            # Consider logging if has_provided_context is True but is_placeholder is also True,
+            # to see if the LLM is correctly stating *why* it's giving a placeholder (e.g. context irrelevant).
+            if has_provided_context and is_placeholder:
+                logger.warning(f"LLM generated a placeholder response even though context was provided. LLM Output (start): {initial_answer[:150]}")
+                # Here, we trust the LLM might have correctly determined the context wasn't useful,
+                # as per the refined prompt. We won't override if it's a thoughtful placeholder.
+                # If it's just "No info found." without explaining *why* context wasn't used, that's less ideal.
+    
+            return set_cached(cache_key_obj, initial_answer)
+        except ValueError as e: # From local_generate
+            logger.error(f"⚠️ Error during initial answer LLM call: {e}", exc_info=True)
+            raise ValueError(f"AI processing error (initial answer generation): {e}") from e
             
     def reflect_on_answer(self, query: str, initial_answer: str, selected_context: Optional[Dict[str, Any]]) -> Tuple[str, Optional[str]]:
         context_for_reflection_prompt = self._format_context_for_reflection(selected_context)
