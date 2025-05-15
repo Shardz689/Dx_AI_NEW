@@ -685,10 +685,14 @@ class DocumentChatBot:
                                             "(e.g., 'No specific relevant information was found in available knowledge sources to address this.'). "
                                             "Do NOT attempt to answer the user query using your general knowledge in this step. ")
                 current_turn_user_content = (
-                    f"{context_type_description.strip()}\n\n"
-                    f"User Query: \"{query}\"\n\n"
-                    "Minimal Placeholder Answer (be very concise and direct):\n"
-                )
+                f"{context_type_description.strip()}\n\n"
+                f"Context Provided:\n{context_info_for_prompt}\n\n"
+                f"Current User Query: {query}\n\n"
+                "Answer (Synthesize your answer primarily from the 'Context Provided'. " # Emphasize context first
+                "If the context includes source names or URLs, incorporate them relevantly as per system instructions. " # Reinforce source usage
+                "If context is insufficient, especially for very specific requests like latest guidelines not present in context, state that the specific information isn't available in the provided data, then use your general knowledge cautiously, attributing to general reputable source names if possible. "
+                "For family users, integrate triage advice naturally if the situation warrants it, as per system instructions.):\n"
+            )
             else:
                 context_info_for_prompt = "\n\n".join(context_parts_for_prompt)
                 active_ctx_keys = []
@@ -802,16 +806,15 @@ class DocumentChatBot:
             logger.debug(f"Supplementary Answer Gen - System Prompt used (start): {system_prompt_content[:150]}...")
             
             current_turn_user_content = f'''You are an AI assistant acting to provide *only* specific missing details to supplement a previous incomplete answer.
-    Your response should be suitable for the specified user type.
-    The original user query (for full context of the conversation and what was initially asked) was: "{query}"
-    The description of Information Missing from the previous answer (this is what you need to address now) is: "{missing_info_description}"
-    
-    Provide ONLY the supplementary information that directly addresses the 'Missing Information' described above.
-    Do NOT restate the original query or any information already provided in the previous answer.
-    Focus precisely on filling the identified gap.
-    If you make medical claims, try to attribute them where possible. If specific URLs were part of your training data or are common public health knowledge (e.g. from CDC, WHO, NHS, Mayo Clinic for very general topics), you can mention them as [Source Name](URL) if you are confident and they are directly relevant. Do not invent URLs. Primarily, mention source names like [Source Name] or [General Medical Knowledge].
-    If you cannot find specific information for the described gap, state this concisely (e.g., "No further specific details could be found regarding X based on my current knowledge.").
-    Start your response directly with the supplementary information.
+Your response should be suitable for the specified user type.
+The original user query (for full context) was: "{query}"
+The description of Information Missing (this is what you need to address) is: "{missing_info_description}"
+
+Provide ONLY the supplementary information for the 'Missing Information'.
+Do NOT restate the original query or prior information. Focus precisely on the gap.
+Adhere to the system instructions regarding source attribution: if making medical claims, cite from the provided context if available, or mention general reputable source names (e.g., CDC, WHO) from your general knowledge. Reproduce URLs as clickable Markdown links only if they are explicitly in provided context and relevant. Do NOT invent URLs.
+If you cannot find specific information, state this clearly.
+Start your response directly.
     '''
             messages_for_llm = [{"role": "system", "content": system_prompt_content}]
             if conversation_history:
