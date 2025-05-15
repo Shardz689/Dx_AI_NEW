@@ -1129,10 +1129,10 @@ def main() -> None:
 
     # --- Logo and Title ---
     try:
-        logo = Image.open(IMAGE_PATH_STR)
+        logo = Image.open(image_path_str)
         c1, c2 = st.columns([1,10]); c1.image(logo,width=100); c2.markdown("# DxAI-Agent")
     except FileNotFoundError:
-        logger.warning(f"Logo image not found at {IMAGE_PATH_STR}. Displaying title only.")
+        logger.warning(f"Logo image not found at {image_path_str}. Displaying title only.")
         st.markdown("# DxAI-Agent")
     except Exception as e_logo: 
         logger.error(f"Error displaying logo: {e_logo}")
