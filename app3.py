@@ -298,55 +298,60 @@ class DocumentChatBot:
         logger.info(f"Initialization Result: Success={success}, Message='{overall_msg}'")
         return success, overall_msg
 
-    def local_generate(self, prompt: str, max_tokens: int = 500) -> str:
-        if not self.llm: raise ValueError("LLM is not initialized. Cannot generate response.")
+    def local_generate(self, messages_for_llm: List[Dict[str, str]], 
+                       max_tokens: int = 500) -> str:
+        if not self.llm: 
+            raise ValueError("LLM is not initialized. Cannot generate response.")
+        if not messages_for_llm:
+            raise ValueError("No messages to send to LLM.")
+        
+        # logger.debug(f"Final messages to LLM ({len(messages_for_llm)} items): {json.dumps(messages_for_llm, indent=2)[:500]}...")
         try:
-            response = self.llm.invoke(prompt, config={"max_output_tokens": max_tokens})
-            if response and response.content: return response.content
-            logger.warning("LLM invoke returned empty or None response.")
-            raise ValueError("LLM returned empty response.") 
+            response = self.llm.invoke(messages_for_llm, config={"max_output_tokens": max_tokens}) # type: ignore
+            if response and response.content: 
+                return response.content
+            logger.warning("LLM invoke returned empty or None response content.")
+            raise ValueError("LLM returned empty response content.") 
         except Exception as e: 
-            logger.error(f"Error during Gemini LLM generation: {e}. Prompt (start): {prompt[:100]}")
+            logger.error(f"Error during Gemini LLM generation: {e}", exc_info=True)
             raise ValueError(f"LLM generation failed: {e}") from e
             
-    def get_system_prompt(self, user_type: str) -> str: # Added self as it's a method
-        logger.debug(f"get_system_prompt called with user_type: '{user_type}' (type: {type(user_type)})")
+    def get_system_prompt(self, user_type: str) -> str:
+        logger.debug(f"get_system_prompt called with user_type: '{user_type}'")
         
         normalized_user_type = ""
-        # Explicitly check for the exact strings returned by the selectbox or common variations
         if user_type == "User / Family" or user_type == "family":
             normalized_user_type = "family"
-        elif user_type == "Physician" or user_type == "physician": # Handles "Physician" from selectbox
+        elif user_type == "Physician" or user_type == "physician":
             normalized_user_type = "physician"
         else:
             logger.warning(f"Unknown user_type '{user_type}' in get_system_prompt, defaulting to 'family'.")
             normalized_user_type = "family"
-    
+
         base_prompt = "You are MediAssist, an AI assistant specialized in medical information. "
         if normalized_user_type == "physician":
             logger.info("Using PHYSICIAN system prompt.")
             return base_prompt + (
-                "Respond using professional medical terminology and consider offering differential diagnoses "
-                "when appropriate. Provide detailed clinical insights and evidence-based recommendations. "
-                "Use medical jargon freely, assuming high medical literacy. Cite specific guidelines or studies "
-                "when possible. Structure your responses with clear clinical reasoning. "
-                "Avoid addressing the user as if they are the patient; assume you are consulting with a fellow medical professional about a case. Do not provide basic patient education unless specifically asked."
+                "Respond using professional medical terminology. Consider differential diagnoses. "
+                "Provide detailed clinical insights and evidence-based recommendations. Assume high medical literacy. "
+                "If specific guidelines or studies are requested and present in your provided context (from internal data or knowledge graph), cite or summarize them accurately. Include any source names or URLs if they are explicitly part of that provided context (format URLs as [Name](URL)). "
+                "If specific guidelines are not in your context, clearly state that the detailed guidelines are not available in the provided information, but you can offer general knowledge if applicable, mentioning general reputable sources by name if appropriate (e.g., 'General guidance from the ADA suggests...'). "
+                "Structure responses with clear clinical reasoning. Address the user as a fellow medical professional about a case. Do not provide basic patient education unless asked. Do not provide patient-style triage advice."
             )
         else:  # family user
-            logger.info("Using FAMILY system prompt.")
+            logger.info("Using FAMILY system prompt for integrated triage.")
             return base_prompt + (
-                "Respond using clear, accessible language appropriate for someone without medical training. "
-                "Explain medical terms when you use them. If the query describes a potentially urgent medical "
-                "situation, explicitly identify it as a triage situation and provide clear guidance on "
-                "appropriate next steps (e.g., 'This situation requires immediate medical attention' or "
-                "'This can be managed at home with the following care steps...').\n\n"
-                "For triage situations, explicitly state the level of urgency using one of these categories:\n"
-                "1. Emergency (Call 911/Emergency Services immediately)\n"
-                "2. Urgent Care (See a doctor within 24 hours)\n"
-                "3. Primary Care (Schedule a regular appointment)\n"
-                "4. Self-care (Can be managed at home with the following steps...)\n\n"
-                "Always prioritize patient safety in your recommendations."
+                "Respond using clear, accessible language for someone without medical training. Explain medical terms. "
+                "**If the query describes a potentially urgent medical situation, you MUST assess the urgency and integrate clear guidance on appropriate next steps directly and naturally within your main answer, as part of a helpful paragraph, not as a separate headed section.** "
+                "Use one of these urgency levels if applicable, explaining why: \n"
+                "1. **Emergency:** If it's an emergency, strongly advise to 'Call 911 or go to the nearest emergency room immediately because...'.\n"
+                "2. **Urgent Care:** If urgent, advise to 'See a doctor or go to an urgent care clinic within 24 hours because...'.\n"
+                "3. **Primary Care:** If non-urgent but needs medical attention, advise to 'Schedule a regular appointment with your doctor because...'.\n"
+                "4. **Self-care:** If manageable at home, explain 'This can likely be managed at home with the following care steps...'.\n"
+                "If no specific urgency level applies, do not mention them. Always prioritize patient safety. "
+                "If you mention specific sources (like CDC, WHO, Mayo Clinic) from your knowledge or provided context, state their names. If URLs are explicitly in the provided context from internal data, you can include them if relevant and helpful, ensuring they are presented clearly as clickable links in Markdown format (e.g., [Source Name](URL)). Do not invent URLs."
             )
+
         
     def is_medical_query(self, query: str) -> Tuple[bool, str]:
         cache_key = {"type": "medical_relevance", "query": query}
@@ -609,7 +614,7 @@ class DocumentChatBot:
             logger.info(f"📄 RAG Finished. {len(top_k_chunks_content)} chunks processed. S_RAG: {srag_float_to_return:.4f}")
             return top_k_chunks_content, srag_float_to_return
         
-        except Exception as e_main_logic:
+        except Exception as e__logic:
             logger.error(f"⚠️ Error during RAG retrieval main logic: {e_main_logic}", exc_info=True)
             return [], 0.0
             
@@ -636,111 +641,102 @@ class DocumentChatBot:
         if not selected: logger.info("📦 Context Selection: No context source met thresholds."); return None
         return selected
 
-    def generate_initial_answer(self, query: str, selected_context: Optional[Dict[str, Any]], user_type: str) -> str:
-        logger.info(f"🧠 Initial Answer Gen. User Type: '{user_type}'. Query: '{query[:30]}...'")
-        cache_key = {"type": "initial_answer", "query": query, "user_type": user_type, 
-                     "context_hash": abs(hash(json.dumps(selected_context, sort_keys=True, default=str)))} # default=str for non-serializable
-        if (cached := get_cached(cache_key)) is not None: 
-            logger.debug("Initial answer from cache.")
-            return cached # type: ignore
-    
-        base_prompt_instructions = self.get_system_prompt(user_type) # Use self.get_system_prompt
-        logger.debug(f"Initial Answer Gen - System Prompt used (start): {base_prompt_instructions[:150]}...")
-        
-        context_info_for_prompt = ""
-        context_type_description = ""
-        context_parts_for_prompt: List[str] = []
-        
-        if selected_context:
-            if "kg" in selected_context:
-                kg_data = selected_context["kg"]
-                kg_info_str_parts = ["Knowledge Graph Information:"] # Start with a header
-                diag_data = kg_data.get("kg_content_diagnosis_data_for_llm")
-                diag_confidence = float(diag_data.get("confidence", 0.0)) if diag_data else 0.0
-    
-                if diag_data and diag_confidence > 0.0:
-                    disease_name = diag_data.get("disease_name", "an unidentifiable condition")
-                    # Phrasing based on confidence thresholds
-                    if diag_confidence > THRESHOLDS["high_kg_context_only"]: 
-                        kg_info_str_parts.append(f"- **Highly Probable Condition:** {disease_name} (KG Confidence: {diag_confidence:.2f})")
-                    elif diag_confidence > THRESHOLDS["kg_context_selection"]: 
-                        kg_info_str_parts.append(f"- **Potential Condition:** {disease_name} (KG Confidence: {diag_confidence:.2f})")
-                    elif diag_confidence > THRESHOLDS["disease_matching"]: 
-                        kg_info_str_parts.append(f"- **Possible Condition:** {disease_name} (KG Confidence: {diag_confidence:.2f})")
-                    else: 
-                        kg_info_str_parts.append(f"- Possible Condition based on limited match: {disease_name} (KG Confidence: {diag_confidence:.2f})")
-                    
-                    if kg_data.get('kg_matched_symptoms'): 
-                        kg_info_str_parts.append(f"- Relevant Symptoms (matched in KG): {', '.join(kg_data['kg_matched_symptoms'])}")
-                
-                other_kg_content = kg_data.get("kg_content_other", "")
-                if other_kg_content and "did not find" not in other_kg_content and other_kg_content.strip(): # Ensure it's meaningful
-                    kg_info_str_parts.append(other_kg_content)
-                
-                if len(kg_info_str_parts) > 1: # Only add if more than just the header
-                    context_parts_for_prompt.append("\n".join(kg_info_str_parts))
-    
-            if "rag" in selected_context and selected_context["rag"]:
-                context_parts_for_prompt.append("Relevant Passages from Documents:\n---\n" + "\n---\n".join(selected_context["rag"][:3]) + "\n---")
-    
-        if not selected_context or not context_parts_for_prompt: # No context or context parts ended up empty
-            context_type_description = ("You have not been provided with any specific external medical knowledge or document snippets for this query, "
-                                        "or the available information did not meet confidence thresholds. "
-                                        "Therefore, generate only a minimal placeholder answer that indicates lack of specific information "
-                                        "(e.g., 'No specific relevant information was found in available knowledge sources.'). "
-                                        "Do NOT attempt to answer the user query using your general knowledge in this step. "
-                                        "Do NOT mention external documents or knowledge graphs unless explicitly told they were empty.")
-            prompt_for_initial_answer = (
-                f"{base_prompt_instructions.strip()}\n\n"
-                f"{context_type_description.strip()}\n\n"
-                f"User Query: \"{query}\"\n\n"
-                "Minimal Placeholder Answer (be very concise):\n"
-            )
-        else:
-            context_info_for_prompt = "\n\n".join(context_parts_for_prompt)
-            # Determine context description based on what parts were actually added
-            active_ctx_keys = []
-            if any("Knowledge Graph Information:" in part for part in context_parts_for_prompt): active_ctx_keys.append("kg")
-            if any("Relevant Passages from Documents:" in part for part in context_parts_for_prompt): active_ctx_keys.append("rag")
+    def generate_initial_answer(self, query: str, selected_context: Optional[Dict[str, Any]], 
+                                user_type: str, conversation_history: Optional[List[Tuple[str,str]]]) -> str:
+            logger.info(f"🧠 Initial Answer Gen. User Type: '{user_type}'. Query: '{query[:30]}...' History: {len(conversation_history) if conversation_history else 0} turns.")
+            cache_key_obj = {"type": "initial_answer_v3", "query": query, "user_type": user_type, 
+                         "context_hash": abs(hash(json.dumps(selected_context, sort_keys=True, default=str))),
+                         "history_hash": abs(hash(str(conversation_history)))}
             
-            ctx_desc_key = "_".join(sorted(active_ctx_keys))
-            desc_map = {
-                "kg_rag": "Based on the following structured medical knowledge from a knowledge graph AND relevant passages from medical documents, synthesize a comprehensive answer.",
-                "kg": "Based on the following information from a medical knowledge graph, answer the user query. Focus on the provided KG information.",
-                "rag": "Based on the following relevant passages from medical documents, answer the user query. Focus on the provided document excerpts."
-            }
-            context_type_description = desc_map.get(ctx_desc_key, "Based on the available information...")
-            prompt_for_initial_answer = (
-                f"{base_prompt_instructions.strip()}\n"
-                f"{context_type_description.strip()}\n\n"
-                f"Context Provided:\n{context_info_for_prompt}\n\n"
-                f"User Query: {query}\n\n"
-                "Answer (synthesize from context if provided, otherwise follow instructions for placeholder if no context was usable):\n"
-            )
-        
-        logger.debug(f"Initial Answer Prompt (start):\n{prompt_for_initial_answer[:500]}...")
-        try:
-            initial_answer = self.local_generate(prompt_for_initial_answer, max_tokens=1000)
-            logger.debug(f"Initial Answer Raw LLM Output (start): {initial_answer[:100]}")
+            if (cached := get_cached(cache_key_obj)) is not None: 
+                logger.debug("Initial answer from cache.")
+                return cached
     
-            placeholder_frags = ["no specific relevant information was found", "lack of specific information", "unable to provide specific information"]
-            initial_answer_lower = initial_answer.lower()
-            is_placeholder = not initial_answer.strip() or any(f in initial_answer_lower for f in placeholder_frags)
-    
-            has_provided_context = selected_context and context_parts_for_prompt
-            if has_provided_context and is_placeholder:
-                logger.warning("LLM generated placeholder despite context. Overriding.")
-                initial_answer = "No specific relevant information was found in external knowledge sources that could address the query." 
-            elif not has_provided_context and not is_placeholder:
-                logger.warning("LLM generated content despite no usable context and instruction for placeholder. Overriding.")
-                initial_answer = "No specific relevant information was found in available knowledge sources to address the query."
+            system_prompt_content = self.get_system_prompt(user_type)
+            logger.debug(f"Initial Answer Gen - System Prompt used (start): {system_prompt_content[:150]}...")
             
-            return set_cached(cache_key, initial_answer)
-        except ValueError as e: # From local_generate
-            logger.error(f"⚠️ Error during initial answer LLM call: {e}", exc_info=True)
-            # Return a specific error message that can be displayed to the user
-            raise ValueError(f"Sorry, I encountered an AI processing error while generating the initial part of the answer: {e}") from e
-
+            context_info_for_prompt = ""
+            context_parts_for_prompt: List[str] = []
+            
+            if selected_context:
+                if "kg" in selected_context:
+                    kg_data = selected_context["kg"]
+                    kg_info_str_parts = ["Knowledge Graph Information:"]
+                    diag_data = kg_data.get("kg_content_diagnosis_data_for_llm")
+                    diag_confidence = float(diag_data.get("confidence", 0.0)) if diag_data else 0.0
+                    if diag_data and diag_confidence > 0.0:
+                        disease_name = diag_data.get("disease_name", "an unidentifiable condition")
+                        if diag_confidence > THRESHOLDS["high_kg_context_only"]: kg_info_str_parts.append(f"- **Highly Probable Condition:** {disease_name} (KG Confidence: {diag_confidence:.2f})")
+                        elif diag_confidence > THRESHOLDS["kg_context_selection"]: kg_info_str_parts.append(f"- **Potential Condition:** {disease_name} (KG Confidence: {diag_confidence:.2f})")
+                        elif diag_confidence > THRESHOLDS["disease_matching"]: kg_info_str_parts.append(f"- **Possible Condition:** {disease_name} (KG Confidence: {diag_confidence:.2f})")
+                        else: kg_info_str_parts.append(f"- Possible Condition based on limited match: {disease_name} (KG Confidence: {diag_confidence:.2f})")
+                        if kg_data.get('kg_matched_symptoms'): kg_info_str_parts.append(f"- Relevant Symptoms (matched in KG): {', '.join(kg_data['kg_matched_symptoms'])}")
+                    other_kg_content = kg_data.get("kg_content_other", "")
+                    if other_kg_content and "did not find" not in other_kg_content and other_kg_content.strip(): kg_info_str_parts.append(other_kg_content)
+                    if len(kg_info_str_parts) > 1 : context_parts_for_prompt.append("\n".join(kg_info_str_parts))
+    
+                if "rag" in selected_context and selected_context["rag"]:
+                    context_parts_for_prompt.append("Relevant Passages from Internal Data:\n---\n" + "\n---\n".join(selected_context["rag"][:3]) + "\n---")
+    
+            current_turn_user_content = ""
+            if not selected_context or not context_parts_for_prompt:
+                context_type_description = ("You have not been provided with any specific external medical knowledge or document snippets for this query, "
+                                            "or the available information did not meet confidence thresholds. "
+                                            "Therefore, generate only a minimal placeholder answer that indicates lack of specific information "
+                                            "(e.g., 'No specific relevant information was found in available knowledge sources to address this.'). "
+                                            "Do NOT attempt to answer the user query using your general knowledge in this step. ")
+                current_turn_user_content = (
+                    f"{context_type_description.strip()}\n\n"
+                    f"User Query: \"{query}\"\n\n"
+                    "Minimal Placeholder Answer (be very concise and direct):\n"
+                )
+            else:
+                context_info_for_prompt = "\n\n".join(context_parts_for_prompt)
+                active_ctx_keys = []
+                if any("Knowledge Graph Information:" in part for part in context_parts_for_prompt): active_ctx_keys.append("kg")
+                if any("Relevant Passages from Internal Data:" in part for part in context_parts_for_prompt): active_ctx_keys.append("rag")
+                
+                ctx_desc_key = "_".join(sorted(active_ctx_keys))
+                desc_map = {
+                    "kg_rag": "Based on the following structured medical knowledge from a knowledge graph AND relevant passages from internal data, synthesize a comprehensive answer.",
+                    "kg": "Based on the following information from a medical knowledge graph, answer the user query. Focus on the provided KG information.",
+                    "rag": "Based on the following relevant passages from internal data, answer the user query. Focus on the provided document excerpts."
+                }
+                context_type_description = desc_map.get(ctx_desc_key, "Based on the available information...")
+                current_turn_user_content = (
+                    f"{context_type_description.strip()}\n\n"
+                    f"Context Provided:\n{context_info_for_prompt}\n\n"
+                    f"Current User Query: {query}\n\n"
+                    "Answer (synthesize from context if provided. If context is insufficient for the query, especially for specific guidelines, state that the specific information is not available in the provided context. Otherwise, follow instructions for placeholder if no context was usable. For family users, integrate triage advice naturally if the situation warrants it, as per system instructions.):\n"
+                )
+    
+            messages_for_llm = [{"role": "system", "content": system_prompt_content}]
+            if conversation_history:
+                for hist_user_msg, hist_bot_msg in conversation_history:
+                    messages_for_llm.append({"role": "user", "content": hist_user_msg})
+                    messages_for_llm.append({"role": "assistant", "content": hist_bot_msg})
+            messages_for_llm.append({"role": "user", "content": current_turn_user_content})
+            
+            logger.debug(f"Initial Answer - Messages for LLM (last user part shown): {messages_for_llm[-1]['content'][:400]}...")
+            try:
+                initial_answer = self.local_generate(messages_for_llm, max_tokens=1000)
+                
+                placeholder_frags = ["no specific relevant information was found", "lack of specific information", "unable to provide specific information"]
+                initial_answer_lower = initial_answer.lower()
+                is_placeholder = not initial_answer.strip() or any(f in initial_answer_lower for f in placeholder_frags)
+    
+                has_provided_context = selected_context and context_parts_for_prompt
+                if has_provided_context and is_placeholder:
+                    logger.warning("LLM generated placeholder despite context. Overriding.")
+                    initial_answer = "No specific relevant information was found in external knowledge sources that could address the query." 
+                elif not has_provided_context and not is_placeholder:
+                    logger.warning("LLM generated content despite no usable context and instruction for placeholder. Overriding.")
+                    initial_answer = "No specific relevant information was found in available knowledge sources to address the query."
+                
+                return set_cached(cache_key_obj, initial_answer)
+            except ValueError as e:
+                raise ValueError(f"AI processing error (initial answer): {e}") from e
+            
     def reflect_on_answer(self, query: str, initial_answer: str, selected_context: Optional[Dict[str, Any]]) -> Tuple[str, Optional[str]]:
         context_for_reflection_prompt = self._format_context_for_reflection(selected_context)
         cache_key = {"type": "reflection", "query": query, "initial_answer_hash": hash(initial_answer), "context_hash": hash(context_for_reflection_prompt)}
@@ -790,109 +786,123 @@ class DocumentChatBot:
                 if valid_chunks: parts.append("Relevant Passages:\n---\n" + "\n---\n".join(valid_chunks[:2]) + "\n---")
         return "\n\n".join(parts) if parts else "None"
 
-    def get_supplementary_answer(self, query: str, missing_info_description: str, user_type: str) -> str:
-        logger.info(f"🌐 Gap Filling. User Type: '{user_type}'. Missing: {missing_info_description[:50]}...")
-        cache_key = {"type": "supplementary_answer", "missing_info_hash": abs(hash(missing_info_description)), 
-                     "query_hash": abs(hash(query)), "user_type": user_type}
-        if (cached := get_cached(cache_key)) is not None: 
-            logger.debug("Supplementary answer from cache.")
-            return cached # type: ignore
-        if not self.llm: 
-            return "\n\n-- Additional Information --\nSupplementary information could not be generated because the AI model is unavailable."
+    def get_supplementary_answer(self, query: str, missing_info_description: str, 
+                                 user_type: str, conversation_history: Optional[List[Tuple[str,str]]]) -> str:
+            logger.info(f"🌐 Gap Filling. User Type: '{user_type}'. Missing: {missing_info_description[:50]}... History: {len(conversation_history) if conversation_history else 0} turns.")
+            cache_key_obj = {"type": "supplementary_answer_v3", "missing_info_hash": abs(hash(missing_info_description)), 
+                         "query_hash": abs(hash(query)), "user_type": user_type,
+                         "history_hash": abs(hash(str(conversation_history)))}
+            if (cached := get_cached(cache_key_obj)) is not None: 
+                logger.debug("Supplementary answer from cache.")
+                return cached
     
-        base_prompt_instructions = self.get_system_prompt(user_type) # Use self.get_system_prompt
-        logger.debug(f"Supplementary Answer Gen - System Prompt used (start): {base_prompt_instructions[:150]}...")
-        
-        supplementary_prompt = f'''{base_prompt_instructions.strip()}
-    You are an AI assistant acting to provide *only* specific missing details to supplement a previous incomplete answer.
+            if not self.llm: 
+                return "\n\n-- Additional Information --\nSupplementary information could not be generated because the AI model is unavailable."
+    
+            system_prompt_content = self.get_system_prompt(user_type)
+            logger.debug(f"Supplementary Answer Gen - System Prompt used (start): {system_prompt_content[:150]}...")
+            
+            current_turn_user_content = f'''You are an AI assistant acting to provide *only* specific missing details to supplement a previous incomplete answer.
     Your response should be suitable for the specified user type.
-    Original User Query (for context to understand the scope and what was asked): "{query}"
-    Description of Information Missing from Previous Answer (this is what you need to address): "{missing_info_description}"
+    The original user query (for full context of the conversation and what was initially asked) was: "{query}"
+    The description of Information Missing from the previous answer (this is what you need to address now) is: "{missing_info_description}"
     
     Provide ONLY the supplementary information that directly addresses the 'Missing Information' described above.
     Do NOT restate the original query or any information already provided in the previous answer.
     Focus precisely on filling the identified gap.
-    **If you make medical claims, you MUST include evidence or source attribution where possible.** Use formats like [Source Name], [General Medical Knowledge], or provide URLs if appropriate.
-    If you cannot find specific information for the described gap, state this concisely (e.g., "No further specific details could be found regarding X.").
+    If you make medical claims, try to attribute them where possible. If specific URLs were part of your training data or are common public health knowledge (e.g. from CDC, WHO, NHS, Mayo Clinic for very general topics), you can mention them as [Source Name](URL) if you are confident and they are directly relevant. Do not invent URLs. Primarily, mention source names like [Source Name] or [General Medical Knowledge].
+    If you cannot find specific information for the described gap, state this concisely (e.g., "No further specific details could be found regarding X based on my current knowledge.").
     Start your response directly with the supplementary information.
     '''
-        try:
-            supplementary_answer = self.local_generate(supplementary_prompt, max_tokens=750).strip()
-            if not supplementary_answer: 
-                supplementary_answer = "The AI could not find specific additional information for the identified gap."
-            logger.info("🌐 Supplementary Answer Generated successfully.")
-            final_supplementary_text = "\n\n-- Additional Information --\n" + supplementary_answer
-            return set_cached(cache_key, final_supplementary_text) # type: ignore
-        except ValueError as e: # From local_generate
-            logger.error(f"⚠️ Error during supplementary answer LLM call: {e}", exc_info=True)
-            error_msg = f"Sorry, an AI processing error occurred while trying to find additional information about: '{missing_info_description[:50]}...'"
-            final_supplementary_text = f"\n\n-- Additional Information --\n{error_msg}"
-            return set_cached(cache_key, final_supplementary_text) # type: ignore
+            messages_for_llm = [{"role": "system", "content": system_prompt_content}]
+            if conversation_history:
+                for hist_user_msg, hist_bot_msg in conversation_history:
+                    messages_for_llm.append({"role": "user", "content": hist_user_msg})
+                    messages_for_llm.append({"role": "assistant", "content": hist_bot_msg})
+            messages_for_llm.append({"role": "user", "content": current_turn_user_content})
+    
+            try:
+                supplementary_answer = self.local_generate(messages_for_llm, max_tokens=750).strip()
+                if not supplementary_answer: 
+                    supplementary_answer = "The AI could not find specific additional information for the identified gap."
+                logger.info("🌐 Supplementary Answer Generated successfully.")
+                final_supplementary_text = "\n\n-- Additional Information --\n" + supplementary_answer
+                return set_cached(cache_key_obj, final_supplementary_text)
+            except ValueError as e:
+                logger.error(f"⚠️ Error during supplementary answer LLM call: {e}", exc_info=True)
+                error_msg = f"Sorry, an AI processing error occurred while trying to find additional information regarding: '{missing_info_description[:50]}...'"
+                final_supplementary_text = f"\n\n-- Additional Information --\n{error_msg}"
+                return set_cached(cache_key_obj, final_supplementary_text)
 
-    def collate_answers(self, initial_answer: str, supplementary_answer: str, user_type: str) -> str:
-            logger.info(f"✨ Final Answer Collation. User Type: '{user_type}'.")
-            cache_key = {"type": "final_collation", "initial_answer_hash": abs(hash(initial_answer)), 
-                         "supplementary_answer_hash": abs(hash(supplementary_answer)), "user_type": user_type}
-            if (cached := get_cached(cache_key)) is not None: 
+    def collate_answers(self, initial_answer: str, supplementary_answer: str, 
+                        user_type: str, conversation_history: Optional[List[Tuple[str,str]]]) -> str:
+            logger.info(f"✨ Final Answer Collation. User Type: '{user_type}'. History: {len(conversation_history) if conversation_history else 0} turns.")
+            cache_key_obj = {"type": "final_collation_v3", "initial_answer_hash": abs(hash(initial_answer)), 
+                         "supplementary_answer_hash": abs(hash(supplementary_answer)), "user_type": user_type,
+                         "history_hash": abs(hash(str(conversation_history)))}
+            if (cached := get_cached(cache_key_obj)) is not None: 
                 logger.debug("Final collation from cache.")
-                return cached # type: ignore
+                return cached
+    
             if not self.llm: 
                 logger.warning("LLM not available for collation. Concatenating answers.")
                 return f"{initial_answer.strip()}\n\n{supplementary_answer.strip()}"
-        
-            # Check if supplementary answer is just the error/no-info placeholder string structure
+    
             supp_content_after_header = supplementary_answer.split("-- Additional Information --\n", 1)[-1].strip()
             if not supp_content_after_header or \
                "could not find specific additional information" in supp_content_after_header.lower() or \
                "error occurred while trying to find additional information" in supp_content_after_header.lower() or \
                "ai model is unavailable" in supp_content_after_header.lower():
-                 logger.debug("Supplementary answer appears to be empty, placeholder, or error. Appending directly without LLM collation.")
-                 return initial_answer.strip() + "\n" + supplementary_answer.strip() # Ensure newline if supp_answer is not just header
-        
-            base_prompt_instructions = self.get_system_prompt(user_type) # Use self.get_system_prompt
-            logger.debug(f"Collate Answers - System Prompt used (start): {base_prompt_instructions[:150]}...")
+                 logger.debug("Supplementary answer is empty, placeholder, or error. Appending directly.")
+                 return initial_answer.strip() + "\n" + supplementary_answer.strip()
+    
+            system_prompt_content = self.get_system_prompt(user_type)
+            logger.debug(f"Collate Answers - System Prompt used (start): {system_prompt_content[:150]}...")
             
-            collation_prompt = f'''{base_prompt_instructions.strip()}
-        You are a medical communicator tasked with combining information from two sources into a single, coherent final response, appropriate for the specified user type.
-        Combine the following two parts:
-        1. An 'Initial Answer' to a medical query.
-        2. 'Supplementary Information' that addresses gaps identified in the initial answer.
-        
-        Create a single, fluent, and easy-to-understand final answer. Ensure a natural flow.
-        Remove any redundancy between the two parts. If the supplementary part largely repeats or doesn't add significant new value to the initial answer, prioritize the initial answer or integrate minimally.
-        Preserve all factual medical information and any source attributions or links provided in either part. Do NOT add new sources or make claims not supported by the provided parts.
-        Format the final response clearly using markdown (e.g., headings, lists) if appropriate.
-        Do NOT include the headers "Initial Answer Part:" or "Supplementary Information Part:" in your final output.
-        Do NOT include the medical disclaimer or source pathway note in the answer text itself; these will be added separately.
-        
-        Initial Answer Part:
-        "{initial_answer}"
-        
-        Supplementary Information Part (this part starts with "-- Additional Information --\\n" which you should ignore as a header):
-        "{supplementary_answer}"
-        
-        Provide ONLY the combined, final answer content. Start directly with the answer.
-        '''
+            current_turn_user_content = f'''You are a medical communicator. Combine 'Initial Answer' and 'Supplementary Information' into one coherent response, suitable for the user type.
+    Remove redundancy. If supplementary info adds little new value, prioritize the initial answer or integrate minimally.
+    Preserve facts and source attributions (like [Source Name] or URLs formatted as [Name](URL) if they were in the inputs). Do NOT add new sources.
+    Format clearly using markdown. Do NOT include "Initial Answer Part:" or "Supplementary Information Part:" headers.
+    Do NOT include the medical disclaimer or source pathway note.
+    
+    Initial Answer Part:
+    "{initial_answer}"
+    
+    Supplementary Information Part (ignore its "-- Additional Information --\\n" header):
+    "{supplementary_answer}"
+    
+    Provide ONLY the combined, final answer content. Start directly.
+    '''
+            messages_for_llm = [{"role": "system", "content": system_prompt_content}]
+            if conversation_history:
+                for hist_user_msg, hist_bot_msg in conversation_history:
+                    messages_for_llm.append({"role": "user", "content": hist_user_msg})
+                    messages_for_llm.append({"role": "assistant", "content": hist_bot_msg})
+            messages_for_llm.append({"role": "user", "content": current_turn_user_content})
+    
             try:
-                combined_answer_content = self.local_generate(collation_prompt, max_tokens=1500)
+                combined_answer_content = self.local_generate(messages_for_llm, max_tokens=1500)
                 logger.info("✨ Final Answer Collated successfully.")
-                return set_cached(cache_key, combined_answer_content) # type: ignore
-            except ValueError as e: # From local_generate
+                return set_cached(cache_key_obj, combined_answer_content)
+            except ValueError as e:
                 logger.error(f"⚠️ Error during final answer collation LLM call: {e}", exc_info=True)
-                error_message = f"\n\n-- Collation Failed --\nAn error occurred while finalizing the answer ({e}). The information below is the initial answer followed by supplementary information, presented uncollated.\n\n"
+                error_message = f"\n\n-- Collation Failed --\nAn error occurred ({e}). Uncollated info below:\n\n"
                 final_collated_text = initial_answer.strip() + error_message + supplementary_answer.strip()
-                return set_cached(cache_key, final_collated_text) # type: ignore
+                return set_cached(cache_key_obj, final_collated_text)
 
     def reset_conversation(self) -> None: logger.info("🔄 Resetting chatbot internal state.")
 
     def process_user_query(self, user_query: str, user_type: str, 
+                           conversation_history_tuples: Optional[List[Tuple[str, str]]] = None,
                            confirmed_symptoms: Optional[List[str]] = None, 
-                           original_query_if_followup: Optional[str] = None # Keep for API consistency, though not directly used
+                           original_query_if_followup: Optional[str] = None 
                            ) -> Tuple[str, str, Optional[Dict[str, Any]]]:
-        logger.info("--- Processing User Query: '%s' ---", user_query[:50])
+        logger.info(f"--- Processing User Query: '{user_query[:50]}' ---")
+        logger.info(f"User Type: {user_type}, History turns: {len(conversation_history_tuples) if conversation_history_tuples else 0}")
+        
         processed_query: str = user_query
         current_symptoms_for_retrieval: List[str] = []
-        is_symptom_query_flag: bool = False # Renamed to avoid conflict
+        is_symptom_query_flag: bool = False 
         medical_check_ok: bool = False
 
         if confirmed_symptoms is not None:
@@ -902,7 +912,7 @@ class DocumentChatBot:
             medical_check_ok = True
         else:
             medical_check_ok, medical_reason = self.is_medical_query(processed_query)
-            if not medical_check_ok: return f"I only answer medical questions. ({medical_reason})", "display_final_answer", None
+            if not medical_check_ok: return f"I can only answer medical-related questions. ({medical_reason})", "display_final_answer", None
             current_symptoms_for_retrieval, _ = self.extract_symptoms(processed_query)
             is_symptom_query_flag = self.is_symptom_related_query(processed_query)
         
@@ -911,7 +921,7 @@ class DocumentChatBot:
         kg_results: Dict[str, Any] = {}
         s_kg: float = 0.0
         rag_chunks: List[str] = []
-        s_rag_val: float = 0.0 # Renamed to avoid conflict with s_rag as a string
+        s_rag_val: float = 0.0 
 
         if is_symptom_query_flag and current_symptoms_for_retrieval:
             kg_results = self.knowledge_graph_agent(processed_query, current_symptoms_for_retrieval)
@@ -919,61 +929,73 @@ class DocumentChatBot:
 
         if self.vectordb and self.embedding_model:
             retrieved_rag_data = self.retrieve_rag_context(processed_query)
-            logger.info(f"retrieve_rag_context returned: Type={type(retrieved_rag_data)}, Value='{str(retrieved_rag_data)[:100]}...'")
             if isinstance(retrieved_rag_data, tuple) and len(retrieved_rag_data) == 2:
                 rag_chunks = retrieved_rag_data[0] if isinstance(retrieved_rag_data[0], list) else []
                 s_rag_candidate = retrieved_rag_data[1]
                 try: s_rag_val = float(s_rag_candidate)
-                except (ValueError, TypeError) as e:
-                    logger.error(f"Could not convert s_rag_candidate ('{s_rag_candidate}') to float: {e}. Defaulting s_rag to 0.0.")
-                    s_rag_val = 0.0
-            else: logger.error(f"retrieve_rag_context bad return. Defaulting RAG."); rag_chunks, s_rag_val = [], 0.0
-        logger.info(f"After RAG processing, s_rag_val = {s_rag_val} (Type: {type(s_rag_val)})")
-
-
+                except (ValueError, TypeError): s_rag_val = 0.0
+            else: rag_chunks, s_rag_val = [], 0.0
+        
         if confirmed_symptoms is None and is_symptom_query_flag and \
            len(kg_results.get("identified_diseases_data",[])) > 0 and \
            0.0 < s_kg < THRESHOLDS["disease_symptom_followup_threshold"]:
+            # ... (symptom UI trigger logic as before) ...
             top_disease_data = kg_results["identified_diseases_data"][0]
             all_kg_symps_lower = set(s.lower() for s in kg_results.get("all_disease_symptoms_kg_for_top_disease",[]) if isinstance(s,str))
-            initial_symps_lower = set(s.lower() for s in current_symptoms_for_retrieval if isinstance(s,str))
+            initial_symps_lower = set(s.lower() for s in current_symptoms_for_retrieval if isinstance(s,str)) # current_symptoms_for_retrieval are already lower
             suggested_symps_lower = sorted(list(all_kg_symps_lower - initial_symps_lower))
             original_case_map = {s.lower(): s for s in kg_results.get("all_disease_symptoms_kg_for_top_disease",[]) if isinstance(s,str)}
             suggested_original_case = [original_case_map[s_low] for s_low in suggested_symps_lower if s_low in original_case_map]
             if suggested_original_case:
                 ui_payload = {"symptom_options": {top_disease_data.get("Disease", "Condition"): suggested_original_case}, "original_query": processed_query}
-                return "To help, please confirm additional symptoms:", "show_symptom_ui", ui_payload
-        
-        selected_context = self.select_context(kg_results, s_kg, rag_chunks, s_rag_val, is_symptom_query_flag)
-        initial_sources = [k.upper() for k in selected_context.keys()] if selected_context else []
-        
-        try: initial_answer = self.generate_initial_answer(processed_query, selected_context, user_type)
-        except ValueError as e:
-            path_info = ", ".join(initial_sources) or "LLM (Initial)"
-            return f"Error generating initial answer: {e}\n\n<span>*Attempted: {path_info} (Failed)*</span>", "display_final_answer", None
-
-        reflection_failed, eval_res, missing_desc = False, 'complete', None
-        try: eval_res, missing_desc = self.reflect_on_answer(processed_query, initial_answer, selected_context)
-        except Exception as e: reflection_failed = True; eval_res = 'incomplete'; missing_desc = f"Reflection fail ({e})."
-        
-        final_answer = initial_answer; supp_triggered = False
-        if eval_res == 'incomplete':
-            supp_triggered = True
-            desc_for_supp = missing_desc or f"Gap for: {processed_query[:30]}..."
-            supp_answer = self.get_supplementary_answer(processed_query, desc_for_supp, user_type)
-            final_answer = self.collate_answers(initial_answer, supp_answer, user_type)
+                return "To help provide more accurate information, please confirm if you are experiencing any of these additional symptoms:", "show_symptom_ui", ui_payload
             
-        final_answer_triaged = self.enhance_with_triage_detection(processed_query, final_answer, user_type)
-
-        final_path = list(set(initial_sources))
-        if supp_triggered or not initial_sources or reflection_failed: final_path.append("LLM (General Knowledge)")
-        if not reflection_failed : final_path.append("Reflection Agent")
-        elif reflection_failed and eval_res == 'incomplete': final_path.append("Reflection Agent (Failed)")
+        selected_context = self.select_context(kg_results, s_kg, rag_chunks, s_rag_val, is_symptom_query_flag)
+        initial_context_sources_used = []
+        if selected_context:
+            if "kg" in selected_context: initial_context_sources_used.append("Knowledge Graph")
+            if "rag" in selected_context: initial_context_sources_used.append("Internal Data") # MODIFIED
         
-        path_str = ", ".join(sorted(list(set(final_path)))) or "Unknown Pathway"
-        disclaimer = "\n\nIMPORTANT MEDICAL DISCLAIMER: Not professional medical advice. Consult a doctor." # Shorter
-        path_note = f"<span style='font-size:0.8em;color:grey;'>*Sources: {path_str.strip()}*</span>"
-        return f"{final_answer_triaged.strip()}{disclaimer}\n\n{path_note}", "display_final_answer", None
+        try: 
+            initial_answer = self.generate_initial_answer(processed_query, selected_context, user_type, conversation_history_tuples)
+        except ValueError as e:
+            path_info = ", ".join(initial_context_sources_used) or "LLM (Initial)"
+            return f"Error generating initial answer: {e}\n\n<span style='font-size:0.8em;color:grey;'>*Sources used: {path_info} (Failed)*</span>", "display_final_answer", None
+
+        reflection_failed, evaluation_result, missing_info_description = False, 'complete', None
+        try: 
+            evaluation_result, missing_info_description = self.reflect_on_answer(processed_query, initial_answer, selected_context)
+        except Exception as e: 
+            reflection_failed = True; evaluation_result = 'incomplete'; 
+            missing_info_description = f"Reflection step failed ({e}). Proceeding with supplementary information attempt."
+            logger.error(f"Reflection step failed: {e}", exc_info=True)
+        
+        final_answer_content = initial_answer
+        supplementary_step_triggered = False
+        if evaluation_result == 'incomplete':
+            supplementary_step_triggered = True
+            description_for_supplementary = missing_info_description or f"The initial answer was incomplete for the query: {processed_query[:50]}..."
+            supplementary_answer = self.get_supplementary_answer(processed_query, description_for_supplementary, user_type, conversation_history_tuples)
+            final_answer_content = self.collate_answers(initial_answer, supplementary_answer, user_type, conversation_history_tuples)
+            
+        # Triage is now integrated into the family user's system prompt.
+        # No separate enhance_with_triage_detection call here, the generation steps should handle it.
+        final_content_for_display = final_answer_content
+
+        final_pathway_parts = list(set(initial_context_sources_used)) 
+        if supplementary_step_triggered or not initial_context_sources_used or reflection_failed: 
+            if "LLM (General Knowledge)" not in final_pathway_parts: 
+                final_pathway_parts.append("LLM (General Knowledge)")
+        
+        pathway_info_str = ", ".join(sorted(list(set(final_pathway_parts))))
+        if not pathway_info_str.strip() : pathway_info_str = "LLM (General Knowledge)" 
+
+        disclaimer = "\n\nIMPORTANT MEDICAL DISCLAIMER: This information is for informational purposes only and is not a substitute for professional medical advice, diagnosis, or treatment. Always seek the advice of your physician or other qualified health provider with any questions you may have regarding a medical condition."
+        pathway_note = f"<span style='font-size:0.8em;color:grey;'>*Sources used: {pathway_info_str.strip()}*</span>"
+        final_response_text = f"{final_content_for_display.strip()}{disclaimer}\n\n{pathway_note}"
+        
+        logger.info(f"--- Workflow Finished. Final pathway: {pathway_info_str} ---")
+        return final_response_text, "display_final_answer", None
 
 
 # --- Streamlit UI ---
@@ -1059,182 +1081,370 @@ def create_user_type_selector() -> None:
 
 def main() -> None:
     logger.info("--- Streamlit App Start ---")
-    st.set_page_config(page_title="DxAI-Agent", page_icon=f"data:image/png;base64,{icon}", layout="wide")
+    st.set_page_config(page_title="DxAI-Agent", page_icon=f"data:image/png;base64,{ICON_B64}", layout="wide")
     
-    create_user_type_selector()
+    # --- User Type Selector & Instructions ---
+    create_user_type_selector() # Handles its own state for 'last_user_type' and 'reset_requested_by_type_change'
     current_user_type = st.session_state.get("user_type_select", "User / Family")
 
+    if current_user_type == "User / Family":
+        st.sidebar.markdown(
+            "<small>As a Family User, ask about symptoms, conditions, or home remedies. "
+            "You'll receive clear explanations. If your query suggests urgency, advice on next steps will be integrated into the response.</small>", 
+            unsafe_allow_html=True
+        )
+    elif current_user_type == "Physician":
+        st.sidebar.markdown(
+            "<small>As a Physician, you can ask for differential diagnoses, test suggestions, "
+            "or guideline information. Expect professional medical terminology.</small>", 
+            unsafe_allow_html=True
+        )
+
+    # --- Handle Reset if requested by User Type Change ---
     if st.session_state.get('reset_requested_by_type_change', False):
         logger.info("Executing conversation reset due to user type change.")
-        if st.session_state.get('chatbot'): st.session_state.chatbot.reset_conversation()
+        if st.session_state.get('chatbot'): 
+            st.session_state.chatbot.reset_conversation()
+        
+        # Selective reset for user type change
         st.session_state.messages = []
         st.session_state.ui_state = {"step": "input", "payload": None}
         st.session_state.processing_input_payload = None
         st.session_state.form_timestamp = datetime.now().timestamp()
+        
         for k_suffix in ['_from_ui', '_for_symptom_rerun']:
-            if f'confirmed_symptoms{k_suffix}' in st.session_state: del st.session_state[f'confirmed_symptoms{k_suffix}']
-        keys_to_delete = [k for k in st.session_state if k.startswith("symptom_form_")]
-        for k_del in keys_to_delete: del st.session_state[k_del]
-        del st.session_state.reset_requested_by_type_change
+            state_key = f'confirmed_symptoms{k_suffix}'
+            if state_key in st.session_state: del st.session_state[state_key]
+        
+        keys_to_delete_form = [k for k in st.session_state if k.startswith("symptom_form_")]
+        for k_del in keys_to_delete_form: 
+            if k_del in st.session_state: del st.session_state[k_del]
+        
+        keys_to_delete_feedback = [k for k in st.session_state if k.startswith("fb_")]
+        for k_fb_del in keys_to_delete_feedback:
+            if k_fb_del in st.session_state: del st.session_state[k_fb_del]
+            
+        del st.session_state.reset_requested_by_type_change # Clear the flag
         logger.info("Reset due to type change complete. Rerunning.")
         st.rerun()
 
+    # --- Logo and Title ---
     try:
-        logo = Image.open(image_path_str)
+        logo = Image.open(IMAGE_PATH_STR)
         c1, c2 = st.columns([1,10]); c1.image(logo,width=100); c2.markdown("# DxAI-Agent")
-    except Exception: st.markdown("# DxAI-Agent")
+    except FileNotFoundError:
+        logger.warning(f"Logo image not found at {IMAGE_PATH_STR}. Displaying title only.")
+        st.markdown("# DxAI-Agent")
+    except Exception as e_logo: 
+        logger.error(f"Error displaying logo: {e_logo}")
+        st.markdown("# DxAI-Agent")
 
+    # --- Chatbot Initialization (Once per session) ---
     if 'chatbot_initialized_flag' not in st.session_state: 
         st.session_state.chatbot_initialized_flag = False
         st.session_state.chatbot = None
         st.session_state.init_status = (False, "Initialization not started.")
-        with st.spinner("Initializing chat assistant... This may take a moment."):
+        logger.info("Attempting to initialize chatbot instance and backend components (first run or after full clear)...")
+        with st.spinner("Initializing chat assistant... This may take a moment the first time."):
             try:
                 st.session_state.chatbot = DocumentChatBot()
                 success, msg = st.session_state.chatbot.initialize_qa_chain()
                 st.session_state.init_status = (success, msg)
                 st.session_state.chatbot_initialized_flag = success
-            except Exception as e:
-                st.session_state.init_status = (False, f"Critical init error: {e}")
+                logger.info(f"Chatbot initialization attempt complete. Status: {success}, Msg: {msg}")
+            except Exception as e_init:
+                logger.critical(f"CRITICAL UNCAUGHT ERROR DURING INITIALIZATION: {e_init}", exc_info=True)
+                st.session_state.init_status = (False, f"Critical initialization error: {str(e_init)[:100]}")
                 st.session_state.chatbot_initialized_flag = False
     
     init_success, init_msg = st.session_state.get('init_status', (False, "Status unknown."))
     is_interaction_enabled = st.session_state.get('chatbot_initialized_flag', False) and st.session_state.get('chatbot') is not None
 
-    default_states = {
-        'ui_state': {"step": "input", "payload": None}, 'messages': [],
-        'processing_input_payload': None, 'confirmed_symptoms_from_ui': None,
+    # --- Initialize other necessary session state variables ---
+    default_ui_states = {
+        'ui_state': {"step": "input", "payload": None}, 
+        'messages': [],
+        'processing_input_payload': None, 
+        'confirmed_symptoms_from_ui': None,
         'original_query_for_symptom_rerun': None,
         'form_timestamp': datetime.now().timestamp()
     }
-    for key, default_value in default_states.items():
-        if key not in st.session_state: st.session_state[key] = default_value
+    for key, default_value in default_ui_states.items():
+        if key not in st.session_state:
+            st.session_state[key] = default_value
+            # logger.info(f"Initializing session state for '{key}'.") # Can be noisy
 
-    st.sidebar.info("DxAI-Agent for medical queries.")
-    if is_interaction_enabled: st.sidebar.success(f"Status: {init_msg}")
-    else: st.sidebar.error(f"Init Failed: {init_msg}")
+    # --- Sidebar Info (No explicit connection status box) ---
+    st.sidebar.info("DxAI-Agent helps answer medical questions using internal data and medical knowledge.")
+    logger.info(f"Current Initialization Status (for console log): {init_msg}")
 
+
+    # --- Main Chat Tabs ---
     tab1, tab2 = st.tabs(["Chat", "About"])
     with tab1:
-        for i, (msg_content, is_user_msg) in enumerate(st.session_state.messages):
+        # --- Display Chat Messages ---
+        for i, (msg_content, is_user_msg) in enumerate(st.session_state.get('messages', [])):
             role = "user" if is_user_msg else "assistant"
             with st.chat_message(role):
                 st.markdown(msg_content, unsafe_allow_html=(not is_user_msg))
+                # Feedback buttons for the last assistant message
                 if not is_user_msg and i == len(st.session_state.messages) - 1 and \
                    st.session_state.ui_state["step"] == "input" and is_interaction_enabled:
                     cols_fb = st.columns([0.05, 0.05, 0.9])
-                    user_q_for_fb = next((m[0] for j,m in enumerate(st.session_state.messages) if j < i and m[1]), "") 
+                    user_q_for_fb = ""
+                    # Find preceding user message for context
+                    for j_fb in range(i - 1, -1, -1):
+                        if st.session_state.messages[j_fb][1] is True: # is_user_msg
+                            user_q_for_fb = st.session_state.messages[j_fb][0]
+                            break
+                    
                     fb_key_base = f"fb_{i}_{abs(hash(msg_content.split('IMPORTANT MEDICAL DISCLAIMER:',1)[0]))}"
                     up_key, down_key = f'{fb_key_base}_up', f'{fb_key_base}_down'
                     up_btn_key, down_btn_key = f'{up_key}_btn', f'{down_key}_btn'
 
-                    if up_key not in st.session_state and down_key not in st.session_state:
-                        if cols_fb[0].button("👍", key=up_btn_key, help="Good response"):
-                            vote_message(user_q_for_fb, msg_content, "thumbs_up", current_user_type)
-                            st.session_state[up_key] = True; st.toast("Thanks!"); st.rerun()
-                        if cols_fb[1].button("👎", key=down_btn_key, help="Bad response"):
-                            vote_message(user_q_for_fb, msg_content, "thumbs_down", current_user_type)
-                            st.session_state[down_key] = True; st.toast("Thanks!"); st.rerun()
-                    elif up_key in st.session_state: cols_fb[0].button("👍", key=up_btn_key, disabled=True)
-                    elif down_key in st.session_state: cols_fb[1].button("👎", key=down_btn_key, disabled=True)
+                    with cols_fb[0]:
+                        if up_key not in st.session_state and down_key not in st.session_state:
+                            if st.button("👍", key=up_btn_key, help="Good response"):
+                                vote_message(user_q_for_fb, msg_content, "thumbs_up", current_user_type)
+                                st.session_state[up_key] = True; st.toast("Thanks for your feedback!"); st.rerun()
+                        elif up_key in st.session_state: 
+                            st.button("👍", key=up_btn_key, disabled=True)
+                    with cols_fb[1]:
+                        if up_key not in st.session_state and down_key not in st.session_state:
+                            if st.button("👎", key=down_btn_key, help="Needs improvement"):
+                                vote_message(user_q_for_fb, msg_content, "thumbs_down", current_user_type)
+                                st.session_state[down_key] = True; st.toast("Thanks for your feedback!"); st.rerun()
+                        elif down_key in st.session_state:
+                            st.button("👎", key=down_btn_key, disabled=True)
         
-        st.write(" \n" * 2) 
+        st.write(" \n" * 2) # Spacer
         input_area_container = st.container()
+
+        # --- Conditional UI Rendering (Chat Input or Symptom Checklist) ---
         with input_area_container:
             if not is_interaction_enabled:
-                st.error("Chat assistant failed to initialize.")
-                st.chat_input("Initializing...", disabled=True, key="init_fail_chat_input_disabled_v2")
+                st.error("Chat assistant is not available. Please check initialization or configuration.")
+                st.chat_input("Chat disabled", disabled=True, key="chat_input_disabled_init_error")
+            
             elif st.session_state.ui_state["step"] == "confirm_symptoms":
                 payload = st.session_state.ui_state.get("payload")
                 if not payload or "symptom_options" not in payload or "original_query" not in payload:
-                    st.session_state.messages.append(("Error with symptom checklist. Please retry.", False))
-                    st.session_state.ui_state = {"step": "input", "payload": None}; st.rerun()
+                    logger.error("Symptom UI state error: Payload invalid. Resetting UI.")
+                    st.session_state.messages.append(("An error occurred with the symptom checklist. Please try your query again.", False))
+                    st.session_state.ui_state = {"step": "input", "payload": None}
+                    if 'confirmed_symptoms_from_ui' in st.session_state: del st.session_state.confirmed_symptoms_from_ui
+                    if 'original_query_for_symptom_rerun' in st.session_state: del st.session_state.original_query_for_symptom_rerun
+                    st.rerun()
                 else:
                     display_symptom_checklist(payload["symptom_options"], payload["original_query"])
-                    st.chat_input("Confirm symptoms above...", disabled=True, key="symptom_confirm_chat_input_disabled_v2")
+                    st.chat_input("Please confirm symptoms using the form above...", disabled=True, key="chat_input_disabled_symptom_form")
+            
             elif st.session_state.ui_state["step"] == "input":
-                if (user_query_input := st.chat_input("Ask your medical question...", disabled=not is_interaction_enabled, key="main_chat_input_field_v2")):
-                    st.session_state.messages.append((user_query_input, True))
-                    if st.session_state.get('chatbot'): st.session_state.chatbot.reset_conversation()
-                    st.session_state.form_timestamp = datetime.now().timestamp()
-                    for k_s in ['confirmed_symptoms_from_ui', 'original_query_for_symptom_rerun']:
-                        if k_s in st.session_state: del st.session_state[k_s]
-                    for k_fb in [k for k in st.session_state if k.startswith("fb_")]: del st.session_state[k_fb]
-                    st.session_state.processing_input_payload = {"query": user_query_input, "confirmed_symptoms": None}
+                user_query_input = st.chat_input("Ask your medical question...", disabled=not is_interaction_enabled, key="main_chat_input_field_v4") # New key
+                
+                if user_query_input and is_interaction_enabled:
+                    logger.info(f"New user query received: '{user_query_input[:50]}...'")
+                    st.session_state.messages.append((user_query_input, True)) # Add user message to display
+                    
+                    # For Memory: Do NOT reset chatbot object state here for multi-turn context.
+                    # It's reset via "Reset Conversation" button or user type change.
+                    # if st.session_state.get('chatbot'):
+                    #    st.session_state.chatbot.reset_conversation() 
+                    
+                    st.session_state.form_timestamp = datetime.now().timestamp() # For unique form keys if symptom UI is triggered
+                    # Clear states that should be fresh for a new independent query
+                    if 'confirmed_symptoms_from_ui' in st.session_state: del st.session_state.confirmed_symptoms_from_ui
+                    if 'original_query_for_symptom_rerun' in st.session_state: del st.session_state.original_query_for_symptom_rerun
+                    # Clear previous message feedback states
+                    for k_fb_clear in [k for k in st.session_state if k.startswith("fb_")]: 
+                        if k_fb_clear in st.session_state: del st.session_state[k_fb_clear]
+
+                    # Prepare conversation history for the bot
+                    chat_history_for_bot: List[Tuple[str,str]] = []
+                    if len(st.session_state.messages) > 1: # If there's prior history (current query is last)
+                        history_display_list = st.session_state.messages[:-1] 
+                        for i_hist_main in range(0, len(history_display_list), 2): 
+                            if i_hist_main + 1 < len(history_display_list):
+                                user_turn_hist = history_display_list[i_hist_main]
+                                assistant_turn_hist = history_display_list[i_hist_main+1]
+                                if user_turn_hist[1] is True and assistant_turn_hist[1] is False:
+                                     chat_history_for_bot.append((user_turn_hist[0], assistant_turn_hist[0]))
+                                else: 
+                                    logger.warning(f"Skipping malformed history pair at index {i_hist_main} for LLM history context.")
+                    
+                    st.session_state.processing_input_payload = {
+                        "query": user_query_input, 
+                        "confirmed_symptoms": None,
+                        "conversation_history": chat_history_for_bot 
+                    }
                     st.rerun()
 
+        # --- Handle Symptom Form Submission ---
         if st.session_state.get('confirmed_symptoms_from_ui') is not None:
+            logger.info("Symptom confirmation form submitted. Preparing for re-processing.")
             confirmed_symps_payload = st.session_state.confirmed_symptoms_from_ui
             original_q_payload = st.session_state.get('original_query_for_symptom_rerun')
-            del st.session_state.confirmed_symptoms_from_ui 
+            
+            del st.session_state.confirmed_symptoms_from_ui # Clear immediately after reading
+
             if not original_q_payload:
-                st.session_state.messages.append(("Error processing symptoms. Retry query.", False))
+                logger.error("Symptom form submitted but original_query_for_symptom_rerun is missing. Resetting UI.")
+                st.session_state.messages.append(("An error occurred processing symptom confirmation. Please try your original query again.", False))
                 if 'original_query_for_symptom_rerun' in st.session_state: del st.session_state.original_query_for_symptom_rerun
-                st.session_state.ui_state = {"step":"input"}; st.rerun()
+                st.session_state.ui_state = {"step":"input", "payload":None}
+                st.rerun()
             else:
-                st.session_state.processing_input_payload = {"query": original_q_payload, "confirmed_symptoms": confirmed_symps_payload}
+                # Get existing history UP TO THE POINT BEFORE THE SYMPTOM UI WAS TRIGGERED
+                # The symptom UI prompt message is the last assistant message before this rerun.
+                chat_history_for_symptom_rerun : List[Tuple[str,str]] = []
+                if len(st.session_state.messages) > 0: # If there are any messages
+                    # We need history *before* the symptom prompt and user's confirmation action
+                    # The original_q_payload was the query that *led* to the symptom UI
+                    # We need history *before* that original_q_payload was processed
+                    # This requires careful tracking or passing the history that existed *before* the symptom UI was triggered.
+                    # For now, let's simplify: pass history up to the bot message that prompted for symptoms.
+                    # The last message is usually the bot's prompt for the symptom UI.
+                    # The second to last is the user query that triggered it.
+                    # So history would be messages[:-2]
+                    relevant_messages_for_history = []
+                    # Find the index of the original_q_payload in messages
+                    original_query_index = -1
+                    for idx, (msg_text, is_user) in reversed(list(enumerate(st.session_state.messages))):
+                        if is_user and msg_text == original_q_payload:
+                            original_query_index = idx
+                            break
+                    
+                    if original_query_index > 0 : # if original query was found and it's not the first message
+                         history_display_list_symptom = st.session_state.messages[:original_query_index]
+                         for i_hist_symp in range(0, len(history_display_list_symptom), 2):
+                             if i_hist_symp + 1 < len(history_display_list_symptom):
+                                 user_turn_s = history_display_list_symptom[i_hist_symp]
+                                 assistant_turn_s = history_display_list_symptom[i_hist_symp+1]
+                                 if user_turn_s[1] is True and assistant_turn_s[1] is False:
+                                     chat_history_for_symptom_rerun.append((user_turn_s[0], assistant_turn_s[0]))
+
+
+                st.session_state.processing_input_payload = {
+                    "query": original_q_payload, 
+                    "confirmed_symptoms": confirmed_symps_payload,
+                    "conversation_history": chat_history_for_symptom_rerun # Pass history relevant to original query
+                }
                 st.rerun()
 
+        # --- Backend Processing Call ---
         if st.session_state.get('processing_input_payload') is not None:
             payload_to_process = st.session_state.processing_input_payload
-            st.session_state.processing_input_payload = None 
+            st.session_state.processing_input_payload = None # Clear immediately
             
             chatbot_instance = st.session_state.get('chatbot')
             if not chatbot_instance or not st.session_state.get('chatbot_initialized_flag'):
-                st.session_state.messages.append(("Chatbot not ready.", False)); st.rerun()
-            
+                logger.critical("Processing triggered but chatbot not ready/initialized.")
+                st.session_state.messages.append(("Chatbot is not ready. Please wait for initialization or check configuration.", False))
+                st.rerun() # Rerun to show message, avoid further processing
+                return # Stop this execution path
+
             query_to_run = payload_to_process.get("query","")
             confirmed_symptoms_to_run = payload_to_process.get("confirmed_symptoms")
+            history_to_run = payload_to_process.get("conversation_history")
 
-            if not query_to_run: st.session_state.messages.append(("Empty query received.", False)); st.rerun()
-            
+            if not query_to_run:
+                logger.error("Empty query found in processing payload. Skipping.")
+                st.session_state.messages.append(("An empty query was received for processing. Please try again.", False))
+                st.rerun()
+                return
+
             with st.spinner("Thinking..."):
                 try:
                     response_text, ui_action, ui_payload_from_bot = chatbot_instance.process_user_query(
-                        query_to_run, current_user_type, confirmed_symptoms_to_run
+                        user_query=query_to_run, 
+                        user_type=current_user_type, 
+                        conversation_history_tuples=history_to_run, 
+                        confirmed_symptoms=confirmed_symptoms_to_run
+                        # original_query_if_followup not strictly needed here if query_to_run is correctly set
                     )
+
                     if ui_action == "display_final_answer":
                         st.session_state.messages.append((response_text, False))
                         st.session_state.ui_state = {"step": "input", "payload": None}
+                        # Clear original_query_for_symptom_rerun if this was a symptom UI follow-up
                         if confirmed_symptoms_to_run and 'original_query_for_symptom_rerun' in st.session_state:
                             del st.session_state.original_query_for_symptom_rerun
+                            logger.debug("Cleared original_query_for_symptom_rerun after symptom processing.")
+                    
                     elif ui_action == "show_symptom_ui":
-                        st.session_state.messages.append((response_text, False))
+                        st.session_state.messages.append((response_text, False)) # This is the prompt for the UI
                         st.session_state.ui_state = {"step": "confirm_symptoms", "payload": ui_payload_from_bot}
-                        st.session_state.form_timestamp = datetime.now().timestamp()
+                        st.session_state.form_timestamp = datetime.now().timestamp() # New form instance
                         if ui_payload_from_bot and ui_payload_from_bot.get("original_query"):
                             st.session_state.original_query_for_symptom_rerun = ui_payload_from_bot["original_query"]
                         else: 
-                            st.session_state.messages.append(("Error preparing symptom checklist.", False))
-                            st.session_state.ui_state={"step":"input"}
-                except Exception as e_process: 
-                    logger.error(f"Error during process_user_query: {e_process}", exc_info=True)
-                    st.session_state.messages.append((f"Sorry, an error occurred: {str(e_process)[:200]}", False)) # Show limited error
+                            logger.error("Symptom UI requested but original_query missing in payload. Resetting UI.")
+                            st.session_state.messages.append(("Error preparing symptom checklist. Please try again.", False))
+                            st.session_state.ui_state={"step":"input", "payload":None}
+                    
+                    else: # "none" or unknown action
+                        logger.warning(f"process_user_query returned unhandled ui_action: {ui_action}. Defaulting to input UI.")
+                        if st.session_state.ui_state["step"] != "confirm_symptoms": # Don't override if form is meant to show
+                             st.session_state.ui_state = {"step": "input", "payload": None}
+
+                except Exception as e_process_query: 
+                    logger.error(f"Error during chatbot.process_user_query: {e_process_query}", exc_info=True)
+                    error_display_message = str(e_process_query)[:300] # Limit length of error displayed
+                    st.session_state.messages.append((f"Sorry, an application error occurred: {error_display_message}", False))
                     st.session_state.ui_state = {"step": "input", "payload": None} 
+                    # Clean up symptom state if error occurred during symptom rerun
                     if confirmed_symptoms_to_run and 'original_query_for_symptom_rerun' in st.session_state:
                         del st.session_state.original_query_for_symptom_rerun
-                st.rerun()
+                st.rerun() # Always rerun to update UI based on new state
 
+        # --- Reset and Feedback Forms ---
         st.divider()
-        if st.button("Reset Conversation", key="reset_conversation_button_v2", disabled=not is_interaction_enabled):
-            st.session_state.clear()
-            logger.info("Session state cleared for full reset. Rerunning.")
+        if st.button("Reset Conversation", key="reset_conversation_button_v3", disabled=not is_interaction_enabled, help="Clear chat history and start over."):
+            logger.info("Conversation reset triggered by user button.")
+            if st.session_state.get('chatbot'):
+                st.session_state.chatbot.reset_conversation()
+            
+            st.session_state.messages = []
+            st.session_state.ui_state = {"step": "input", "payload": None}
+            st.session_state.processing_input_payload = None
+            st.session_state.form_timestamp = datetime.now().timestamp()
+            for k_s_reset in ['confirmed_symptoms_from_ui', 'original_query_for_symptom_rerun']:
+                if k_s_reset in st.session_state: del st.session_state[k_s_reset]
+            for k_form_reset in [k for k in st.session_state if k.startswith("symptom_form_")]: 
+                if k_form_reset in st.session_state: del st.session_state[k_form_reset]
+            for k_fb_reset in [k for k in st.session_state if k.startswith("fb_")]:
+                if k_fb_reset in st.session_state: del st.session_state[k_fb_reset]
+            logger.info("Conversation-related session state cleared. Rerunning.")
             st.rerun()
         
         st.divider()
         st.subheader("🩺 Detailed Feedback")
-        with st.form(key="detailed_feedback_main_form_v2", clear_on_submit=True):
-            feedback_input_text = st.text_area("Comments...", height=100, disabled=not is_interaction_enabled)
+        with st.form(key="detailed_feedback_main_form_v3", clear_on_submit=True): # New key
+            feedback_input_text = st.text_area("Enter corrections, improvements, or comments here...", height=100, disabled=not is_interaction_enabled)
             if st.form_submit_button("Submit Feedback", disabled=not is_interaction_enabled) and feedback_input_text:
                 submit_feedback(feedback_input_text, st.session_state.get('messages',[]), current_user_type)
-                st.success("Thank you!")
+                st.success("Thank you for your feedback!")
 
     with tab2:
-        st.markdown(""" ## Medical Chat Assistant ... (your about text) ... """)
+        st.markdown("""
+        ## Medical Chat Assistant
+        This is an experimental medical chat assistant designed to provide information based on internal data (simulated documents) and a medical knowledge graph.
+
+        **How it Works (Simplified):**
+        1.  **Medical Check & Symptom Analysis:** Assesses query relevance and extracts symptoms. May ask for symptom confirmation if needed.
+        2.  **Information Retrieval:** Searches an internal knowledge graph and document data.
+        3.  **Answer Generation:** Uses an LLM to synthesize an answer from retrieved context and its general knowledge.
+        4.  **Self-Reflection & Refinement:** The system attempts to evaluate and improve its own answer.
+        5.  **User-Specific Responses:** Tailors language and includes integrated triage advice for family users.
+        6.  **Pathway Indication:** Indicates primary information sources used (e.g., Internal Data, Knowledge Graph, LLM).
+
+        **Disclaimer:** This system is for informational purposes ONLY and is NOT a substitute for professional medical advice, diagnosis, or treatment. Always consult a qualified healthcare provider for medical concerns.
+        """)
     # logger.debug("--- Streamlit App End of Rerun ---")
 
 if __name__ == "__main__":
     if not logging.getLogger().hasHandlers(): 
-        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    logger = logging.getLogger(__name__) 
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s')
+    main_logger = logging.getLogger(__name__) 
+    # Set a specific level for this app's logger if desired, e.g., main_logger.setLevel(logging.DEBUG)
     main()
