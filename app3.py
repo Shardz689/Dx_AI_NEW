@@ -80,7 +80,7 @@ THRESHOLDS = {
     "rag_context_selection": 0.7, "medical_relevance": 0.6,
     "high_kg_context_only": 0.8
 }
-
+image_path_str = "Zoom My Life.jpg" # Ensure this is a string
 def get_image_as_base64(file_path_str: str) -> str:
     file_path = Path(file_path_str)
     if not file_path.is_file():
@@ -92,8 +92,6 @@ def get_image_as_base64(file_path_str: str) -> str:
     except Exception as e:
         logger.error(f"Error encoding image {file_path}: {e}")
         return "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
-
-image_path_str = "Zoom My Life.jpg" # Ensure this is a string
 try:
     ICON_B64 = get_image_as_base64(IMAGE_PATH_STR) 
 except Exception as e_icon: # Catch any unexpected error during this global setup
