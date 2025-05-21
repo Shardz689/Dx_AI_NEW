@@ -316,18 +316,19 @@ class DocumentChatBot:
             raise ValueError(f"LLM generation failed: {e}") from e
             
     def get_system_prompt(self, user_type: str) -> str:
-        logger.debug(f"get_system_prompt called with user_type: '{user_type}'")
+        logger.debug(f"get_system_prompt called with user_type: '{user_type}' (type: {type(user_type)})")
         
         normalized_user_type = ""
+        # Explicitly check for the exact strings returned by the selectbox or common variations
         if user_type == "User / Family" or user_type == "family":
             normalized_user_type = "family"
-        elif user_type == "Physician" or user_type == "physician":
+        elif user_type == "Physician" or user_type == "physician": # Handles "Physician" from selectbox
             normalized_user_type = "physician"
         else:
             logger.warning(f"Unknown user_type '{user_type}' in get_system_prompt, defaulting to 'family'.")
             normalized_user_type = "family"
     
-        base_prompt = "You are MediAssist, an AI assistant specialized in medical information. Your primary goal is to provide accurate and helpful information. " # Slightly rephrased base
+        base_prompt = "You are MediAssist, an AI assistant specialized in medical information. Your primary goal is to provide accurate and helpful information. "
         
         common_instructions = (
             "When answering, prioritize information from the 'Context Provided' (which may include 'Knowledge Graph Information' and 'Relevant Passages from Internal Data').\n"
@@ -345,21 +346,27 @@ class DocumentChatBot:
             return base_prompt + common_instructions + (
                 "\nRespond using professional medical terminology. Consider differential diagnoses. "
                 "Provide detailed clinical insights and evidence-based recommendations. Assume high medical literacy. "
-                "If specific guidelines (e.g., RSSDI, ADA, AHA) are requested: first, check if they are present in your provided context. If so, cite or summarize them accurately, including any source names or URLs explicitly part of that context. "
-                "If specific guidelines are not in your context, clearly state that, but you may offer general knowledge about the topic if applicable, mentioning general reputable sources or guideline bodies by name and potentially their main website if you are confident (as per instruction 2b). "
+                "If specific guidelines (e.g., RSSDI, ADA, AHA) are requested: first, check if they are present in your provided context. If so, cite or summarize them accurately, including any source names or URLs explicitly part of that context (format URLs as [Name](URL)). "
+                "If specific guidelines are not in your context, clearly state that the detailed guidelines are not available in the provided information, but you can offer general knowledge about the topic if applicable, mentioning general reputable sources or guideline bodies by name and potentially their main website if you are confident (as per instruction 2b). "
                 "Structure responses with clear clinical reasoning. Address the user as a fellow medical professional about a case. Do not provide basic patient education unless asked. Do not provide patient-style triage advice."
             )
         else:  # family user
-            logger.info("Using FAMILY system prompt with integrated triage and updated source instructions.")
+            logger.info("Using FAMILY system prompt with integrated triage, source mentioning, and BP advice.")
             return base_prompt + common_instructions + (
                 "\nRespond using clear, accessible language for someone without medical training. Explain medical terms. "
-                "If the query describes a potentially urgent medical situation, you MUST assess the urgency and integrate clear guidance on appropriate next steps directly and naturally within your main answer, as part of a helpful paragraph, not as a separate headed section. "
+                "**If the query describes a potentially urgent medical situation, you MUST assess the urgency and integrate clear guidance on appropriate next steps directly and naturally within your main answer, as part of a helpful paragraph, not as a separate headed section.** "
                 "Use one of these urgency levels if applicable, explaining why: \n"
                 "1. **Emergency:** If it's an emergency, strongly advise to 'Call 911 or go to the nearest emergency room immediately because...'.\n"
                 "2. **Urgent Care:** If urgent, advise to 'See a doctor or go to an urgent care clinic within 24 hours because...'.\n"
                 "3. **Primary Care:** If non-urgent but needs medical attention, advise to 'Schedule a regular appointment with your doctor because...'.\n"
                 "4. **Self-care:** If manageable at home, explain 'This can likely be managed at home with the following care steps...'.\n"
-                "If no specific urgency level applies, do not mention them. Always prioritize patient safety. "
+                "If no specific urgency level applies, do not mention them. Always prioritize patient safety.\n\n" # Added newline for clarity
+                "**Specific Scenario - User Reports Very High Blood Pressure Reading:**\n" # Feedback from Dr. Paula incorporated
+                "If a user reports a specific, very high blood pressure reading (e.g., systolic consistently over 180 or diastolic consistently over 120 mmHg):\n"
+                "   1. Your primary and immediate advice MUST be to seek emergency medical attention due to the potential for hypertensive crisis. This is paramount.\n"
+                "   2. After clearly and strongly stating the need for emergency care, you MAY then briefly add a short, helpful note about general best practices for accurate home blood pressure monitoring *for future reference*. Frame this as general advice, not as a reason to doubt their current emergency. For example: 'For future blood pressure checks at home, it's good practice to rest for a few minutes beforehand, sit with your back supported and feet flat, keep your arm supported at heart level, and use a properly fitting cuff. However, with the reading you've reported now, seeking immediate medical help is the most important step.'\n"
+                "   3. Ensure that any advice on measurement accuracy does NOT overshadow, dilute, or delay the critical advice to seek emergency care for the very high reported reading.\n\n"
+                "If you mention specific sources (like CDC, WHO, Mayo Clinic) from your knowledge or provided context, state their names. If URLs are explicitly in the provided context from internal data, you can include them if relevant and helpful, ensuring they are presented clearly as clickable links in Markdown format (e.g., [Source Name](URL)). Do not invent URLs."
             )
         
     def is_medical_query(self, query: str) -> Tuple[bool, str]:
