@@ -404,7 +404,7 @@ return base_prompt + common_instructions_for_all_users + (
                 "Remember that this information is not a substitute for professional medical advice. Please consult with your doctor for personal health concerns.\"\n\n"
             )
         
-    def is_medical_query(self, query: str) -> Tuple[bool, str]:
+   def is_medical_query(self, query: str) -> Tuple[bool, str]:
         cache_key = {"type": "medical_relevance", "query": query}
         if (cached := get_cached(cache_key)) is not None: return cached # type: ignore
         
